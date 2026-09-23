@@ -540,7 +540,7 @@ Determine whether the unit test shown above has succeeded or failed based off of
                 output = await structured_llm.ainvoke(messages)
                 return test, output, None
             except Exception as e:
-                if "503" in e and attempt < MAX_LLM_RETRIES - 1:
+                if "503" in str(e) and attempt < MAX_LLM_RETRIES - 1:
                     wait_seconds = LLM_RETRY_BACKOFF_SECONDS * (2 ** attempt)
                     await asyncio.sleep(wait_seconds)
                     continue
