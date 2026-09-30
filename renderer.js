@@ -1001,31 +1001,60 @@ function renderErrorPreview(errors) {
     }
 
     // Entries are {time, command, code, message}; older ones may be strings.
-    const rows = errorList.map(error => (
-        typeof error === "string"
-            ? ["—", "—", "—", error]
-            : [
-                formatStamp(error.time),
-                error.code ?? "—",
-                error.command || "—",
-                error.message || "—",
-            ]
-    ));
+    const rows = errorList.map(error => {
+        const record = typeof error === "string" ? null : error || {};
+        const time = record ? formatStamp(record.time) : "—";
+        const code = record?.code ?? "—";
+        const step = record?.command || "—";
+        const message = record?.message || (typeof error === "string" ? error : "—");
+
+        const timestamp = document.createElement("span");
+        timestamp.className = "insight-mono";
+        timestamp.textContent = time;
+
+        const codeBadge = document.createElement("span");
+        const codeStyle = code === "CANCELLED"
+            ? "is-warning"
+            : code === "—"
+                ? "is-neutral"
+                : "is-error";
+        codeBadge.className = `insight-code-badge ${codeStyle}`;
+        codeBadge.textContent = code;
+
+        const stepName = document.createElement("span");
+        stepName.className = "insight-mono insight-step-name";
+        stepName.textContent = step;
+
+        return [timestamp, codeBadge, stepName, message];
+    });
 
     const card = document.createElement("div");
-    card.className = "summary-card usage-card";
+    card.className = "insight-error-card";
 
     card.appendChild(usageHeader("Errors"));
 
-    card.appendChild(usageTable(["Time", "Code", "Step", "Message"], rows))
-        .classList.add("error-table");
+    const note = document.createElement("div");
+    note.className = "insight-info";
+    note.setAttribute("role", "note");
 
-    const note = document.createElement("p");
-    note.className = "usage-note";
-    note.textContent =
-        "Errors recorded during the current app session. " +
-        "They are cleared when the app starts.";
+    const noteIcon = document.createElement("span");
+    noteIcon.className = "insight-info-icon";
+    noteIcon.setAttribute("aria-hidden", "true");
+    noteIcon.textContent = "i";
+
+    const noteText = document.createElement("p");
+    noteText.textContent =
+        "Errors recorded during the current app session. They are cleared when the app starts.";
+
+    note.append(noteIcon, noteText);
     card.appendChild(note);
+
+    const tableWrap = document.createElement("div");
+    tableWrap.className = "insight-table-wrap";
+    tableWrap.appendChild(
+        usageTable(["Time", "Code", "Step", "Message"], rows)
+    ).classList.add("error-table", "insight-error-table");
+    card.appendChild(tableWrap);
 
     output.appendChild(card);
 }
@@ -1495,6 +1524,29 @@ document.getElementById('faqAndSupportBtn')
 // ---------------------------------------------
 // ViewPageButtons
 // ---------------------------------------------
+document.getElementById("viewDisplayBtnSideBar")
+    .addEventListener("click", (event) => {
+        const button = event.target.closest("button");
+        if (!button || !button.closest(".viewBtnContainer")) return;
+
+        const label = button.dataset.viewLabel ||
+            (button.closest(".insight-subnav") ? button.textContent.trim() : "");
+        if (!label) return;
+
+        const currentView = document.getElementById("insightCurrentView");
+        if (currentView) currentView.textContent = label;
+
+        if (button.dataset.viewLabel) {
+            document.querySelectorAll("#mainViewBtns [data-view-label]")
+                .forEach(navButton => {
+                    const isActive = navButton === button;
+                    navButton.classList.toggle("is-active", isActive);
+                    if (isActive) navButton.setAttribute("aria-current", "page");
+                    else navButton.removeAttribute("aria-current");
+                });
+        }
+    });
+
 document.getElementById('mainViewBtn')
     .addEventListener('click', () => {
 
@@ -1773,6 +1825,27 @@ document.getElementById('exitBtn').addEventListener('click', () => {
     }, 500);
 
 });
+
+document.querySelector(".operations-nav")
+    .addEventListener("click", (event) => {
+        const button = event.target.closest("[data-operations-destination]");
+        if (!button) return;
+
+        const destination = button.dataset.operationsDestination;
+        if (destination === "terminal") {
+            showPage("analysisPage");
+            return;
+        }
+
+        const existingButtonId = {
+            chart: "mainViewBtn",
+            key: "apiBtn",
+            help: "faqAndSupportBtn"
+        }[destination];
+
+        document.getElementById(existingButtonId)?.click();
+    });
+
 //======================================================
 //options for the analysis page
 //======================================================
@@ -2758,6 +2831,12 @@ function hideApiKeyError() {
 function showApiKeyPresent() {
 
     const apiBtnEl = document.getElementById("apiBtn");
+
+    const apiStatusText = document.getElementById("apiStatusText");
+    const apiStatusDot = document.getElementById("apiStatusDot");
+
+    if (apiStatusText) apiStatusText.textContent = "API connected";
+    if (apiStatusDot) apiStatusDot.classList.add("connected");
 
     if (!apiBtnEl) return;
 

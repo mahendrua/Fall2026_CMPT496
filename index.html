@@ -3,6 +3,7 @@
 <head>
     <title>Checkpoint</title>
 
+    <link rel="stylesheet" href="tailwind.css">
     <link rel="stylesheet" href="style.css">
 </head>
 
@@ -10,16 +11,94 @@
 
     <!-- HOME PAGE -->
     <div id="homePage" class="page active">
+        <header class="home-header flex items-center justify-between border-b border-slate-800 px-6 md:px-10">
+            <div class="flex items-center gap-3">
+                <div class="brand-mark flex h-9 w-9 items-center justify-center rounded-lg bg-indigo-500/15 text-indigo-300" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="h-5 w-5"><path d="M4 5.5 12 2l8 3.5v13L12 22l-8-3.5v-13Z"/><path d="m8 9 2.5 3L8 15m4.5 0H16"/></svg>
+                </div>
+                <div class="flex items-center gap-2.5">
+                    <span class="text-base font-semibold tracking-wide text-slate-100">Checkpoint</span>
+                    <span class="rounded border border-slate-700 px-1.5 py-0.5 font-mono text-[10px] text-slate-400">v1.0</span>
+                </div>
+            </div>
+            <nav class="flex items-center gap-1 sm:gap-2" aria-label="Quick actions">
+                <button class="nav-action" id="apiBtn">API Key</button>
+                <button class="nav-action" id="faqAndSupportBtn">Docs</button>
+                <button class="nav-action nav-exit" id="exitBtn">Exit</button>
+            </nav>
+        </header>
 
-        <h1>Checkpoint</h1>
-        <h2>Codebase Analysis System</h2>
+        <main class="home-main mx-auto w-full max-w-6xl px-5 py-10 md:px-10 md:py-14">
+            <div class="mb-8">
+                <p class="mb-2 font-mono text-xs uppercase tracking-[0.18em] text-indigo-300">Codebase Analysis System</p>
+                <h1 class="text-3xl font-semibold tracking-tight text-slate-100 md:text-4xl">Your codebase, in focus.</h1>
+                <p class="mt-3 max-w-2xl text-sm leading-6 text-slate-400">Run structured analysis and explore the signals that matter across your project.</p>
+            </div>
 
-        <button class="btn-primary unusable-btn" id="analysisBtn">Run Operations</button>
-        <button class="btn-primary" id="mainViewBtn">View Insights</button>
-        <button class="btn-primary" id="apiBtn">Upload API Key</button>
-        <button class="btn-primary" id="faqAndSupportBtn">FAQ & Support</button>
-        <button class="btn-primary back-btn" id="exitBtn">Exit</button>
+            <section class="home-grid grid grid-cols-1 gap-5 md:grid-cols-2" aria-label="Workspace actions">
+                <article class="home-card primary-home-card rounded-lg border border-indigo-500/40 bg-[#161b22] p-6 md:p-7">
+                    <div class="mb-7 flex items-start justify-between gap-4">
+                        <div class="flex items-center gap-3">
+                            <div class="card-icon flex h-10 w-10 items-center justify-center rounded-md bg-indigo-500/10 text-indigo-300" aria-hidden="true">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-5 w-5"><path d="M8 6h12M8 12h12M8 18h12M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>
+                            </div>
+                            <div>
+                                <h2 class="mb-0 text-base font-semibold text-slate-100">Run Operations</h2>
+                                <p class="mt-1 text-xs text-slate-500">A complete view of your codebase</p>
+                            </div>
+                        </div>
+                        <span class="rounded border border-indigo-400/20 bg-indigo-400/10 px-2 py-1 font-mono text-[10px] uppercase text-indigo-200">Analysis</span>
+                    </div>
 
+                    <ul class="mb-8 grid gap-3 text-sm text-slate-300 sm:grid-cols-3 md:grid-cols-1 lg:grid-cols-3">
+                        <li class="feature-item flex items-center gap-2.5"><span class="feature-check" aria-hidden="true">&#10003;</span>Dependency Scanning</li>
+                        <li class="feature-item flex items-center gap-2.5"><span class="feature-check" aria-hidden="true">&#10003;</span>AST Parse</li>
+                        <li class="feature-item flex items-center gap-2.5"><span class="feature-check" aria-hidden="true">&#10003;</span>Security Scan</li>
+                    </ul>
+
+                    <button class="home-primary-button flex w-full items-center justify-center gap-2 rounded-md bg-indigo-500 px-4 py-3 text-sm font-semibold text-white transition-all hover:bg-indigo-400" id="analysisBtn">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="h-4 w-4" aria-hidden="true"><path d="m8 5 11 7-11 7V5Z"/></svg>
+                        Start Analysis
+                    </button>
+                </article>
+
+                <article class="home-card rounded-lg border border-slate-800 bg-[#161b22] p-6 transition-all hover:border-slate-600 md:p-7">
+                    <div class="mb-6 flex items-center gap-3">
+                        <div class="card-icon flex h-10 w-10 items-center justify-center rounded-md bg-emerald-400/10 text-emerald-300" aria-hidden="true">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" class="h-5 w-5"><path d="M4 19V5m0 14h16"/><path d="m7 15 4-4 3 2 5-6"/></svg>
+                        </div>
+                        <div>
+                            <h2 class="mb-0 text-base font-semibold text-slate-100">View Insights</h2>
+                            <p class="mt-1 text-xs text-slate-500">Project health at a glance</p>
+                        </div>
+                    </div>
+
+                    <div class="insight-preview mb-6 flex items-center justify-between rounded-md border border-slate-800/80 px-4 py-4">
+                        <div>
+                            <p class="font-mono text-[10px] uppercase tracking-wider text-slate-500">Health score</p>
+                            <p class="mt-1 text-2xl font-semibold text-slate-100">75<span class="text-base text-slate-400">%</span></p>
+                        </div>
+                        <div class="health-ring" role="img" aria-label="Health score 75 percent"><span>75</span></div>
+                    </div>
+
+                    <button class="home-secondary-button flex w-full items-center justify-center gap-2 rounded-md border border-slate-700 px-4 py-3 text-sm font-medium text-slate-200 transition-all hover:border-slate-500 hover:bg-slate-800/60" id="mainViewBtn">
+                        Open Dashboard
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="h-4 w-4" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg>
+                    </button>
+                </article>
+            </section>
+
+            <footer class="status-banner mt-6 flex flex-col gap-3 rounded-lg border border-slate-800 bg-[#161b22] px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+                <div class="flex min-w-0 items-center gap-3">
+                    <span class="text-xs text-slate-500">WORKSPACE</span>
+                    <span class="truncate font-mono text-xs text-slate-300" id="workspacePath">/my-project-repo</span>
+                </div>
+                <div class="flex items-center gap-2 text-xs text-slate-400" aria-live="polite">
+                    <span class="status-dot" id="apiStatusDot" aria-hidden="true"></span>
+                    <span id="apiStatusText">API not connected</span>
+                </div>
+            </footer>
+        </main>
     </div>
 
 
@@ -43,32 +122,117 @@
 
     <!-- ANALYSIS PAGE -->
     <div id="analysisPage" class="page hidden">
+        <header class="operations-topbar bg-slate-950 border-b border-slate-800">
+            <div class="operations-header-inner flex items-center justify-between">
+                <div class="operations-brand">
+                    <div class="operations-brand-mark" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5.5 12 2l8 3.5v13L12 22l-8-3.5v-13Z"/><path d="m8 9 2.5 3L8 15m4.5 0H16"/></svg>
+                    </div>
+                    <div>
+                        <strong>Checkpoint</strong>
+                        <span>Codebase Analysis System</span>
+                    </div>
+                </div>
+                <nav class="operations-nav flex items-center" aria-label="Quick navigation">
+                    <button type="button" class="operations-nav-link is-current" data-operations-destination="terminal" aria-label="Terminal" aria-current="page" title="Terminal">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m4 17 6-6-6-6m8 14h8"/></svg><span>Terminal</span>
+                    </button>
+                    <button type="button" class="operations-nav-link" data-operations-destination="chart" aria-label="Chart" title="Chart">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 3v18h18M7 14l4-4 4 3 5-7"/></svg><span>Chart</span>
+                    </button>
+                    <button type="button" class="operations-nav-link" data-operations-destination="key" aria-label="Key" title="Key">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="8" cy="15" r="5"/><path d="m11.5 11.5 9-9L22 4l-2 2 2 2-3 3-2-2-2 2"/></svg><span>Key</span>
+                    </button>
+                    <button type="button" class="operations-nav-link" data-operations-destination="help" aria-label="Question and Help" title="Question / Help">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.6 9a2.5 2.5 0 1 1 4.2 1.8c-1.2 1.1-1.8 1.4-1.8 3m0 3h.01"/></svg><span>Help</span>
+                    </button>
+                </nav>
+            </div>
+        </header>
 
-        <h1>Operations</h1>
-
-        <div id="analysisOptions">
-
-            <div id="pipelineOptions">
-               
-                <button class="btn-primary" id="estimateTokensBtn">Estimate Token Usage</button>
-                <button class="btn-primary" id="tokenCalibrationBtn">Show Token Calibration</button>
-                <button class="btn-primary" id="codebaseAnalysisPipelineBtn">Full Codebase Analysis Pipeline</button>
-                <button class="btn-primary" id="createCodeDatabaseOnlyBtn">Create Code Database</button>
-                <button class="btn-primary" id="createJSONSummariesOnlyBtn">Create JSON Summaries</button>
-                <button class="btn-primary" id="createSummaryDatabasefromJSONOnlyBtn">Create Summary Database from JSON</button>
-                <button class="btn-primary" id="createDirectorySummariesOnlyBtn">Create Directory Summaries & Business Rules</button>
-                <button class="btn-primary" id="runBusinessRuleValidationOnlyBtn">Business Rule Validation</button>
-                <button class="btn-primary" id="runUMLGenerationOnly">UML Generation</button>
-                <button class="btn-primary" id="runUnitTestGenerationOnlyBtn">Unit Test Generation</button>
-                <button class="btn-primary" id="runUnitTestValidationOnlyBtn">Unit Test Validation</button>
-                <button class="btn-primary" id="runIntegrationTestGenerationOnlyBtn">Integration Test Generation</button>
-                
-                
+        <main class="operations-main mx-auto w-full">
+            <div class="operations-page-heading">
+                <p class="operations-breadcrumb"><span>Operations</span><span aria-hidden="true">/</span><strong>Select Pipeline</strong></p>
+                <h1 class="operations-title">Operations</h1>
+                <p class="operations-intro">Choose an analysis stage or run the full pipeline for the selected codebase.</p>
             </div>
 
-            <button class="btn-primary back-btn" id="analysisBackBtn">Return to Main Menu</button>
+            <div id="analysisOptions" class="operations-grid grid grid-cols-1 gap-4">
+                <section class="operation-card rounded-xl border border-slate-800 bg-slate-900" aria-labelledby="prepTitle">
+                    <div class="operation-card-heading">
+                        <span class="operation-index">01</span>
+                        <div><h2 id="prepTitle">Configuration &amp; Prep</h2><p>Estimate usage and prepare analysis data.</p></div>
+                    </div>
+                    <div class="operation-list">
+                        <button class="operation-action" id="estimateTokensBtn">
+                            <span class="operation-copy"><strong>Estimate Token Usage</strong><small>Approximate input before a run</small></span><span class="operation-badge">Estimate</span>
+                        </button>
+                        <button class="operation-action" id="tokenCalibrationBtn">
+                            <span class="operation-copy"><strong>Show Token Calibration</strong><small>Review measured usage</small></span><span class="operation-badge">Show</span>
+                        </button>
+                        <button class="operation-action" id="createJSONSummariesOnlyBtn">
+                            <span class="operation-copy"><strong>Create JSON Summaries</strong><small>Generate file-level summaries</small></span>
+                        </button>
+                        <button class="operation-action" id="createSummaryDatabasefromJSONOnlyBtn">
+                            <span class="operation-copy"><strong>Create Summary Database from JSON</strong><small>Index existing summary output</small></span>
+                        </button>
+                    </div>
+                </section>
 
-        </div>
+                <section class="operation-card operation-core-card rounded-xl border border-indigo-500/50 bg-slate-900" id="pipelineOptions" aria-labelledby="coreTitle">
+                    <div class="operation-card-heading">
+                        <span class="operation-index">02</span>
+                        <div><h2 id="coreTitle">Core Pipelines</h2><p>Build the foundation and map project behavior.</p></div>
+                    </div>
+                    <article class="featured-pipeline-card">
+                        <div class="featured-pipeline-topline"><span>FEATURED PIPELINE</span><span class="pipeline-status-dot" aria-hidden="true"></span></div>
+                        <h3>Full Codebase Analysis Pipeline</h3>
+                        <p>Run the complete analysis sequence for this codebase.</p>
+                        <div class="pipeline-tags"><span>parser</span><span>security scan</span><span>dependencies</span></div>
+                        <button class="pipeline-launch-button" id="codebaseAnalysisPipelineBtn">
+                            <span>Run Full Pipeline</span>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6"/></svg>
+                        </button>
+                    </article>
+                    <div class="operation-list operation-list-compact">
+                        <button class="operation-action" id="createCodeDatabaseOnlyBtn">
+                            <span class="operation-copy"><strong>Create Code Database</strong><small>Index source files for analysis</small></span><span class="operation-badge">Initialize</span>
+                        </button>
+                        <button class="operation-action" id="createDirectorySummariesOnlyBtn">
+                            <span class="operation-copy"><strong>Create Directory Summaries &amp; Business Rules</strong><small>Summarize project structure</small></span>
+                        </button>
+                        <button class="operation-action" id="runBusinessRuleValidationOnlyBtn">
+                            <span class="operation-copy"><strong>Business Rule Validation</strong><small>Review and validate discovered rules</small></span>
+                        </button>
+                        <button class="operation-action" id="runUMLGenerationOnly">
+                            <span class="operation-copy"><strong>UML Generation</strong><small>Generate architecture diagrams</small></span>
+                        </button>
+                    </div>
+                </section>
+
+                <section class="operation-card rounded-xl border border-slate-800 bg-slate-900" aria-labelledby="testingTitle">
+                    <div class="operation-card-heading">
+                        <span class="operation-index">03</span>
+                        <div><h2 id="testingTitle">Testing &amp; Validation</h2><p>Generate and verify project tests.</p></div>
+                    </div>
+                    <div class="operation-list">
+                        <button class="operation-action" id="runUnitTestGenerationOnlyBtn">
+                            <span class="operation-copy"><strong>Unit Test Generation</strong><small>Generate tests from validated rules</small></span><span class="operation-badge">Generate</span>
+                        </button>
+                        <button class="operation-action" id="runUnitTestValidationOnlyBtn">
+                            <span class="operation-copy"><strong>Unit Test Validation</strong><small>Build and run generated tests</small></span>
+                        </button>
+                        <button class="operation-action" id="runIntegrationTestGenerationOnlyBtn">
+                            <span class="operation-copy"><strong>Integration Test Generation</strong><small>Generate workflow-level tests</small></span>
+                        </button>
+                    </div>
+                </section>
+            </div>
+
+            <footer class="operations-footer">
+                <button class="operations-return-button" id="analysisBackBtn"><span aria-hidden="true">&#8592;</span> Return to Main Menu</button>
+            </footer>
+        </main>
     </div>
 
     <!--Codebase Analysis Pipeline input and output page-->
@@ -149,57 +313,78 @@
     <!-- View Display? -->
 
     <div id="mainViewPage" class="page hidden">
-
-        
-        <div id="viewDisplayBtnSideBar">
-
-            <div id="sideBarContent">
-                <h1 id="viewPageHeader">View Insights</h1>
-                <h3 id="viewPageSubHeader">Choose what you would like to view</h3>
-
-                <div id="mainViewBtns" class="viewBtnContainer"> 
-                    <button class="btn-primary" id="viewDisplaySummariesBtn">File Summaries</button>
-                    <button class="btn-primary" id="viewDisplaySourcesBtn">Directory Summaries</button>
-                    <button class="btn-primary" id="viewDisplayErrorsBtn">Errors</button>
-                    <button class="btn-primary" id="viewUMLBtn">UML</button>
-                    <button class="btn-primary" id="viewDisplayBusinessRulesBtn">Business Rules</button>
-                    <button class="btn-primary" id="viewUnitTestsBtn">Unit Tests</button>
-                    <button class="btn-primary" id="viewUsageBtn">AI Usage</button>
-
-                    <button class="btn-primary" id="viewDisplayFilesBtn">Files</button>
+        <aside id="viewDisplayBtnSideBar" aria-label="Insights navigation">
+            <div class="insight-brand">
+                <div class="insight-brand-mark" aria-hidden="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5.5 12 2l8 3.5v13L12 22l-8-3.5v-13Z"/><path d="m8 9 2.5 3L8 15m4.5 0H16"/></svg>
                 </div>
-
-                <!-- These Divs will be used for button placement -->
-                <!-- We will have to interpret that data into buttons for each file choice -->
-                <div id="viewSummariesBtns" class="viewBtnContainer hidden"> </div>
-
-                <div id="viewSourcesBtns" class="viewBtnContainer hidden"> </div>
-
-                <div id="viewErrorsBtns" class="viewBtnContainer hidden"> </div>
-
-                <div id="viewUsageBtns" class="viewBtnContainer hidden"> </div>
-
-                <div id="viewFilesBtns" class="viewBtnContainer hidden"> </div>
-
-                <div id="viewBusinessRulesBtns" class="viewBtnContainer hidden"> 
-                    <button id="validatedBusinessRulesBtn" class="output-file-btn btn-secondary">Validated Business Rules</button>
-                    <button id="discardedBusinessRulesBtn" class="output-file-btn btn-secondary">Discarded Business Rules</button>
-
+                <div>
+                    <p class="insight-brand-name">Checkpoint</p>
+                    <h1 id="viewPageHeader">View Insights</h1>
                 </div>
             </div>
-            
-            
 
-            <button class="btn-primary back-btn" id="mainViewBackBtn">Main Menu</button>
-        </div>
+            <div id="sideBarContent">
+                <h2 id="viewPageSubHeader" class="insight-section-label">INSIGHTS</h2>
+                <nav id="mainViewBtns" class="viewBtnContainer insight-nav-list" aria-label="Insight views">
+                    <button type="button" class="insight-nav-button" id="viewDisplaySummariesBtn" data-view-label="File Summaries">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6M8 13h8m-8 4h8"/></svg><span>File Summaries</span>
+                    </button>
+                    <button type="button" class="insight-nav-button" id="viewDisplaySourcesBtn" data-view-label="Directory Summaries">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 6a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/><path d="M3 10h18"/></svg><span>Directory Summaries</span>
+                    </button>
+                    <button type="button" class="insight-nav-button is-active" id="viewDisplayErrorsBtn" data-view-label="Errors" aria-current="page">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m10.3 3.9-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.7-3.1l-8-14a2 2 0 0 0-3.4 0Z"/><path d="M12 9v4m0 4h.01"/></svg><span>Errors</span>
+                    </button>
+                    <button type="button" class="insight-nav-button" id="viewUMLBtn" data-view-label="UML">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="15" y="15" width="6" height="6" rx="1"/><path d="M6 9v3a3 3 0 0 0 3 3h6m0 0-2-2m2 2-2 2"/></svg><span>UML</span>
+                    </button>
+                    <button type="button" class="insight-nav-button" id="viewUsageBtn" data-view-label="AI Usage">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 3v18h18M7 14l4-4 4 3 5-7"/></svg><span>AI Usage</span>
+                    </button>
 
-        <!-- This box will be for the outputs -->
-        <div id="viewDisplayOutput">
-            <pre id="viewDisplayOutputBox"></pre>
-        </div>
-        
-        
+                    <h2 class="insight-section-label insight-output-label">SYSTEM OUTPUTS</h2>
+                    <p class="insight-output-path">agent/*_agent_output</p>
+                    <button type="button" class="insight-nav-button" id="viewDisplayBusinessRulesBtn" data-view-label="Business Rules">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/></svg><span>Business Rules</span>
+                    </button>
+                    <button type="button" class="insight-nav-button" id="viewUnitTestsBtn" data-view-label="Unit Tests">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="m8 8-4 4 4 4m8-8 4 4-4 4m-2-10-4 12"/></svg><span>Unit Tests</span>
+                    </button>
+                    <button type="button" class="insight-nav-button" id="viewDisplayFilesBtn" data-view-label="Files">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M4 4h6l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2Z"/></svg><span>Files</span>
+                    </button>
+                </nav>
 
+                <div id="viewSummariesBtns" class="viewBtnContainer insight-subnav hidden"></div>
+                <div id="viewSourcesBtns" class="viewBtnContainer insight-subnav hidden"></div>
+                <div id="viewErrorsBtns" class="viewBtnContainer insight-subnav hidden"></div>
+                <div id="viewUsageBtns" class="viewBtnContainer insight-subnav hidden"></div>
+                <div id="viewFilesBtns" class="viewBtnContainer insight-subnav hidden"></div>
+                <div id="viewBusinessRulesBtns" class="viewBtnContainer insight-subnav hidden">
+                    <button id="validatedBusinessRulesBtn" class="output-file-btn btn-secondary">Validated Business Rules</button>
+                    <button id="discardedBusinessRulesBtn" class="output-file-btn btn-secondary">Discarded Business Rules</button>
+                </div>
+            </div>
+
+            <button class="insight-back-button" id="mainViewBackBtn">
+                <span aria-hidden="true">&#8592;</span> Main Menu
+            </button>
+        </aside>
+
+        <main id="viewDisplayOutput">
+            <header class="insights-header">
+                <nav class="insight-breadcrumb" aria-label="Breadcrumb">
+                    <span>View Insights</span>
+                    <span class="breadcrumb-separator" aria-hidden="true">/</span>
+                    <span class="breadcrumb-current" id="insightCurrentView">Errors</span>
+                </nav>
+                <span class="session-badge"><span class="session-dot" aria-hidden="true"></span>Active session</span>
+            </header>
+            <section class="insights-panel" aria-label="Insight output">
+                <div id="viewDisplayOutputBox" role="region" aria-live="polite"></div>
+            </section>
+        </main>
     </div>
 
 

@@ -5,7 +5,9 @@
   "main": "main.js",
   "type": "commonjs",
   "scripts": {
+    "build:css": "tailwindcss -c tailwind.config.js -i ./tailwind.input.css -o ./tailwind.css --minify",
     "start": "electron .",
+    "predist": "npm run build:css",
     "dist": "electron-builder build --win"
   },
   "repository": {
@@ -16,7 +18,8 @@
   "devDependencies": {
     "electron": "^42.4.0",
     "electron-builder": "^26.15.3",
-    "electron-reloader": "^1.2.3"
+    "electron-reloader": "^1.2.3",
+    "tailwindcss": "^3.4.17"
   },
   "dependencies": {
     "dotenv": "^17.4.2"
