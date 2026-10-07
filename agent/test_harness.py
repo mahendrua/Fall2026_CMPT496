@@ -369,6 +369,12 @@ def project_dir_for(codebase_path, codebase_name):
     return str(output_root / f"{codebase_name}.Tests")
 
 
+def artifacts_dir_for(test_dir):
+    """Keep SDK intermediates beside, not beneath, the generated source project."""
+    project_path = Path(test_dir).resolve()
+    return str(project_path.with_name(f"{project_path.name}.artifacts"))
+
+
 def target_project_for(codebase_path, codebase_name):
     """Find the primary non-test project referenced by generated tests."""
     source_path = Path(codebase_path).resolve()
@@ -405,6 +411,7 @@ _NO_CENTRAL_PACKAGES = (
     "<Project>\n"
     "  <PropertyGroup>\n"
     "    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>\n"
+    "    <DefaultItemExcludes>$(DefaultItemExcludes);**/artifacts/**</DefaultItemExcludes>\n"
     "  </PropertyGroup>\n"
     "</Project>\n"
 )
@@ -550,7 +557,7 @@ def build(test_dir):
         result = subprocess.run(
             [
                 "dotnet", "build", test_dir, "-nologo",
-                "--artifacts-path", os.path.join(test_dir, "artifacts"),
+                "--artifacts-path", artifacts_dir_for(test_dir),
             ],
             capture_output=True,
             text=True,
@@ -618,7 +625,7 @@ def run_tests(test_dir, namespace, prefix, results_dir, report_name):
             [
                 "dotnet", "test", test_dir,
                 "--no-build",
-                "--artifacts-path", os.path.join(test_dir, "artifacts"),
+                "--artifacts-path", artifacts_dir_for(test_dir),
                 "--filter", f"FullyQualifiedName~{namespace}.{prefix}_",
                 "--logger", f"html;LogFileName={report_name}",
                 "--logger", "console;verbosity=normal",

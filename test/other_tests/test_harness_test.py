@@ -11,6 +11,7 @@ from agent.test_harness import (
     MAX_TEST_CHARS,
     TestCase,
     TestRun,
+    artifacts_dir_for,
     clean_test,
     ensure_test_project,
     make_cases,
@@ -180,8 +181,43 @@ def test_generated_project_is_external_and_references_the_primary_project(monkey
     references = generated_project.findall(".//ProjectReference")
     assert [reference.get("Include") for reference in references] == [str(target_project.resolve())]
     assert generated_project.find(".//PackageReference[@Include='xunit']") is not None
+    isolation_props = ET.parse(output_dir / "Directory.Build.props").getroot()
+    excludes = isolation_props.findtext(".//DefaultItemExcludes")
+    assert "**/artifacts/**" in excludes
     assert {path.relative_to(codebase) for path in codebase.rglob("*") if path.is_file()} == original_files
     assert "system temp" in str(output_dir)
+
+
+def test_build_and_test_keep_artifacts_outside_the_project(monkeypatch, tmp_path):
+    import agent.test_harness as harness
+
+    test_dir = tmp_path / "ConsoleTables.Tests"
+    test_dir.mkdir()
+    artifacts_dir = artifacts_dir_for(test_dir)
+    assert not Path(artifacts_dir).is_relative_to(test_dir)
+
+    commands = []
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return Result()
+
+    monkeypatch.setattr(harness.subprocess, "run", run)
+
+    assert harness.build(str(test_dir)) == ({}, [])
+    harness.run_tests(
+        str(test_dir), "ConsoleTables.Tests", "UT", str(tmp_path / "reports"), "unit.html"
+    )
+
+    assert [command[command.index("--artifacts-path") + 1] for command in commands] == [
+        artifacts_dir,
+        artifacts_dir,
+    ]
 
 
 def test_build_errors_are_split_by_test_file():
