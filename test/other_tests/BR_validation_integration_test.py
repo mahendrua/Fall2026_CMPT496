@@ -16,6 +16,7 @@ import pytest
 
 import agent.BR_agent as br_agent_module
 import backend.commands as commands_module
+from backend.dispatcher import CommandDispatcher
 from agent.BR_agent import BRAgent
 from agent.BR_input_loader import load_rule_candidates, merge_rule_candidates
 from agent.structured_output.BR_output import (
@@ -66,7 +67,10 @@ class FakeStructuredLLM:
             return reply
         rule_text = prompt.split("\nRule: ", 1)[1].split("\n", 1)[0]
         self.llm.validated_texts.append(rule_text)
-        return self.llm.decide(rule_text)
+        reply = self.llm.decide(rule_text)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
 
 
 class FakeLLM:
@@ -260,6 +264,69 @@ def test_nested_and_root_directories_are_grouped_separately(env):
     }
 
 
+def test_real_format_file_keys_merge_with_matching_folder_rule(env):
+    # FileSummaryAgent keys rules by the LLM-written path (often just the file name);
+    # source_file holds the real path, as in the outputs under agent/file_summary_agent_output.
+    real = str(env.root / "src" / "Order.cs")
+    write_json(env.file_json, {"Order.cs": [{"rule": "Orders need a customer.", "source_file": real}]})
+    write_json(env.dir_json, dir_rules(env.root, {"src": (["Orders need a customer."], [])}))
+
+    assert env.commands.validate_business_rules(str(env.root))["success"]
+
+    assert env.llm.validated_texts == ["Orders need a customer."]
+    (rule,) = read_outputs(env)[0]
+    assert rule["source_directory"] == "src"
+    assert rule["source_file_paths"] == ["src/Order.cs"]
+    assert records(rule) == [("file", ["src/Order.cs"]), ("directory_observed", [])]
+
+
+def test_dispatcher_route_with_ui_arguments(env):
+    dispatcher = CommandDispatcher()
+    assert dispatcher.routes["validate_business_rules"].__func__ is commands_module.Commands.validate_business_rules
+
+    # Point the route at the test Commands (temporary app dir) and send what the UI sends.
+    dispatcher.commands = env.commands
+    dispatcher.error_log = []
+    dispatcher.routes["validate_business_rules"] = env.commands.validate_business_rules
+    write_json(env.dir_json, dir_rules(env.root, {".": (["Folder rule."], [])}))
+
+    result = dispatcher.dispatch("validate_business_rules", request_id="r1", codebase=str(env.root))
+
+    assert result["success"] and result["request_id"] == "r1"
+    assert env.llm.validated_texts == ["Folder rule."]
+
+
+# ---------------------------------------------------------
+# Every validator outcome keeps provenance
+# ---------------------------------------------------------
+
+def test_final_pass_discard_keeps_provenance(env):
+    env.llm.decide = lambda text: ValidatorOutput(decision="need_more_context")
+    write_json(env.dir_json, dir_rules(env.root, {"src": ([], ["Inference: Needs more code."])}))
+
+    assert env.commands.validate_business_rules(str(env.root))["success"]
+
+    assert env.llm.validated_texts == ["Inference: Needs more code."] * 2   # first pass + final pass
+    validated, discarded = read_outputs(env)
+    assert validated == []
+    (rule,) = discarded
+    assert rule["reason"] == "Insufficient evidence after maximum context retrieval."
+    assert rule["source_directory"] == "src"
+    assert records(rule) == [("directory_inferred", [])]
+
+
+def test_validator_error_discard_keeps_sources_and_provenance(env):
+    env.llm.decide = lambda text: RuntimeError("model unavailable")
+    write_json(env.file_json, file_rules(env.root, {"src/A.cs": ["Rule A."]}))
+
+    assert env.commands.validate_business_rules(str(env.root))["success"]
+
+    (rule,) = read_outputs(env)[1]
+    assert rule["reason"].startswith("Validation failed with error: model unavailable")
+    assert rule["source_file_paths"] == ["src/A.cs"]
+    assert records(rule) == [("file", ["src/A.cs"])]
+
+
 # ---------------------------------------------------------
 # Provenance through semantic condensation
 # ---------------------------------------------------------
@@ -441,6 +508,44 @@ def test_outputs_parse_with_downstream_models(env):
         assert BRValidatedRule.model_validate(raw).model_dump() == raw
     for raw in discarded:
         assert DiscardedRule.model_validate(raw).model_dump() == raw
+
+
+class FakeTestRun:
+    def message(self):
+        return "ok"
+
+    def summary(self):
+        return {}
+
+    def needs_attention(self):
+        return False
+
+
+def test_unit_and_integration_test_commands_read_validation_output(env, monkeypatch):
+    received = {}
+
+    def fake_agent(name):
+        class Agent:
+            def run(self, rules, codebase_name, codebase_path):
+                received[name] = rules
+                return {"test_run": FakeTestRun()}
+        return Agent
+
+    monkeypatch.setattr(commands_module, "UTAgent", fake_agent("unit"))
+    monkeypatch.setattr(commands_module, "ITAgent", fake_agent("integration"))
+    write_json(env.file_json, file_rules(env.root, {"src/A.cs": ["File rule."]}))
+    write_json(env.dir_json, dir_rules(env.root, {".": (["Folder rule."], [])}))
+    assert env.commands.validate_business_rules(str(env.root))["success"]
+    folder_id = by_rule(read_outputs(env)[0])["Folder rule."]["id"]
+
+    assert env.commands.generate_unit_tests(str(env.root), [])["success"]
+    assert env.commands.generate_integration_tests(str(env.root), [folder_id])["success"]
+
+    unit = {r.rule: r for r in received["unit"]}
+    assert set(unit) == {"File rule.", "Folder rule."}
+    assert [(p.origin, p.source_file_paths) for p in unit["Folder rule."].provenance] == [("directory_observed", [])]
+    assert [(p.origin, p.source_file_paths) for p in unit["File rule."].provenance] == [("file", ["src/A.cs"])]
+    assert [r.rule for r in received["integration"]] == ["Folder rule."]
 
 
 def test_older_outputs_without_provenance_still_parse():
