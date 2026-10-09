@@ -96,6 +96,60 @@ Flags:
 Notes:
 - Run the command from the project root so the default input path resolves correctly.
 
+## Verifying combined business rule validation (US-028)
+
+Business rule validation reads both file-level and folder-level rules:
+
+| Input | Written by | Path |
+|---|---|---|
+| File-level rules | Create JSON Summaries | `agent/file_summary_agent_output/<codebase>/business_rules/business_rules.json` |
+| Folder-level rules (`observed_rules`, `inferred_rules`) | Create Directory Summaries & Business Rules | `agent/directory_agent_output/<codebase>/business_rules/business_rules.json` |
+
+`validate_business_rules` loads both, merges exact duplicates (same folder, same text apart from extra spaces), and sends the result to the BR agent. Results are written to `agent/BR_agent_output/<codebase>/validated_rules.json` and `discarded_rules.json`. Each rule lists its `source_directory` (`.` is the codebase root), `source_file_paths`, and `provenance`: one entry per origin (`file`, `directory_observed` or `directory_inferred`) with that origin's source files. Folder rules have no source files.
+
+### Offline tests (no API key, AI calls or vector database)
+
+With the virtual environment active (see Setup Instructions), install pytest if needed and run from the project root:
+
+```powershell
+pip install pytest
+python -m pytest test/other_tests/BR_input_loader_test.py test/other_tests/BR_rule_dedup_test.py test/other_tests/BR_validation_integration_test.py
+```
+
+These use temporary files and a fake LLM and vector store. They check loading, path handling, duplicate merging, folder grouping, provenance through condensation and validation, error handling, the full pipeline call path, and the unit/integration test commands reading the results. They do not show how a real model condenses or validates rules.
+
+### Manual check in the app (uses live AI calls)
+
+The first three steps send code to the configured AI model and use API tokens.
+
+1. Run `npm.cmd start`, choose **Run Operations** (it needs a key saved under **Manage API Keys**), pick the codebase with 📂 and click **Submit**.
+2. Click **Create Code Database**, then **Create JSON Summaries**, then **Create Summary Database from JSON**, then **Create Directory Summaries & Business Rules**. Both `business_rules.json` files above should now exist.
+3. Click **Business Rule Validation**, then **Run All Business Rules**.
+4. Choose **View Insights**, then **Business Rules**, then **Validated Business Rules** and **Discarded Business Rules**.
+5. Confirm folder provenance: rules from the folder output have `provenance` entries with origin `directory_observed` or `directory_inferred`, `source_file_paths: []`, and the folder's `source_directory` (`.` for the codebase root). A folder rule may be discarded; it must not be missing from both files.
+6. Confirm duplicate handling: find a rule text that appears in both the file-level output and the folder-level output for the same folder. It appears once in the results, with both a `file` and a `directory_observed`/`directory_inferred` provenance entry. The same text in two different folders stays as two rules.
+
+**Full Codebase Analysis Pipeline** runs the same validation step after the summaries, and its Complete screen shows any missing-input warning.
+
+### Expected behaviour for missing, empty and malformed inputs
+
+| Situation | Result |
+|---|---|
+| One default input file is missing | The other is validated; the step finishes with a warning naming the missing file |
+| Both default input files are missing | The step fails: "No business rule inputs found…" with both expected paths |
+| A custom `rules_path` or `directory_rules_path` does not exist | The step fails, naming that path. A custom file-level path does not add the default folder rules |
+| A file contains `{}` or only empty rule lists | `validated_rules.json` and `discarded_rules.json` are written as `[]`, with no AI calls |
+| Malformed JSON or a wrong field | The step fails, naming the file and the entry (and line/column for malformed JSON) |
+
+To try these without touching real outputs, copy the codebase's two `business_rules.json` files somewhere safe first and restore them afterwards, or run the offline tests above, which cover every row.
+
+### Short demo
+
+1. Run the offline tests and show them passing.
+2. In the app, run **Business Rule Validation** → **Run All Business Rules** on a codebase that already has both rule files.
+3. Open **Discarded Business Rules** and **Validated Business Rules** and point out a `directory_inferred` rule, a root (`.`) folder rule, and a rule with both `file` and folder provenance.
+4. Rename the folder-level `business_rules.json`, run validation again, and show the missing-input warning; then rename it back.
+
 ## Packaging the backend using Pyinstaller
 
 Package backend using main.spec found in releases. Copy and paste any needed programs in before going to the next step. Stuff like plantuml.jar

@@ -191,15 +191,16 @@ def merge_rule_candidates(group: list[RuleCandidate], rule: str = None) -> RuleC
 def _load_file_rules(path: Path, root: dict) -> list[RuleCandidate]:
     """
     @brief Converts file-level output ({file_path: [BusinessRule, ...]}) into candidates.
+    @details FileSummaryAgent keys this output by the path the LLM wrote back, which may be
+             shortened (e.g. just the file name). Each rule's source_file is set by agent code
+             from the real path, so it decides the rule's file and directory when present; the
+             key is only used for rules without a source_file.
     """
     raw = _read_json_object(path)
     candidates = []
     for file_key, rules in raw.items():
         if not isinstance(rules, list):
             raise RuleInputError(f"{path}: entry {file_key!r} must be a list of rules, got {type(rules).__name__}.")
-
-        rel_file = normalize_rule_path(file_key, root)
-        source_dir = posixpath.dirname(rel_file) or "."
 
         for index, item in enumerate(rules):
             location = f"{path}: entry {file_key!r}, rule #{index}"
@@ -211,16 +212,12 @@ def _load_file_rules(path: Path, root: dict) -> list[RuleCandidate]:
                 raise RuleInputError(f"{location}: {_describe(e)}") from e
             _require_text(rule.rule, location)
 
-            source_files = [rel_file]
-            if rule.source_file:
-                rel_source = normalize_rule_path(rule.source_file, root)
-                if rel_source not in source_files:
-                    source_files.append(rel_source)
+            rel_file = normalize_rule_path(rule.source_file or file_key, root)
 
             candidates.append(RuleCandidate(
                 rule=rule.rule,
-                source_directory=source_dir,
-                source_file_paths=source_files,
+                source_directory=posixpath.dirname(rel_file) or ".",
+                source_file_paths=[rel_file],
                 origin="file",
             ))
     return candidates

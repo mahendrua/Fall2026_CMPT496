@@ -92,15 +92,24 @@ class DiscardedRule(BaseModel):
     provenance: list[RuleProvenance] = Field(default_factory=list, description="Origins of the input rules this rule was condensed from, with their source files.")
 
 
+class CondenserRuleOutput(BaseModel):
+    """
+    @brief One condensed rule returned by the condenser LLM, with the input rules it covers.
+    """
+    model_config = ConfigDict(extra="forbid")
+    rule: str = Field(..., description="The condensed business rule statement.")
+    source_rule_numbers: list[int] = Field(..., description="Numbers of the input rules (from the numbered list) that this condensed rule covers. A rule kept as-is lists only its own number.")
+
+
 class CondenserOutput(BaseModel):
     """
     @brief Structured LLM output from the condenser node.
-    @details Returns condensed rule strings for a single directory group.
-    The condenser node is responsible for wrapping these in CondensedRule
-    objects with IDs and provenance metadata.
+    @details Returns condensed rules for a single directory group, each with the
+    numbers of the input rules it covers. The condenser node uses these numbers
+    to carry each input's provenance into the CondensedRule objects it builds.
     """
     model_config = ConfigDict(extra="forbid")
-    condensed_rules: list[str] = Field(..., description="List of condensed/deduplicated business rule statements for a single directory group.")
+    condensed_rules: list[CondenserRuleOutput] = Field(..., description="List of condensed/deduplicated business rules for a single directory group. Every input rule number must appear in at least one entry.")
 
 
 class ValidatorOutput(BaseModel):
