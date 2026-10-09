@@ -12,7 +12,13 @@ import json
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 
-from backend.token_usage import RUN_LOG_NAME, RunLog, record_usage, track_command
+from backend.token_usage import (
+    RUN_HISTORY_DIR,
+    RUN_LOG_NAME,
+    RunLog,
+    record_usage,
+    track_command,
+)
 
 
 def reply(input_tokens, answer_tokens, thinking_tokens=0):
@@ -86,3 +92,28 @@ def test_failed_call_has_no_thinking_and_totals_still_add_up(tmp_path):
     log = run.to_dict()
     assert log["calls"][0]["thinking_tokens"] is None
     assert log["totals"]["thinking_tokens"] == 0
+
+
+def test_every_run_keeps_its_own_log(tmp_path):
+    for _ in range(2):
+        with track_command(tmp_path, "ConsoleTables", "full_pipeline"):
+            with track_command(tmp_path, "ConsoleTables", "generate_file_summaries"):
+                with record_usage("generate_file_summaries"):
+                    fake_model(reply(100, 20)).invoke("summarize")
+
+    kept = list((tmp_path / RUN_HISTORY_DIR).glob("ConsoleTables_*.json"))
+    assert len(kept) == 2
+
+    # last_run_log.json is still the newest run, for the AI Usage screen,
+    # and its copy is word for word the same.
+    latest = json.loads((tmp_path / RUN_LOG_NAME).read_text(encoding="utf-8"))
+    copy = tmp_path / RUN_HISTORY_DIR / f"ConsoleTables_{latest['run_id']}.json"
+    assert json.loads(copy.read_text(encoding="utf-8")) == latest
+
+
+def test_command_without_ai_calls_keeps_no_log(tmp_path):
+    with track_command(tmp_path, "ConsoleTables", "estimate_tokens"):
+        pass
+
+    assert not (tmp_path / RUN_HISTORY_DIR).exists()
+    assert not (tmp_path / RUN_LOG_NAME).exists()

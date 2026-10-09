@@ -43,6 +43,10 @@ USAGE_LOG_NAME = "token_usage_log.json"
 # totals the calibration reads.
 RUN_LOG_NAME = "last_run_log.json"
 
+# Every run is also kept here as <codebase>_<run id>.json, since the next run
+# replaces last_run_log.json.
+RUN_HISTORY_DIR = "run_logs"
+
 
 def _read_usage(response):
     """
@@ -392,7 +396,8 @@ def status_code(exc):
 
 class RunLog:
     """
-    Everything one run did, saved to last_run_log.json as it goes.
+    Everything one run did, saved to last_run_log.json as it goes, with a
+    copy of its own in run_logs/.
     """
 
     def __init__(self, app_dir, codebase_name, command):
@@ -400,6 +405,10 @@ class RunLog:
 
         self.path = Path(app_dir) / RUN_LOG_NAME
         self.run_id = f"{now:%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
+        self.history_path = (
+            Path(app_dir) / RUN_HISTORY_DIR
+            / f"{codebase_name or command}_{self.run_id}.json"
+        )
         self.codebase = codebase_name
         self.command = command
         self.started_at = _stamp(now)
@@ -565,12 +574,21 @@ class RunLog:
             if not self._worth_saving():
                 return
 
-            # Write then swap, so a crash mid-write never leaves half a file.
-            tmp = self.path.with_name(self.path.name + ".tmp")
-            tmp.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-            os.replace(tmp, self.path)
+            text = json.dumps(self.to_dict(), indent=2)
         except Exception:
-            pass
+            return
+
+        # Separately, so one failing write does not cost the other.
+        for path in (self.path, self.history_path):
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+
+                # Write then swap, so a crash mid-write never leaves half a file.
+                tmp = path.with_name(path.name + ".tmp")
+                tmp.write_text(text, encoding="utf-8")
+                os.replace(tmp, path)
+            except Exception:
+                pass
 
 
 def record_wait(reason, seconds):
