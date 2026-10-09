@@ -23,8 +23,9 @@ let selectedRules = [];
 // Backend response buffer
 let backendOutputBuffer = "";
 
-//loadingscreen 
-let activeCommand = null;
+//loadingscreen
+const commandRequests = new window.CommandRequestTracker();
+let activeRequestId = null;
 let pipelineMode = false;
 
 let totalSteps = 1;
@@ -480,14 +481,38 @@ function updateStepProgressBar(percent){
 
 async function runBackendCommand(command,args={}){
 
+    const request = commandRequests.begin(command);
+    activeRequestId = request.requestId;
 
-    activeCommand = command;
+    try {
+        const acknowledgement = await window.electronAPI.executeCommand(
+            command,
+            args,
+            request.requestId
+        );
 
+        if (acknowledgement?.accepted === true && acknowledgement.request_id === request.requestId) {
+            commandRequests.accept(request.requestId);
+        } else {
+            handleBackendResponse({
+                ...acknowledgement,
+                request_id: request.requestId,
+                command,
+                success: false,
+                error: acknowledgement?.error || "The backend did not accept the command."
+            });
+        }
 
-    return await window.electronAPI.executeCommand(
-        command,
-        args
-    );
+        return acknowledgement;
+    } catch (error) {
+        handleBackendResponse({
+            request_id: request.requestId,
+            command,
+            success: false,
+            error: error.message || "Could not send the command to the backend."
+        });
+        return { request_id: request.requestId, success: false, error: error.message };
+    }
 
 }
 
@@ -1526,13 +1551,15 @@ async function loadValidatedRulesSelection() {
 
 //loading complete button
 document.getElementById("loadingCancelBtn").addEventListener("click", async () => {
-    if (!activeCommand) return;
+    const request = commandRequests.get(activeRequestId);
+    if (!request) return;
 
     const cancelButton = document.getElementById("loadingCancelBtn");
-    const cancelledCommand = activeCommand;
+    const cancelledRequestId = request.requestId;
+    const cancelledCommand = request.command;
     cancelButton.disabled = true;
 
-    const response = await window.electronAPI.cancelCommand();
+    const response = await window.electronAPI.cancelCommand(cancelledRequestId);
 
     if (!response?.success) {
         cancelButton.disabled = false;
@@ -1544,12 +1571,14 @@ document.getElementById("loadingCancelBtn").addEventListener("click", async () =
     errorsMade = true;
 
     await window.electronAPI.recordErrorLog({
+        request_id: cancelledRequestId,
         command: cancelledCommand,
         message: cancellationMessage,
         code: "CANCELLED"
     });
 
-    activeCommand = null;
+    commandRequests.fail(cancelledRequestId, cancellationMessage, { cancelled: true });
+    if (activeRequestId === cancelledRequestId) activeRequestId = null;
     hideLoading();
     showPage("homePage");
 });
@@ -2294,12 +2323,34 @@ document.getElementById("browseCodebaseBtn")
 
 window.electronAPI.onBackendResponse(async (response) => {
 
-    console.log("ACTIVE:", activeCommand);
+    console.log("ACTIVE REQUEST:", activeRequestId);
     console.log("RESPONSE:", response);
 
 
     if (!response) {
         return;
+    }
+
+    let activeCommand = null;
+    if (response.type !== "file-preview" && response.type !== "files") {
+        let correlated;
+
+        if (typeof response.request_id !== "string" || !response.request_id) {
+            const failures = commandRequests.failAll("Malformed backend response: missing request ID.");
+            correlated = failures.find(item => item.request.requestId === activeRequestId);
+        } else {
+            correlated = commandRequests.handle(response);
+        }
+
+        if (!correlated?.matched) return;
+        if (correlated.request.requestId !== activeRequestId) return;
+        if (correlated.terminal) {
+            activeCommand = correlated.request.command;
+            activeRequestId = null;
+            response = correlated.response;
+        } else if (response.accepted === true) {
+            return;
+        }
     }
 
 
@@ -2478,6 +2529,10 @@ window.electronAPI.onBackendResponse(async (response) => {
     // ----------------------------------------
     // Errors
     // ----------------------------------------
+    if (response.cancelled) {
+        return;
+    }
+
     if (!response.success) {
 
         errorsMade = true;

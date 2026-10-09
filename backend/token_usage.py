@@ -35,6 +35,7 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration
 from langchain_core.tracers.context import register_configure_hook
+from backend.progress_logging import current_request_id
 
 
 USAGE_LOG_NAME = "token_usage_log.json"
@@ -290,14 +291,18 @@ def emit_live_total(calls, input_tokens, output_tokens):
     Its own message type, so the renderer can update a counter without it
     being mistaken for a progress step.
     """
+    data = {
+        "type": "token_usage",
+        "calls": calls,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+    }
+    request_id = current_request_id()
+    if request_id is not None:
+        data["request_id"] = request_id
     print(
-        json.dumps({
-            "type": "token_usage",
-            "calls": calls,
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-            "total_tokens": input_tokens + output_tokens,
-        }),
+        json.dumps(data),
         flush=True,
     )
 
@@ -307,14 +312,18 @@ def emit_stage_total(summary):
     Announce one finished stage's usage, so the frontend can build up a
     per-stage breakdown while the pipeline is still running.
     """
+    data = {
+        "type": "token_usage_stage",
+        "stage": summary["stage"],
+        "calls": summary["calls"],
+        "input_tokens": summary["input_tokens"],
+        "output_tokens": summary["output_tokens"],
+    }
+    request_id = current_request_id()
+    if request_id is not None:
+        data["request_id"] = request_id
     print(
-        json.dumps({
-            "type": "token_usage_stage",
-            "stage": summary["stage"],
-            "calls": summary["calls"],
-            "input_tokens": summary["input_tokens"],
-            "output_tokens": summary["output_tokens"],
-        }),
+        json.dumps(data),
         flush=True,
     )
 

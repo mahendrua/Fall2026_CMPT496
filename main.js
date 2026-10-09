@@ -1,13 +1,16 @@
 const { app, BrowserWindow, ipcMain, shell, dialog, Menu } = require('electron');
 const { spawn } = require('child_process');
+const { randomUUID } = require('node:crypto');
 const path = require('path');
 const fs = require("fs");
 const dotenv = require("dotenv");
+const { CommandRequestTracker } = require("./command_requests");
 
 
 let pythonProcess = null;
 let mainWindow = null;
 let restartBackendAfterCancel = false;
+const backendRequests = new CommandRequestTracker();
 // Directory the backend actually writes its output to (userData when packaged).
 let backendOutputDir = __dirname;
 // ----------------------------------------------------
@@ -597,6 +600,7 @@ ipcMain.handle(
 
         errors.push({
             time: new Date().toISOString().slice(0, 19),
+            ...(error?.request_id ? { request_id: error.request_id } : {}),
             command: error?.command || "unknown",
             code: error?.code || null,
             message: error?.message || "Unknown error"
@@ -634,25 +638,80 @@ ipcMain.handle(
 // SEND COMMAND TO PYTHON BACKEND
 // ----------------------------------------------------
 
+function publishBackendResponse(response) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("backend-response", response);
+    }
+}
+
+function failPendingBackendRequests(error, extra = {}) {
+    for (const failure of backendRequests.failAll(error, extra)) {
+        publishBackendResponse(failure.response);
+    }
+}
+
+function failOldestBackendRequest(error) {
+    const request = backendRequests.firstPending();
+    if (!request) return;
+
+    const failure = backendRequests.fail(request.requestId, error);
+    if (failure) publishBackendResponse(failure.response);
+}
+
+function handleBackendLine(line) {
+    let response;
+    try {
+        response = JSON.parse(line);
+    } catch (error) {
+        console.error("Backend response parse error:", error.message);
+        failOldestBackendRequest("Malformed response from Python backend.");
+        return;
+    }
+
+    if (!response || typeof response !== "object" || Array.isArray(response)) {
+        failOldestBackendRequest("Malformed response from Python backend.");
+        return;
+    }
+
+    if (typeof response.request_id !== "string" || !response.request_id) {
+        failOldestBackendRequest("Backend response did not include a request ID.");
+        return;
+    }
+
+    const result = backendRequests.handle(response);
+    if (!result.matched) return;
+    publishBackendResponse(result.response);
+}
+
 ipcMain.handle(
     "execute-command",
     async (event, request) => {
 
+        const requestId = typeof request?.request_id === "string" && request.request_id
+            ? request.request_id
+            : randomUUID();
 
-        if (!pythonProcess) {
+        if (!pythonProcess || !pythonProcess.stdin?.writable) {
 
             return {
-                success:false,
-                error:"Python backend is not running"
+                request_id: requestId,
+                success: false,
+                error: "Python backend is not running"
             };
 
         }
 
+        try {
+            backendRequests.register(requestId, request.command);
+        } catch (error) {
+            return { request_id: requestId, success: false, error: error.message };
+        }
 
         const payload =
             JSON.stringify({
 
                 type:"command",
+                request_id: requestId,
 
                 command:
                     request.command,
@@ -662,15 +721,22 @@ ipcMain.handle(
 
             });
 
-
-
-        pythonProcess.stdin.write(
-            payload + "\n"
-        );
+        try {
+            pythonProcess.stdin.write(payload + "\n", (error) => {
+                if (!error) return;
+                const failure = backendRequests.fail(requestId, error.message);
+                if (failure) publishBackendResponse(failure.response);
+            });
+        } catch (error) {
+            const failure = backendRequests.fail(requestId, error.message);
+            if (failure) publishBackendResponse(failure.response);
+            return { request_id: requestId, accepted: false, success: false, error: error.message };
+        }
 
 
         return {
-            success:true
+            request_id: requestId,
+            accepted: true
         };
 
     }
@@ -678,16 +744,20 @@ ipcMain.handle(
 
 ipcMain.handle(
     "cancel-command",
-    async () => {
+    async (event, requestId) => {
         if (!pythonProcess) {
-            return { success: false, error: "No backend command is running" };
+            return { request_id: requestId, success: false, error: "No backend command is running" };
+        }
+
+        if (requestId && !backendRequests.get(requestId)) {
+            return { request_id: requestId, success: false, error: "The command is no longer running" };
         }
 
         const processToCancel = pythonProcess;
         restartBackendAfterCancel = true;
 
         return new Promise((resolve) => {
-            processToCancel.once("close", () => resolve({ success: true }));
+            processToCancel.once("close", () => resolve({ success: true, request_id: requestId }));
             processToCancel.kill();
         });
     }
@@ -1179,27 +1249,7 @@ function startPythonBackend(preserveErrors = false) {
                 continue;
 
 
-            try {
-
-                const parsed = JSON.parse(line);
-
-                mainWindow.webContents.send(
-                    "backend-response",
-                    parsed
-                );
-
-
-            }
-            catch(error) {
-
-                console.log(
-                    "Backend parse error:",
-                    error.message
-                );
-
-                console.log(line);
-
-            }
+            handleBackendLine(line);
 
         }
 
@@ -1216,6 +1266,7 @@ function startPythonBackend(preserveErrors = false) {
 
         console.error("Failed to start backend:");
         console.error(err);
+        failPendingBackendRequests(`Python backend failed: ${err.message}`);
 
     });
 
@@ -1225,22 +1276,13 @@ function startPythonBackend(preserveErrors = false) {
 
         if (restartBackendAfterCancel) {
             restartBackendAfterCancel = false;
+            failPendingBackendRequests("Operation cancelled by user.", { cancelled: true });
             pythonProcess = null;
             startPythonBackend(true);
             return;
         }
 
-        if (code !== 0 && mainWindow && !mainWindow.isDestroyed()) {
-
-            mainWindow.webContents.send(
-                "backend-response",
-                {
-                    success: false,
-                    error: `Backend exited unexpectedly (code ${code}).`
-                }
-            );
-
-        }
+        failPendingBackendRequests(`Backend exited unexpectedly (code ${code}).`);
 
         pythonProcess = null;
 
