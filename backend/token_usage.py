@@ -76,6 +76,19 @@ def _read_usage(response):
     return usage, model_name
 
 
+def _thinking_tokens(usage):
+    """
+    Tokens the model spent thinking before it answered.
+
+    Google and OpenAI already count these inside output_tokens and list them
+    again under output_token_details, so this is a part of the output, never
+    added to the total. Providers that do not split it out (e.g. Anthropic),
+    and calls that did not think, give 0.
+    """
+    details = usage.get("output_token_details") or {}
+    return details.get("reasoning", 0) or 0
+
+
 class UsageRecorder(BaseCallbackHandler):
     """
     Accumulates token usage across every chat model call in its scope.
@@ -92,6 +105,7 @@ class UsageRecorder(BaseCallbackHandler):
         self.calls_missing_usage = 0
         self.input_tokens = 0
         self.output_tokens = 0
+        self.thinking_tokens = 0
         self.models = set()
         self.live = False
         self._last_emit = 0.0
@@ -123,6 +137,7 @@ class UsageRecorder(BaseCallbackHandler):
 
             self.input_tokens += usage.get("input_tokens", 0) or 0
             self.output_tokens += usage.get("output_tokens", 0) or 0
+            self.thinking_tokens += _thinking_tokens(usage)
 
             should_emit = (
                 self.live
@@ -147,6 +162,7 @@ class UsageRecorder(BaseCallbackHandler):
             "calls_missing_usage": self.calls_missing_usage,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
+            "thinking_tokens": self.thinking_tokens,
             "total_tokens": self.input_tokens + self.output_tokens,
             "models": sorted(self.models),
             "tokens_per_call": (
@@ -456,6 +472,7 @@ class RunLog:
             "model": None,
             "input_tokens": None,
             "output_tokens": None,
+            "thinking_tokens": None,
         }
 
         if error is not None:
@@ -471,6 +488,7 @@ class RunLog:
                 if usage:
                     record["input_tokens"] = usage.get("input_tokens", 0) or 0
                     record["output_tokens"] = usage.get("output_tokens", 0) or 0
+                    record["thinking_tokens"] = _thinking_tokens(usage)
 
         with self._lock:
             self.calls.append(record)
@@ -518,6 +536,10 @@ class RunLog:
                 "failed_calls": sum(c["status"] == "failed" for c in call_subset),
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
+                # Part of output_tokens, not extra.
+                "thinking_tokens": sum(
+                    c["thinking_tokens"] or 0 for c in call_subset
+                ),
                 "total_tokens": input_tokens + output_tokens,
                 "waits": len(wait_subset),
                 "waited_seconds": round(sum(w["seconds"] for w in wait_subset), 1),
