@@ -25,6 +25,7 @@ import os
 import threading
 import time
 import uuid
+from collections import Counter
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
@@ -176,6 +177,16 @@ class UsageRecorder(BaseCallbackHandler):
         }
 
 
+def _step(callback_kwargs):
+    """
+    Which step of an agent made a call, e.g. "judgement" or "refinement".
+
+    LangGraph passes each node's name to callbacks as metadata, so this needs
+    no change to the agents. None for a call made outside a graph.
+    """
+    return (callback_kwargs.get("metadata") or {}).get("langgraph_node")
+
+
 class _Fanout(BaseCallbackHandler):
     """
     Forwards every model call to all recorders currently in scope.
@@ -198,11 +209,11 @@ class _Fanout(BaseCallbackHandler):
 
     def on_chat_model_start(self, serialized, messages, *, run_id, **kwargs):
         if self.run_log:
-            self.run_log.call_started(run_id)
+            self.run_log.call_started(run_id, _step(kwargs))
 
     def on_llm_start(self, serialized, prompts, *, run_id, **kwargs):
         if self.run_log:
-            self.run_log.call_started(run_id)
+            self.run_log.call_started(run_id, _step(kwargs))
 
     def on_llm_end(self, response, **kwargs):
         for recorder in self.recorders:
@@ -463,9 +474,11 @@ class RunLog:
 
     # --- AI calls -----------------------------------------
 
-    def call_started(self, call_id):
+    def call_started(self, call_id, step=None):
         with self._lock:
-            self._open_calls[call_id] = (datetime.now(), time.perf_counter())
+            self._open_calls[call_id] = (
+                datetime.now(), time.perf_counter(), step
+            )
 
     def call_ended(self, call_id, stage, response=None, error=None):
         with self._lock:
@@ -473,6 +486,7 @@ class RunLog:
 
         record = {
             "stage": stage or self.command,
+            "step": started[2] if started else None,
             "started_at": _stamp(started[0]) if started else None,
             "duration_seconds": (
                 round(time.perf_counter() - started[1], 2) if started else None
@@ -550,6 +564,10 @@ class RunLog:
                     c["thinking_tokens"] or 0 for c in call_subset
                 ),
                 "total_tokens": input_tokens + output_tokens,
+                # e.g. {"judgement": 5, "refinement": 1}
+                "calls_by_step": dict(Counter(
+                    c["step"] for c in call_subset if c["step"]
+                )),
                 "waits": len(wait_subset),
                 "waited_seconds": round(sum(w["seconds"] for w in wait_subset), 1),
             }

@@ -117,3 +117,44 @@ def test_command_without_ai_calls_keeps_no_log(tmp_path):
 
     assert not (tmp_path / RUN_HISTORY_DIR).exists()
     assert not (tmp_path / RUN_LOG_NAME).exists()
+
+
+def test_each_call_is_labelled_with_the_agent_step_that_made_it(tmp_path):
+    # Shaped like directory_agent: the nodes call the model without passing
+    # any config, so the step name has to reach the log on its own.
+    from typing import TypedDict
+
+    from langgraph.graph import END, START, StateGraph
+
+    class State(TypedDict):
+        n: int
+
+    model = fake_model(reply(100, 20), reply(50, 5), reply(60, 5), reply(10, 1))
+
+    def summarizer(state):
+        model.invoke("summarize")
+        return {"n": state["n"] + 1}
+
+    def judgement(state):
+        model.invoke("judge")
+        model.invoke("judge again")
+        return {"n": state["n"] + 1}
+
+    builder = StateGraph(State)
+    builder.add_node("summarizer", summarizer)
+    builder.add_node("judgement", judgement)
+    builder.add_edge(START, "summarizer")
+    builder.add_edge("summarizer", "judgement")
+    builder.add_edge("judgement", END)
+    graph = builder.compile()
+
+    with track_command(tmp_path, "ConsoleTables", "full_pipeline"):
+        with track_command(tmp_path, "ConsoleTables", "generate_directory_summaries"):
+            with record_usage("generate_directory_summaries"):
+                graph.invoke({"n": 0})
+                model.invoke("outside any graph")
+
+    log = json.loads((tmp_path / RUN_LOG_NAME).read_text(encoding="utf-8"))
+
+    assert [call["step"] for call in log["calls"]] == ["summarizer", "judgement", "judgement", None]
+    assert log["stages"][0]["calls_by_step"] == {"summarizer": 1, "judgement": 2}
