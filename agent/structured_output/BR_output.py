@@ -7,23 +7,40 @@ and validator nodes.
 """
 
 from typing import Optional, Literal
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 
 
 RuleOrigin = Literal["file", "directory_observed", "directory_inferred"]
 
 
+class RuleProvenance(BaseModel):
+    """
+    @brief One origin of a rule candidate together with the source files known for that origin.
+    """
+    model_config = ConfigDict(extra="forbid")
+    origin: RuleOrigin = Field(..., description="Where this occurrence of the rule came from.")
+    source_file_paths: list[str] = Field(default_factory=list, description="Source file paths known for this origin, relative to the codebase root. Empty for directory-level rules.")
+
+
 class RuleCandidate(BaseModel):
     """
-    @brief Represents a single unvalidated business rule loaded from G1/G2 output.
-    @details Common input format for file-level and directory-level rules. Each
-    candidate keeps its own provenance; duplicates are not merged at this stage.
+    @brief Represents an unvalidated business rule loaded from G1/G2 output.
+    @details Common input format for file-level and directory-level rules. A
+    loaded candidate has exactly one provenance record; a candidate produced by
+    duplicate merging has one record per distinct origin/source combination.
     """
     model_config = ConfigDict(extra="forbid")
     rule: str = Field(..., description="The business rule statement as produced by G1/G2.")
     source_directory: str = Field(..., description="POSIX path of the directory this rule pertains to, relative to the codebase root ('.' for the root).")
-    source_file_paths: list[str] = Field(default_factory=list, description="Known source file paths, relative to the codebase root. Empty when the source files are unknown.")
-    origin: RuleOrigin = Field(..., description="Where the rule came from: file-level output, or directory-level observed/inferred rules.")
+    source_file_paths: list[str] = Field(default_factory=list, description="Known source file paths, relative to the codebase root. Empty when the source files are unknown. For merged candidates, the union across all provenance records.")
+    origin: RuleOrigin = Field(..., description="Where the rule came from: file-level output, or directory-level observed/inferred rules. For merged candidates, the origin of the first occurrence.")
+    provenance: list[RuleProvenance] = Field(default_factory=list, description="Every origin of this rule with its associated source files. Defaults to a single record built from origin and source_file_paths.")
+
+    @model_validator(mode="after")
+    def _default_provenance(self):
+        if not self.provenance:
+            self.provenance = [RuleProvenance(origin=self.origin, source_file_paths=list(self.source_file_paths))]
+        return self
 
 
 class CondensedRule(BaseModel):
