@@ -91,6 +91,7 @@ def test_run_result(test_run, **extra):
 
     return result
 
+from backend.run_report import write_run_report
 from backend.token_estimate import estimate_pipeline
 from backend.token_usage import (
     record_usage,
@@ -1059,8 +1060,25 @@ class Commands:
             return summary
 
 
-        return self._run_command(
+        result = self._run_command(
             "full_pipeline",
             task,
             individualStep=True,
         )
+
+        # US-049: one readable report for the run; the Complete screen's
+        # "Open Report" button opens it from the path in run_report.
+        # Built after _run_command so the run log is finished and the report
+        # shows the final numbers. It makes no AI calls, and a report problem
+        # only adds a warning: the run itself has already succeeded.
+        if result["success"]:
+            report = write_run_report(codebase_path, self.app_dir)
+            summary = result["result"]
+
+            if report["path"]:
+                summary["run_report"] = report["path"]
+            else:
+                note = f"The run report could not be written: {report['error']}"
+                summary["warning"] = "\n\n".join(filter(None, [summary.get("warning"), note]))
+
+        return result
