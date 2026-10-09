@@ -75,12 +75,13 @@ def load_rule_candidates(
     @details
     A path passed explicitly must exist. A path left as None falls back to the
     default output location and is optional: if only one default exists it is
-    loaded and the other is reported in missing_inputs. If no input exists at
-    all, FileNotFoundError is raised.
+    loaded and the other is reported in missing_inputs. A path passed as False
+    skips that input entirely (it is neither loaded nor reported missing). If no
+    input exists at all, FileNotFoundError is raised.
 
     @param codebase_root The selected codebase root directory.
-    @param file_rules_path File-level rules JSON (path -> list of BusinessRule dicts).
-    @param directory_rules_path Directory-level rules JSON (path -> BusinessRulesOutput dict).
+    @param file_rules_path File-level rules JSON (path -> list of BusinessRule dicts), None for the default, or False to skip.
+    @param directory_rules_path Directory-level rules JSON (path -> BusinessRulesOutput dict), None for the default, or False to skip.
     @param app_dir Application directory used to resolve default input paths.
     @return RuleInputs with the candidates and any missing optional inputs.
     @raises FileNotFoundError If an explicit input is missing, or no input exists.
@@ -93,6 +94,8 @@ def load_rule_candidates(
     found: dict[str, Path] = {}
     missing: dict[str, Path] = {}
     for kind, explicit in requested.items():
+        if explicit is False:
+            continue
         path = Path(explicit) if explicit is not None else defaults[kind]
         if path.is_file():
             found[kind] = path
@@ -102,6 +105,8 @@ def load_rule_candidates(
             missing[kind] = path
 
     if not found:
+        if not missing:
+            raise FileNotFoundError("No business rule inputs were requested.")
         raise FileNotFoundError(
             "No business rule inputs found. Expected at least one of: "
             + ", ".join(f"{kind}-level rules at {path}" for kind, path in missing.items())
@@ -146,27 +151,41 @@ def deduplicate_rule_candidates(candidates: list[RuleCandidate]) -> list[RuleCan
         key = (candidate.source_directory, " ".join(candidate.rule.split()))
         groups.setdefault(key, []).append(candidate)
 
-    merged = []
-    for group in groups.values():
-        first = group[0]
-        provenance = []
-        seen = set()
-        for candidate in group:
-            for record in candidate.provenance:
-                files = list(dict.fromkeys(record.source_file_paths))
-                record_key = (record.origin, tuple(files))
-                if record_key not in seen:
-                    seen.add(record_key)
-                    provenance.append(RuleProvenance(origin=record.origin, source_file_paths=files))
+    return [merge_rule_candidates(group) for group in groups.values()]
 
-        merged.append(RuleCandidate(
-            rule=first.rule,
-            source_directory=first.source_directory,
-            source_file_paths=list(dict.fromkeys(p for c in group for p in c.source_file_paths)),
-            origin=first.origin,
-            provenance=provenance,
-        ))
-    return merged
+
+def merge_rule_candidates(group: list[RuleCandidate], rule: str = None) -> RuleCandidate:
+    """
+    @brief Combines the provenance of several candidates into one new candidate.
+
+    @details
+    Keeps the first candidate's source_directory and origin, the union of all
+    source_file_paths, and every distinct provenance record (origin plus its
+    source files) in first-seen order. Does not decide whether the candidates
+    should be merged; callers choose the group.
+
+    @param group Non-empty list of candidates to combine.
+    @param rule Rule text for the result. Defaults to the first candidate's text.
+    @return New RuleCandidate; the inputs are not modified.
+    """
+    first = group[0]
+    provenance = []
+    seen = set()
+    for candidate in group:
+        for record in candidate.provenance:
+            files = list(dict.fromkeys(record.source_file_paths))
+            record_key = (record.origin, tuple(files))
+            if record_key not in seen:
+                seen.add(record_key)
+                provenance.append(RuleProvenance(origin=record.origin, source_file_paths=files))
+
+    return RuleCandidate(
+        rule=first.rule if rule is None else rule,
+        source_directory=first.source_directory,
+        source_file_paths=list(dict.fromkeys(p for c in group for p in c.source_file_paths)),
+        origin=first.origin,
+        provenance=provenance,
+    )
 
 
 def _load_file_rules(path: Path, root: dict) -> list[RuleCandidate]:
