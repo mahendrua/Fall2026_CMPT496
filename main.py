@@ -19,24 +19,16 @@ sys.stdout.reconfigure(
 from backend.dispatcher import CommandDispatcher
 from backend.preview_collections import CollectionPreview
 
-from backend.progress_logging import configure_progress_logging
+from backend.progress_logging import configure_progress_logging, request_scope
 
 configure_progress_logging()
 
-
 def format_response(result):
-    """
-    Ensure every backend response follows
-    the same JSON structure.
-    """
-
+    """Ensure every backend response follows the same JSON structure."""
     if isinstance(result, dict):
-
         if "success" not in result:
             result["success"] = True
-
         return result
-
 
     return {
         "success": True,
@@ -44,8 +36,6 @@ def format_response(result):
     }
 
 
-
-# ---------------------------------------------------------
 # Initialize backend services
 # ---------------------------------------------------------
 
@@ -131,67 +121,54 @@ def preview_command(action: str, **kwargs):
 
 
 if __name__ == "__main__":
-
     import json
 
     while True:
-
         line = sys.stdin.readline()
-
-
         if not line:
             break
 
-
+        request_id = None
         try:
-
             request = json.loads(line)
-
+            request_id = request.get("request_id") if isinstance(request, dict) else None
 
             if request["type"] == "command":
-
-                result = format_response(
-                    execute_command(
-                        request["command"],
-                        **request.get("args", {})
+                with request_scope(request_id):
+                    result = format_response(
+                        execute_command(
+                            request["command"],
+                            request_id=request_id,
+                            **request.get("args", {})
+                        )
                     )
-                )
-
-
+                if request_id is not None:
+                    result["request_id"] = request_id
             elif request["type"] == "preview":
-
                 result = format_response(
                     preview_command(
                         request["action"],
                         **request.get("args", {})
                     )
                 )
-
             else:
-
                 result = {
                     "success": False,
-                    "error": (
-                        f"Unknown request type: "
-                        f"{request.get('type')}"
-                    )
+                    "error": f"Unknown request type: {request.get('type')}",
+                    **({"request_id": request_id} if request_id is not None else {})
                 }
-
-
 
             print(
                 json.dumps(result, default=lambda o: list(o) if hasattr(o, '__iter__') else str(o)),
                 flush=True
             )
-
-
         except Exception as e:
-
             print(
                 json.dumps(
                     {
                         "success": False,
-                        "error": str(e)
+                        "error": str(e),
+                        **({"request_id": request_id} if request_id is not None else {})
                     },
                     default=lambda o: list(o) if hasattr(o, '__iter__') else str(o)
                 ),
