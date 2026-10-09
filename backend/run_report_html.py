@@ -186,6 +186,19 @@ aside.panel ul { padding-left: 18px; margin: 4px 0; }
   aside.panel { height: auto; min-height: 0; }
 }
 footer { max-width: 1180px; margin: 0 auto; padding: 0 20px 30px; font-size: 13px; color: var(--muted); }
+
+/* Business / Developer switch */
+.view-switch { margin-left: auto; align-self: center; display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--line); border-radius: 999px; }
+.view-switch button { font: inherit; font-size: 13px; font-weight: 600; padding: 5px 14px; border: 0; border-radius: 999px; background: transparent; color: var(--muted); cursor: pointer; }
+.view-switch button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+nav a[hidden] { display: none; }
+
+/* Long AI-written text: first sentence, the rest on request */
+button.more { font: inherit; font-size: 13px; border: 0; padding: 0; background: none; color: var(--accent); cursor: pointer; white-space: nowrap; }
+button.more:hover { text-decoration: underline; }
+
+.tile.alert .tile-value { color: var(--bad); }
+.plain { font-size: 15.5px; max-width: 75ch; }
 </style>
 </head>
 <body>
@@ -194,18 +207,24 @@ footer { max-width: 1180px; margin: 0 auto; padding: 0 20px 30px; font-size: 13p
     <div class="title-row">
       <h1>@@CODEBASE@@</h1>
       <span class="sub" id="run-line">Checkpoint run report</span>
+      <div class="view-switch" role="group" aria-label="Who is reading">
+        <button type="button" data-view="business" aria-pressed="true">Business</button>
+        <button type="button" data-view="developer" aria-pressed="false">Developer</button>
+      </div>
     </div>
     <nav id="tabs">
       <a href="#overview" data-tab="overview">Overview</a>
-      <a href="#folders" data-tab="folders">Folders <span class="n" id="n-folders"></span></a>
+      <a href="#folders" data-tab="folders" data-dev>Folders <span class="n" id="n-folders"></span></a>
       <a href="#rules" data-tab="rules">Business rules <span class="n" id="n-rules"></span></a>
-      <a href="#tests" data-tab="tests">Tests <span class="n" id="n-tests"></span></a>
-      <a href="#diagram" data-tab="diagram">Diagram <span class="n" id="n-types"></span></a>
+      <a href="#tests" data-tab="tests" data-dev>Tests <span class="n" id="n-tests"></span></a>
+      <a href="#diagram" data-tab="diagram" data-dev>Diagram <span class="n" id="n-types"></span></a>
     </nav>
   </div>
 </header>
 <main id="main">
-  <section id="tab-overview"></section>
+  <section id="tab-b-overview" hidden></section>
+  <section id="tab-b-rules" hidden></section>
+  <section id="tab-overview" hidden></section>
   <section id="tab-folders" hidden></section>
   <section id="tab-rules" hidden></section>
   <section id="tab-tests" hidden></section>
@@ -235,7 +254,6 @@ footer { max-width: 1180px; margin: 0 auto; padding: 0 20px 30px; font-size: 13p
   var DIAGRAM = DATA.diagram || {};
   var TESTS = DATA.tests.unit.tests.concat(DATA.tests.integration.tests);
   var RULES = DATA.rules;
-  var TABS = ["overview", "folders", "rules", "tests", "diagram"];
   var HAS_SVG = !!document.querySelector("#canvas svg");
 
   var rulesById = new Map(RULES.map(function (r) { return [String(r.id), r]; }));
@@ -297,6 +315,74 @@ footer { max-width: 1180px; margin: 0 auto; padding: 0 20px 30px; font-size: 13p
     return (test.imports || []).map(function (i) { return String(i).trim(); }).filter(Boolean);
   }
 
+  // The AI's summaries run to hundreds of words. Show the first sentence and
+  // keep the rest one click away.
+  function brief(value, attrs) {
+    var parts = String(value || "").trim().split(/(?<=[.!?])\s+(?=[A-Z0-9"'(])/);
+    var node = el("p", attrs || null, parts[0] || "–");
+    if (parts.length > 1) {
+      var rest = el("span", { hidden: true }, " " + parts.slice(1).join(" "));
+      var more = el("button", { type: "button", class: "more", onclick: function () {
+        rest.hidden = !rest.hidden;
+        more.textContent = rest.hidden ? "Show more" : "Show less";
+      } }, "Show more");
+      add(node, [rest, " ", more]);
+    }
+    return node;
+  }
+
+  // ---------- what a rule's result means, in plain words ----------
+  //
+  // A rule's own unit test decides; a rule without one that ran falls back on
+  // the bigger workflow (integration) tests that include it.
+
+  var RESULTS = {
+    look:        { label: "Test failed – worth a look", cls: "s-failed",
+                   says: "Checkpoint found this rule in the code, but the test written to check it failed. A developer should look at whether the code or the test is wrong." },
+    passed:      { label: "Confirmed and tested", cls: "s-passed",
+                   says: "Checkpoint found this rule in the code, and a test written to check it passed." },
+    untested:    { label: "Confirmed, not tested", cls: "s-not-run",
+                   says: "Checkpoint found this rule in the code, but no test checked it in this run." },
+    unconfirmed: { label: "Not confirmed", cls: "s-rejected",
+                   says: "Checkpoint could not confirm this rule in the code." }
+  };
+  var RESULT_ORDER = ["look", "passed", "untested", "unconfirmed"];
+
+  function testsOf(rule) {
+    return rule.tests.map(function (n) { return testsByName.get(n); }).filter(Boolean);
+  }
+  function ran(tests) {
+    return tests.filter(function (t) { return t.status === "passed" || t.status === "failed"; });
+  }
+  function resultOf(rule) {
+    if (rule.status !== "proven") return "unconfirmed";
+    var tests = testsOf(rule);
+    var deciding = ran(tests.filter(function (t) { return t.kind === "unit"; }));
+    if (!deciding.length) deciding = ran(tests);
+    if (!deciding.length) return "untested";
+    return deciding.some(function (t) { return t.status === "failed"; }) ? "look" : "passed";
+  }
+  // When a rule's result came from a bigger workflow test, not a test of its own.
+  function byWorkflowOnly(rule) {
+    var own = ran(testsOf(rule).filter(function (t) { return t.kind === "unit"; }));
+    return !own.length && ran(testsOf(rule)).length > 0;
+  }
+  var WORKFLOW_SAYS = {
+    look: "Checkpoint found this rule in the code. It has no test of its own that ran, and a bigger workflow test that includes it failed. A developer should look at whether the code or the test is wrong.",
+    passed: "Checkpoint found this rule in the code. It has no test of its own that ran, but a bigger workflow test that includes it passed."
+  };
+  function resultSays(rule, result) {
+    return WORKFLOW_SAYS[result] && byWorkflowOnly(rule) ? WORKFLOW_SAYS[result] : RESULTS[result].says;
+  }
+
+  function resultPill(result) {
+    return el("span", { class: "pill " + RESULTS[result].cls }, RESULTS[result].label);
+  }
+  var resultById = new Map(RULES.map(function (r) { return [String(r.id), resultOf(r)]; }));
+  function countResult(result) {
+    return RULES.filter(function (r) { return resultById.get(String(r.id)) === result; }).length;
+  }
+
   // ---------- header ----------
 
   (function header() {
@@ -337,7 +423,7 @@ footer { max-width: 1180px; margin: 0 auto; padding: 0 20px 30px; font-size: 13p
     add(root, el("div", { class: "card" },
       el("h2", null, "What this project is"),
       DATA.overview.summary
-        ? el("p", { class: "lead" }, DATA.overview.summary)
+        ? brief(DATA.overview.summary, { class: "lead" })
         : el("p", { class: "muted" }, "No whole-project summary was found for this run."),
       DATA.overview.responsibilities.length
         ? el("div", { class: "chips" }, DATA.overview.responsibilities.map(function (r) { return el("span", { class: "chip" }, r); }))
@@ -441,12 +527,122 @@ footer { max-width: 1180px; margin: 0 auto; padding: 0 20px 30px; font-size: 13p
       apply();
     }
 
+    // Press one filter button from outside, e.g. a number on the Overview.
+    function choose(name, value) {
+      reset();
+      var button = groups[name] && groups[name].querySelector('[data-value="' + value + '"]');
+      if (button) button.click();
+    }
+
     add(root, [toolbar, countLine]);
     apply();
-    return { search: search, reset: reset };
+    return { search: search, reset: reset, choose: choose };
   }
 
   var filters = {};
+
+  // ---------- Business view: Overview ----------
+  //
+  // For readers who don't read code: what the project is in one sentence,
+  // and what Checkpoint found, in words and numbers. No paths, code or tokens.
+
+  function buildBusinessOverview() {
+    var root = document.getElementById("tab-b-overview");
+    var found = RULES.length, confirmed = COUNTS.rules_proven;
+    var passed = countResult("passed"), look = countResult("look"), untested = countResult("untested");
+
+    add(root, el("div", { class: "card" },
+      el("h2", null, "What this project is"),
+      DATA.overview.summary
+        ? brief(DATA.overview.summary, { class: "lead" })
+        : el("p", { class: "muted" }, "No summary of the project was written in this run."),
+      DATA.overview.responsibilities.length
+        ? el("div", { class: "chips" }, DATA.overview.responsibilities.map(function (r) { return el("span", { class: "chip" }, r); }))
+        : null));
+
+    var story;
+    if (!found) {
+      story = "Checkpoint did not find any business rules in this project.";
+    } else {
+      story = "Checkpoint read the code and found " + plural(found, "business rule") +
+        ": plain statements of what the system requires, allows or prevents. " +
+        fmt(confirmed) + " of them " + (confirmed === 1 ? "was" : "were") + " confirmed in the code. ";
+      if (!TESTS.length) {
+        story += "No tests were written for them in this run.";
+      } else if (!ran(TESTS).length) {
+        story += "The tests written for them were not run in this run.";
+      } else {
+        story += fmt(passed) + (passed === 1 ? " was" : " were") + " also checked by a test that passed";
+        story += look ? ", and " + fmt(look) + (look === 1 ? " needs" : " need") + " a look because " +
+          (look === 1 ? "its test" : "their tests") + " failed." : ".";
+      }
+    }
+
+    add(root, el("div", { class: "card" }, el("h2", null, "What Checkpoint found"), el("p", { class: "plain" }, story)));
+
+    var lookTile = tile("Worth a look", fmt(look), "a test for the rule failed", "#show-look");
+    if (look) lookTile.classList.add("alert");
+    add(root, el("div", { class: "tiles" },
+      tile("Business rules found", fmt(found), "read from the code", "#rules"),
+      tile("Confirmed in the code", fmt(confirmed) + " of " + fmt(found), fmt(found - confirmed) + " could not be confirmed", "#show-all"),
+      tile("Confirmed and tested", fmt(passed), "a test for the rule passed", "#show-passed"),
+      lookTile,
+      tile("Not tested", fmt(untested), "confirmed, but no test ran", "#show-untested")));
+  }
+
+  // ---------- Business view: Business rules ----------
+
+  function businessRuleCard(r) {
+    var result = resultById.get(String(r.id));
+    var body = el("div", { class: "item-body" }, el("p", null, resultSays(r, result)));
+
+    if (result === "unconfirmed" && r.reason) {
+      add(body, el("p", { class: "muted" },
+        r.status === "error" ? "The check could not be finished: " + r.reason : "Why not: " + r.reason));
+    }
+
+    var workflows = ran(testsOf(r).filter(function (t) { return t.kind === "integration"; }));
+    if (workflows.length) {
+      var failed = workflows.filter(function (t) { return t.status === "failed"; }).length;
+      add(body, el("p", { class: "muted" },
+        "It is also part of " + plural(workflows.length, "bigger workflow test") + ": " +
+        fmt(workflows.length - failed) + " passed, " + fmt(failed) + " failed."));
+    }
+
+    add(body, el("p", null, el("a", { href: "#", onclick: function (e) {
+      e.preventDefault();
+      setView("developer");
+      openHash("#rule-" + r.id);
+    } }, "Show the code evidence (developer view)")));
+
+    return el("details", { class: "item", id: "brule-" + r.id },
+      el("summary", null, resultPill(result), el("span", { class: "item-title" }, r.rule), el("span", { class: "id" }, "#" + r.id)),
+      body);
+  }
+
+  function buildBusinessRules() {
+    var root = document.getElementById("tab-b-rules");
+    if (!RULES.length) {
+      add(root, el("div", { class: "card muted" }, "No business rules were found in this run."));
+      return;
+    }
+    add(root, el("p", { class: "muted" },
+      "Each rule is a plain statement of what the system requires, allows or prevents, found by reading the code. " +
+      "Rules that need a look come first."));
+
+    var list = el("div");
+    var sorted = RULES.slice().sort(function (a, b) {
+      return RESULT_ORDER.indexOf(resultById.get(String(a.id))) - RESULT_ORDER.indexOf(resultById.get(String(b.id)));
+    });
+    var items = sorted.map(function (r) {
+      var node = businessRuleCard(r);
+      add(list, node);
+      return { node: node, status: resultById.get(String(r.id)), text: text("#" + r.id, r.rule, r.reason) };
+    });
+    filters.brules = makeFilter(root, { items: items, noun: "rule", placeholder: "Search the rules… (press / to jump here)",
+      statuses: [["all", "All"]].concat(RESULT_ORDER.map(function (k) { return [k, RESULTS[k].label]; })) });
+    add(root, list);
+  }
 
   // ---------- Business rules ----------
 
@@ -462,7 +658,7 @@ footer { max-width: 1180px; margin: 0 auto; padding: 0 20px 30px; font-size: 13p
       r.source_files.length ? " · Found in: " + r.source_files.join(", ") : ""));
 
     if (r.status === "proven") {
-      add(body, [el("h4", null, "Why Checkpoint believes it"), el("p", null, r.reasoning || "–")]);
+      add(body, [el("h4", null, "Why Checkpoint believes it"), brief(r.reasoning)]);
       var files = Object.keys(r.evidence || {});
       if (files.length) {
         add(body, el("h4", null, "Evidence from the code"));
@@ -528,7 +724,7 @@ footer { max-width: 1180px; margin: 0 auto; padding: 0 20px 30px; font-size: 13p
 
   function testCard(t) {
     var body = el("div", { class: "item-body" });
-    if (t.description) add(body, el("p", null, t.description));
+    if (t.description) add(body, brief(t.description));
 
     add(body, el("h4", null, t.rule_ids.length === 1 ? "Checks this rule" : "Checks these rules"));
     if (t.rule_ids.length) {
@@ -612,7 +808,7 @@ footer { max-width: 1180px; margin: 0 auto; padding: 0 20px 30px; font-size: 13p
         f.old ? [" ", el("span", { class: "badge warn" }, "older than this run")] : null),
       el("div", null,
         el("p", { class: "folder-path mono" }, f.path),
-        el("p", null, f.summary || "–"),
+        brief(f.summary),
         types.length ? el("ul", { class: "types" }, types) : null,
         f.business_rules.length ? [el("h4", null, "Rules noticed in this file"),
           el("ul", null, f.business_rules.map(function (r) { return el("li", null, r); }))] : null,
@@ -643,7 +839,7 @@ footer { max-width: 1180px; margin: 0 auto; padding: 0 20px 30px; font-size: 13p
       var depth = f.path === "." ? 0 : f.path.split("/").length;
       var rules = (f.observed_rules || []).concat(f.inferred_rules || []);
       var body = el("div", { class: "item-body" },
-        f.missing ? el("p", { class: "muted" }, "No summary was written for this folder.") : el("p", null, f.purpose || "–"),
+        f.missing ? el("p", { class: "muted" }, "No summary was written for this folder.") : brief(f.purpose),
         (f.responsibilities || []).length ? el("div", { class: "chips" }, f.responsibilities.map(function (r) { return el("span", { class: "chip" }, r); })) : null,
         rules.length ? el("details", { class: "file" }, el("summary", null, "Rules noticed in this folder (" + rules.length + ")"),
           el("div", null, el("ul", null, rules.map(function (r) { return el("li", null, r); })))) : null,
@@ -824,15 +1020,56 @@ footer { max-width: 1180px; margin: 0 auto; padding: 0 20px 30px; font-size: 13p
     });
   }
 
-  // ---------- tabs and links ----------
+  // ---------- views, tabs and links ----------
+  //
+  // Business view: Overview and Business rules, in plain words. Developer
+  // view: every tab. The report opens on the business view; anything only a
+  // developer would follow (a test, file, class, the diagram) switches over.
+
+  var VIEW = "business";
+  var DEV_ONLY = ["folders", "tests", "diagram"];
+  var SECTIONS = ["b-overview", "b-rules", "overview", "folders", "rules", "tests", "diagram"];
+  var BUILDERS = { "b-overview": buildBusinessOverview, "b-rules": buildBusinessRules, overview: buildOverview,
+                   folders: buildFolders, rules: buildRules, tests: buildTests, diagram: buildDiagram };
+
+  function setView(view) {
+    VIEW = view;
+    Array.prototype.forEach.call(document.querySelectorAll(".view-switch button"), function (b) {
+      b.setAttribute("aria-pressed", String(b.dataset.view === view));
+    });
+    Array.prototype.forEach.call(document.querySelectorAll("#tabs a[data-dev]"), function (a) {
+      a.hidden = view === "business";
+    });
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll(".view-switch button"), function (b) {
+    b.addEventListener("click", function () {
+      var view = b.dataset.view, tab = currentTab();
+      if (view === VIEW) return;
+      setView(view);
+      // Stay on the same tab when the other view has it, else go to the Overview.
+      openHash("#" + (view === "business" && DEV_ONLY.indexOf(tab) >= 0 ? "overview" : tab));
+    });
+  });
+
+  // Same hash twice fires no hashchange, so route it directly then.
+  function openHash(hash) {
+    if (location.hash === hash) route(); else location.hash = hash;
+  }
+
+  var current = null;
+  function currentTab() { return current ? current.replace(/^b-/, "") : "overview"; }
 
   var built = {};
   function showTab(name) {
-    if (!built[name]) {
-      built[name] = true;
-      ({ overview: buildOverview, folders: buildFolders, rules: buildRules, tests: buildTests, diagram: buildDiagram })[name]();
+    if (DEV_ONLY.indexOf(name) >= 0 && VIEW === "business") setView("developer");
+    var section = VIEW === "business" ? "b-" + name : name;
+    if (!built[section]) {
+      built[section] = true;
+      BUILDERS[section]();
     }
-    TABS.forEach(function (t) { document.getElementById("tab-" + t).hidden = t !== name; });
+    current = section;
+    SECTIONS.forEach(function (t) { document.getElementById("tab-" + t).hidden = t !== section; });
     Array.prototype.forEach.call(document.querySelectorAll("#tabs a"), function (a) {
       if (a.dataset.tab === name) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
     });
@@ -854,24 +1091,33 @@ footer { max-width: 1180px; margin: 0 auto; padding: 0 20px 30px; font-size: 13p
 
   function route() {
     var hash = decodeURIComponent(location.hash.slice(1));
-    if (!hash || TABS.indexOf(hash) >= 0) { showTab(hash || "overview"); window.scrollTo(0, 0); return; }
+    var tabs = ["overview", "folders", "rules", "tests", "diagram"];
+    if (!hash || tabs.indexOf(hash) >= 0) { showTab(hash || "overview"); window.scrollTo(0, 0); return; }
     var dash = hash.indexOf("-"), kind = hash.slice(0, dash), key = hash.slice(dash + 1);
-    if (kind === "rule") { showTab("rules"); reveal(document.getElementById("rule-" + key), filters.rules); }
+    if (kind === "rule") {
+      showTab("rules");
+      if (VIEW === "business") reveal(document.getElementById("brule-" + key), filters.brules);
+      else reveal(document.getElementById("rule-" + key), filters.rules);
+    }
+    else if (kind === "show") {  // a number on the business Overview: the rules with that result
+      setView("business"); showTab("rules"); filters.brules.choose("status", key); window.scrollTo(0, 0);
+    }
     else if (kind === "test") { showTab("tests"); reveal(document.getElementById("test-" + key), filters.tests); }
     else if (kind === "folder") { showTab("folders"); reveal(document.getElementById("folder-" + key), filters.folders); }
     else if (kind === "file") { showTab("folders"); reveal(document.getElementById("file-" + key), filters.folders); }
     else if (kind === "type") { showTab("diagram"); showType(key); }
-    else if (hash === "run") { showTab("overview"); reveal(document.getElementById("run")); }
+    else if (hash === "run") { setView("developer"); showTab("overview"); reveal(document.getElementById("run")); }
     else showTab("overview");
   }
 
   window.addEventListener("hashchange", route);
   document.addEventListener("keydown", function (e) {
     if (e.key !== "/" || /^(INPUT|TEXTAREA)$/.test(document.activeElement.tagName)) return;
-    var open = TABS.filter(function (t) { return !document.getElementById("tab-" + t).hidden; })[0];
-    var box = open === "diagram" ? document.getElementById("find-type") : filters[open] && filters[open].search;
+    var box = current === "diagram" ? document.getElementById("find-type")
+      : filters[{ "b-rules": "brules" }[current] || current] && filters[{ "b-rules": "brules" }[current] || current].search;
     if (box) { e.preventDefault(); box.focus(); }
   });
+  setView("business");
   route();
 })();
 </script>

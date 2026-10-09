@@ -46,6 +46,12 @@ def test_page_carries_everything_and_loads_nothing_from_outside():
     assert "svg" not in embedded_data(page)["diagram"]  # the picture is in the page once, not twice
 
 
+def test_page_opens_on_the_business_view():
+    page = render(minimal_data())
+    assert '<button type="button" data-view="business" aria-pressed="true">Business</button>' in page
+    assert '<a href="#diagram" data-tab="diagram" data-dev>' in page  # hidden from business readers
+
+
 def test_text_from_the_outputs_cannot_break_the_page():
     rule = {"id": 1, "rule": "</script><script>alert(1)</script>", "status": "proven", "folder": ".",
             "source_files": [], "evidence": {"a.py": ["@@SVG@@ <!-- x"]}, "reasoning": "", "reason": "", "tests": []}
