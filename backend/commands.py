@@ -49,7 +49,7 @@ from agent.UTV_agent import UTVAgent
 from agent.directory_agent import DirectoryAgent
 from agent.file_summary_agent import FileSummaryAgent
 from agent.llm import verify_llm_key
-from agent.structured_output.file_summary_output import BusinessRule
+from agent.BR_input_loader import load_rule_candidates, deduplicate_rule_candidates
 from agent.structured_output.UT_output import ValidatedRule
 from agent.structured_output.UTV_output import UnitTest
 
@@ -383,10 +383,19 @@ class Commands:
         self,
         codebase: str,
         rules_path: str = None,
-        individualStep = True
+        individualStep = True,
+        directory_rules_path: str = None,
     ):
         """
         Validate generated business rules.
+
+        Loads file-level and folder-level rules, merges exact
+        duplicates, then validates them with the BR agent.
+
+        With no paths given, the default file and directory agent
+        outputs are used; whichever exists is validated and a missing
+        one is returned as a warning. If either path is given, only
+        the given inputs are loaded, and each must exist.
 
         Refactor of old:
             run_br()
@@ -395,49 +404,49 @@ class Commands:
         codebase_path = Path(codebase)
         codebase_name = codebase_path.name
 
-        if rules_path is None:
-            rules_path = (
-                self.app_dir
-                / "agent"
-                / "file_summary_agent_output"
-                / codebase_name
-                / "business_rules"
-                / "business_rules.json"
-            )
-
-        rules_path = Path(rules_path)
+        # A custom path means a custom invocation: do not mix in
+        # default outputs for the input that was not given.
+        custom = rules_path is not None or directory_rules_path is not None
+        skip = False if custom else None
 
         def task():
 
             progress("Validating business rules...")
 
-            if not rules_path.exists():
-                raise FileNotFoundError(
-                    f"Business rules not found: {rules_path}"
-                )
+            inputs = load_rule_candidates(
+                codebase_path,
+                rules_path if rules_path is not None else skip,
+                directory_rules_path if directory_rules_path is not None else skip,
+                app_dir=self.app_dir,
+            )
 
-            with open(
-                rules_path,
-                "r",
-                encoding="utf-8"
-            ) as file:
+            candidates = deduplicate_rule_candidates(inputs.candidates)
 
-                raw_rules = json.load(file)
-
-
-            input_rules = {
-                path: [
-                    BusinessRule(**rule)
-                    for rule in rules
-                ]
-                for path, rules in raw_rules.items()
-            }
-
+            progress(
+                f"Loaded {len(inputs.candidates)} business rules "
+                f"({len(candidates)} after merging exact duplicates)."
+            )
 
             BRAgent().run(
-                input_rules,
+                candidates,
                 codebase_name
             )
+
+            result = {
+                "message": (
+                    f"Business rule validation finished for {len(candidates)} "
+                    f"rule{'' if len(candidates) == 1 else 's'}"
+                ),
+            }
+
+            if inputs.missing_inputs:
+                result["warning"] = "\n".join(
+                    f"No {kind}-level business rules were found at {path}, "
+                    "so only the other rules were validated."
+                    for kind, path in inputs.missing_inputs.items()
+                )
+
+            return result
 
 
         return self._run_command(
