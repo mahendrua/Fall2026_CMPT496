@@ -25,6 +25,7 @@ import os
 import threading
 import time
 import uuid
+from collections import Counter
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime
@@ -42,6 +43,10 @@ USAGE_LOG_NAME = "token_usage_log.json"
 # outcome. Rewritten each run; token_usage_log.json keeps the per-stage
 # totals the calibration reads.
 RUN_LOG_NAME = "last_run_log.json"
+
+# Every run is also kept here as <codebase>_<run id>.json, since the next run
+# replaces last_run_log.json.
+RUN_HISTORY_DIR = "run_logs"
 
 
 def _read_usage(response):
@@ -76,6 +81,19 @@ def _read_usage(response):
     return usage, model_name
 
 
+def _thinking_tokens(usage):
+    """
+    Tokens the model spent thinking before it answered.
+
+    Google and OpenAI already count these inside output_tokens and list them
+    again under output_token_details, so this is a part of the output, never
+    added to the total. Providers that do not split it out (e.g. Anthropic),
+    and calls that did not think, give 0.
+    """
+    details = usage.get("output_token_details") or {}
+    return details.get("reasoning", 0) or 0
+
+
 class UsageRecorder(BaseCallbackHandler):
     """
     Accumulates token usage across every chat model call in its scope.
@@ -92,6 +110,7 @@ class UsageRecorder(BaseCallbackHandler):
         self.calls_missing_usage = 0
         self.input_tokens = 0
         self.output_tokens = 0
+        self.thinking_tokens = 0
         self.models = set()
         self.live = False
         self._last_emit = 0.0
@@ -123,6 +142,7 @@ class UsageRecorder(BaseCallbackHandler):
 
             self.input_tokens += usage.get("input_tokens", 0) or 0
             self.output_tokens += usage.get("output_tokens", 0) or 0
+            self.thinking_tokens += _thinking_tokens(usage)
 
             should_emit = (
                 self.live
@@ -147,6 +167,7 @@ class UsageRecorder(BaseCallbackHandler):
             "calls_missing_usage": self.calls_missing_usage,
             "input_tokens": self.input_tokens,
             "output_tokens": self.output_tokens,
+            "thinking_tokens": self.thinking_tokens,
             "total_tokens": self.input_tokens + self.output_tokens,
             "models": sorted(self.models),
             "tokens_per_call": (
@@ -154,6 +175,16 @@ class UsageRecorder(BaseCallbackHandler):
                 if self.calls else 0
             ),
         }
+
+
+def _step(callback_kwargs):
+    """
+    Which step of an agent made a call, e.g. "judgement" or "refinement".
+
+    LangGraph passes each node's name to callbacks as metadata, so this needs
+    no change to the agents. None for a call made outside a graph.
+    """
+    return (callback_kwargs.get("metadata") or {}).get("langgraph_node")
 
 
 class _Fanout(BaseCallbackHandler):
@@ -178,11 +209,11 @@ class _Fanout(BaseCallbackHandler):
 
     def on_chat_model_start(self, serialized, messages, *, run_id, **kwargs):
         if self.run_log:
-            self.run_log.call_started(run_id)
+            self.run_log.call_started(run_id, _step(kwargs))
 
     def on_llm_start(self, serialized, prompts, *, run_id, **kwargs):
         if self.run_log:
-            self.run_log.call_started(run_id)
+            self.run_log.call_started(run_id, _step(kwargs))
 
     def on_llm_end(self, response, **kwargs):
         for recorder in self.recorders:
@@ -376,7 +407,8 @@ def status_code(exc):
 
 class RunLog:
     """
-    Everything one run did, saved to last_run_log.json as it goes.
+    Everything one run did, saved to last_run_log.json as it goes, with a
+    copy of its own in run_logs/.
     """
 
     def __init__(self, app_dir, codebase_name, command):
@@ -384,6 +416,10 @@ class RunLog:
 
         self.path = Path(app_dir) / RUN_LOG_NAME
         self.run_id = f"{now:%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:6]}"
+        self.history_path = (
+            Path(app_dir) / RUN_HISTORY_DIR
+            / f"{codebase_name or command}_{self.run_id}.json"
+        )
         self.codebase = codebase_name
         self.command = command
         self.started_at = _stamp(now)
@@ -438,9 +474,11 @@ class RunLog:
 
     # --- AI calls -----------------------------------------
 
-    def call_started(self, call_id):
+    def call_started(self, call_id, step=None):
         with self._lock:
-            self._open_calls[call_id] = (datetime.now(), time.perf_counter())
+            self._open_calls[call_id] = (
+                datetime.now(), time.perf_counter(), step
+            )
 
     def call_ended(self, call_id, stage, response=None, error=None):
         with self._lock:
@@ -448,6 +486,7 @@ class RunLog:
 
         record = {
             "stage": stage or self.command,
+            "step": started[2] if started else None,
             "started_at": _stamp(started[0]) if started else None,
             "duration_seconds": (
                 round(time.perf_counter() - started[1], 2) if started else None
@@ -456,6 +495,7 @@ class RunLog:
             "model": None,
             "input_tokens": None,
             "output_tokens": None,
+            "thinking_tokens": None,
         }
 
         if error is not None:
@@ -471,6 +511,7 @@ class RunLog:
                 if usage:
                     record["input_tokens"] = usage.get("input_tokens", 0) or 0
                     record["output_tokens"] = usage.get("output_tokens", 0) or 0
+                    record["thinking_tokens"] = _thinking_tokens(usage)
 
         with self._lock:
             self.calls.append(record)
@@ -518,7 +559,15 @@ class RunLog:
                 "failed_calls": sum(c["status"] == "failed" for c in call_subset),
                 "input_tokens": input_tokens,
                 "output_tokens": output_tokens,
+                # Part of output_tokens, not extra.
+                "thinking_tokens": sum(
+                    c["thinking_tokens"] or 0 for c in call_subset
+                ),
                 "total_tokens": input_tokens + output_tokens,
+                # e.g. {"judgement": 5, "refinement": 1}
+                "calls_by_step": dict(Counter(
+                    c["step"] for c in call_subset if c["step"]
+                )),
                 "waits": len(wait_subset),
                 "waited_seconds": round(sum(w["seconds"] for w in wait_subset), 1),
             }
@@ -543,12 +592,21 @@ class RunLog:
             if not self._worth_saving():
                 return
 
-            # Write then swap, so a crash mid-write never leaves half a file.
-            tmp = self.path.with_name(self.path.name + ".tmp")
-            tmp.write_text(json.dumps(self.to_dict(), indent=2), encoding="utf-8")
-            os.replace(tmp, self.path)
+            text = json.dumps(self.to_dict(), indent=2)
         except Exception:
-            pass
+            return
+
+        # Separately, so one failing write does not cost the other.
+        for path in (self.path, self.history_path):
+            try:
+                path.parent.mkdir(parents=True, exist_ok=True)
+
+                # Write then swap, so a crash mid-write never leaves half a file.
+                tmp = path.with_name(path.name + ".tmp")
+                tmp.write_text(text, encoding="utf-8")
+                os.replace(tmp, path)
+            except Exception:
+                pass
 
 
 def record_wait(reason, seconds):
