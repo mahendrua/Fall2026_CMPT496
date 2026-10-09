@@ -25,6 +25,7 @@ from pathlib import Path
 from collections import defaultdict
 
 from backend.progress_logging import progress
+from utils.chroma_utils import collection_name
 
 MAX_CONCURRENCY = 10
 DEFAULT_CODEBASE_K = 15
@@ -117,12 +118,12 @@ class BRAgent:
         client = chromadb.PersistentClient(path=str(db_dir))
 
         code_collection = client.get_collection(
-            name=f"{codebase_name}_code_db",
+            name=collection_name(codebase_name, "code"),
             embedding_function=embedding_fn
         )
 
         summary_collection = client.get_collection(
-            name=f"{codebase_name}_summary_db",
+            name=collection_name(codebase_name, "summary"),
             embedding_function=embedding_fn
         )
 

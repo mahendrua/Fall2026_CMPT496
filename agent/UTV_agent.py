@@ -25,6 +25,7 @@ import chromadb
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from pathlib import Path
 from backend.progress_logging import progress
+from utils.chroma_utils import collection_name
 
 # Code chunks retrieved per broken test for the repair prompt.
 REPAIR_CODEBASE_K = 15
@@ -102,7 +103,7 @@ class UTVAgent:
             embedding_fn = SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
             client = chromadb.PersistentClient(path=str(db_dir))
             code_collection = client.get_collection(
-                name=f"{codebase_name}_code_db",
+                name=collection_name(codebase_name, "code"),
                 embedding_function=embedding_fn
             )
             progress("Loaded code database.", 10)
