@@ -4,7 +4,12 @@
 @details Reads the business_rules.json files written by FileSummaryAgent and
 DirectoryAgent, validates them against their existing output models, normalizes
 paths against the codebase root, and returns a flat list of RuleCandidate objects.
-Rules are not validated, condensed, or deduplicated here.
+Rules are not validated or condensed here. load_rule_candidates() keeps every
+candidate; deduplicate_rule_candidates() is a separate, explicit step that
+merges exact duplicates:
+
+    inputs = load_rule_candidates(codebase_root)
+    candidates = deduplicate_rule_candidates(inputs.candidates)
 """
 
 import json
@@ -17,7 +22,7 @@ from typing import NamedTuple
 
 from pydantic import ValidationError
 
-from agent.structured_output.BR_output import RuleCandidate
+from agent.structured_output.BR_output import RuleCandidate, RuleProvenance
 from agent.structured_output.directory_output import BusinessRulesOutput
 from agent.structured_output.file_summary_output import BusinessRule
 
@@ -112,6 +117,56 @@ def load_rule_candidates(
         candidates.extend(_load_directory_rules(found["directory"], root))
 
     return RuleInputs(candidates=candidates, missing_inputs=missing)
+
+
+def deduplicate_rule_candidates(candidates: list[RuleCandidate]) -> list[RuleCandidate]:
+    """
+    @brief Merges exact duplicate rule candidates within the same source directory.
+
+    @details
+    Matching policy (deliberately conservative; semantic merging is left to the
+    BR agent's AI condenser):
+    - Two candidates match only if their source_directory strings are equal
+      (paths are already normalized by load_rule_candidates()) and their rule
+      text is equal after trimming and collapsing runs of whitespace.
+    - Case, punctuation and "Inference:" prefixes are significant, so
+      differently worded rules and rules from different directories stay separate.
+
+    Each merged candidate keeps the first candidate's rule text and origin, the
+    union of all source_file_paths, and every distinct provenance record (origin
+    plus its source files) in first-seen order. Output order follows the first
+    occurrence of each group. Inputs are not modified, and running this on its
+    own output returns an equal result.
+
+    @param candidates Rule candidates, typically from load_rule_candidates().
+    @return New list of merged RuleCandidate objects.
+    """
+    groups: dict[tuple[str, str], list[RuleCandidate]] = {}
+    for candidate in candidates:
+        key = (candidate.source_directory, " ".join(candidate.rule.split()))
+        groups.setdefault(key, []).append(candidate)
+
+    merged = []
+    for group in groups.values():
+        first = group[0]
+        provenance = []
+        seen = set()
+        for candidate in group:
+            for record in candidate.provenance:
+                files = list(dict.fromkeys(record.source_file_paths))
+                record_key = (record.origin, tuple(files))
+                if record_key not in seen:
+                    seen.add(record_key)
+                    provenance.append(RuleProvenance(origin=record.origin, source_file_paths=files))
+
+        merged.append(RuleCandidate(
+            rule=first.rule,
+            source_directory=first.source_directory,
+            source_file_paths=list(dict.fromkeys(p for c in group for p in c.source_file_paths)),
+            origin=first.origin,
+            provenance=provenance,
+        ))
+    return merged
 
 
 def _load_file_rules(path: Path, root: dict) -> list[RuleCandidate]:
