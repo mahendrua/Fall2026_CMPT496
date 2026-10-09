@@ -105,6 +105,11 @@ contextBridge.exposeInMainWorld(
             return ipcRenderer.invoke("exit-app");
         },
 
+        // Run report (US-049): opens run_reports/<codebase>/run_report.html in its own window.
+        openReport: (reportPath) => ipcRenderer.invoke("open-report", reportPath),
+        // The selected codebase's report, or the newest one when none is selected.
+        openLatestReport: (codebaseName) => ipcRenderer.invoke("open-latest-report", codebaseName),
+
 
         // ==================================
         // Backend Response Listener

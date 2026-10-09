@@ -1086,6 +1086,123 @@ ipcMain.handle("select-codebase", async () => {
 });
 
 // ----------------------------------------------------
+// RUN REPORT (US-049)
+// ----------------------------------------------------
+// The backend writes one self-contained HTML report after a full run, to
+// run_reports/<codebase>/run_report.html. It opens in its own window with no
+// access to Node or the backend. Only a run_report.html inside the backend's
+// run_reports folder is opened, so the renderer cannot use this to open any
+// other file.
+
+const REPORT_NAME = "run_report.html";
+let reportWindow = null;
+
+function reportsDir() {
+    return path.resolve(backendOutputDir, "run_reports");
+}
+
+function isRunReport(file) {
+    const fold = (p) => process.platform === "win32" ? p.toLowerCase() : p;
+    return path.basename(file) === REPORT_NAME &&
+        fold(file).startsWith(fold(reportsDir() + path.sep)) &&
+        fs.existsSync(file);
+}
+
+async function showReportWindow(file) {
+
+    if (!reportWindow || reportWindow.isDestroyed()) {
+
+        reportWindow = new BrowserWindow({
+            width: 1300,
+            height: 900,
+            icon: path.join(__dirname, "assets", "checkpoint.ico"),
+            autoHideMenuBar: true,
+            webPreferences: {
+                nodeIntegration: false,
+                contextIsolation: true,
+                sandbox: true
+            }
+        });
+
+        // Links in the report only move within the page; keep everything else out.
+        reportWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+        reportWindow.webContents.on("will-navigate", (navigation) => navigation.preventDefault());
+
+        reportWindow.webContents.on("before-input-event", (e, input) => {
+            if (input.key === "F12") {
+                reportWindow.webContents.toggleDevTools();
+            }
+        });
+
+        reportWindow.on("closed", () => {
+            reportWindow = null;
+        });
+    }
+
+    await reportWindow.loadFile(file);
+    reportWindow.show();
+    reportWindow.focus();
+}
+
+// From the Complete screen, right after a full run.
+ipcMain.handle("open-report", async (event, reportPath) => {
+
+    const file = path.resolve(String(reportPath || ""));
+
+    if (!isRunReport(file)) {
+        return {
+            success: false,
+            error: "The run report was not found. Run the full pipeline to make one."
+        };
+    }
+
+    await showReportWindow(file);
+    return { success: true };
+});
+
+// From View Insights, any time later: the selected codebase's report, or
+// when none is selected, the most recently written report.
+ipcMain.handle("open-latest-report", async (event, codebaseName) => {
+
+    let file = null;
+
+    if (codebaseName) {
+        file = path.join(reportsDir(), path.basename(String(codebaseName)), REPORT_NAME);
+
+        if (!isRunReport(file)) {
+            return {
+                success: false,
+                error: `No run report for ${codebaseName} yet. Run the full pipeline on it to make one.`
+            };
+        }
+    } else {
+        let folders = [];
+        try {
+            folders = fs.readdirSync(reportsDir());
+        } catch (error) {
+            // No report has been written yet.
+        }
+
+        const reports = folders
+            .map((folder) => path.join(reportsDir(), folder, REPORT_NAME))
+            .filter(isRunReport)
+            .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+
+        if (!reports.length) {
+            return {
+                success: false,
+                error: "No run report yet. Run the full pipeline to make one."
+            };
+        }
+
+        file = reports[0];
+    }
+
+    await showReportWindow(file);
+    return { success: true, codebase: path.basename(path.dirname(file)) };
+});
+
+// ----------------------------------------------------
 // START PYTHON BACKEND
 // ----------------------------------------------------
 
