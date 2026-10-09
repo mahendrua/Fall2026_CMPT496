@@ -16,6 +16,26 @@ import json
 from backend.progress_logging import progress
 from utils.chroma_utils import collection_name
 
+# A summary the judge rejects is rewritten at most this many times.
+MAX_REFINEMENTS = 2
+
+
+def after_judgement(state):
+    if state["summary_acceptable"] or state["refinement_attempts"] >= MAX_REFINEMENTS:
+        return "business_rules_extractor"
+    return "refinement"
+
+
+def after_refinement(state):
+    """
+    After the last allowed rewrite, move on without judging it again: that
+    verdict would be ignored, so the call only cost tokens.
+    """
+    if state["refinement_attempts"] >= MAX_REFINEMENTS:
+        return "business_rules_extractor"
+    return "judgement"
+
+
 class DirectoryAgent:
     def __init__(self, model = None):
         """
@@ -59,11 +79,8 @@ class DirectoryAgent:
         )
         builder.add_edge("summarizer", "judgement")
         builder.add_edge("root_summarizer", "judgement")
-        builder.add_conditional_edges(
-            "judgement",
-            lambda state: "business_rules_extractor" if state["summary_acceptable"] or state["refinement_attempts"] >= 2 else "refinement"
-        )
-        builder.add_edge("refinement", "judgement")
+        builder.add_conditional_edges("judgement", after_judgement)
+        builder.add_conditional_edges("refinement", after_refinement)
         builder.add_edge("business_rules_extractor", "writer")
         builder.add_conditional_edges(
             "writer",
