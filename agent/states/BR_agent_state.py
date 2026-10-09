@@ -6,9 +6,8 @@ structured state passed between nodes in the LangGraph execution graph.
 """
 
 from typing import TypedDict, Annotated, Any
-from agent.structured_output.BR_output import CondensedRule, ValidatedRule, DiscardedRule
+from agent.structured_output.BR_output import CondensedRule, ValidatedRule, DiscardedRule, RuleCandidate
 from agent.structured_output.UT_output import UnitTest
-from agent.structured_output.file_summary_output import BusinessRule
 from operator import add
 
 
@@ -17,9 +16,9 @@ class BRGraphState(TypedDict):
     @brief Represents the shared state passed between nodes in the BR Agent workflow graph.
 
     @var input_rules
-        Raw business rules from G1/G2. Dictionary keyed by file or directory path,
-        with values being lists of BusinessRule objects. This is the unprocessed
-        input to the graph, consumed only by the condenser node.
+        Business rule candidates from G1 (file-level) and G2 (directory-level),
+        each with a normalized source directory and its provenance. This is the
+        unprocessed input to the graph, consumed only by the condenser node.
 
     @var current_rules
         List of condensed rules currently being processed. Populated by the
@@ -53,10 +52,12 @@ class BRGraphState(TypedDict):
         decisions. Reset when all rules are resolved.
 
     @var code_collection
-        ChromaDB collection handle for embedded code snippets.
+        ChromaDB collection handle for embedded code snippets. None when there
+        are no input rules, since nothing is retrieved.
 
     @var summary_collection
         ChromaDB collection handle for embedded file/class/function summaries.
+        None when there are no input rules.
 
     @var codebase_name
         Name of the target codebase being analyzed, used for vector store
@@ -66,7 +67,7 @@ class BRGraphState(TypedDict):
         Base directory for writing output JSON files. Defaults to
         ./agent/BR_agent_output if not specified.
     """
-    input_rules: dict[str, list[BusinessRule]]
+    input_rules: list[RuleCandidate]
     current_rules: list[CondensedRule]
     validated_rules: Annotated[list[ValidatedRule], add]
     discarded_rules: Annotated[list[DiscardedRule], add]
