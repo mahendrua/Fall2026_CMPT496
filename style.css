@@ -3950,3 +3950,311 @@ h2{
 
 }
 
+#guiTestPage {
+    width: min(96vw, 1600px);
+    max-width: none;
+    min-height: 100vh;
+    justify-content: flex-start;
+    align-items: stretch;
+    text-align: left;
+    gap: 1.25rem;
+}
+
+.gui-page-header,
+.gui-card-heading,
+.gui-preview-heading,
+.gui-run-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.gui-page-header h1 {
+    margin: 0;
+}
+
+.gui-page-header p,
+.gui-card-heading p,
+.gui-preview-heading p {
+    margin-top: 0.35rem;
+    color: var(--text-secondary);
+}
+
+#guiTestPage button {
+    width: auto;
+    max-width: none;
+}
+
+.gui-feature-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+}
+
+.gui-host-label,
+.gui-host-help {
+    flex-basis: 100%;
+}
+
+.gui-host-label {
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.gui-host-input {
+    width: min(600px, 100%);
+    max-width: 600px !important;
+    text-align: left;
+    resize: vertical;
+}
+
+.gui-host-help {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+.gui-coming-soon:disabled {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.6rem;
+    cursor: not-allowed;
+    opacity: 0.65;
+}
+
+.gui-coming-soon span {
+    padding: 0.2rem 0.5rem;
+    border-radius: 999px;
+    background: rgba(99, 102, 241, 0.12);
+    color: var(--accent);
+    font-size: 0.75rem;
+}
+
+.gui-message {
+    flex-basis: 100%;
+    color: #b42318;
+    overflow-wrap: anywhere;
+}
+
+.gui-test-layout,
+.gui-bottom-grid {
+    display: grid;
+    grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.7fr);
+    gap: 1rem;
+}
+
+.gui-bottom-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.gui-card {
+    min-width: 0;
+    padding: 1.25rem;
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius);
+    background: var(--bg-secondary);
+    box-shadow: var(--shadow);
+}
+
+.gui-card h2 {
+    margin: 0;
+    font-size: 1.2rem;
+}
+
+.gui-test-list,
+.gui-results-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    max-height: 340px;
+    margin: 1rem 0;
+    overflow: auto;
+}
+
+.gui-test-item,
+.gui-result-item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 0.7rem;
+    padding: 0.7rem;
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    background: var(--glass-bg);
+    overflow-wrap: anywhere;
+}
+
+.gui-test-item input {
+    margin-top: 0.25rem;
+}
+
+.gui-test-item span,
+.gui-result-item span {
+    min-width: 0;
+    flex: 1;
+}
+
+.gui-status {
+    flex: 0 0 auto !important;
+    font-weight: 700;
+}
+
+.gui-status-passed {
+    color: #16803c;
+}
+
+.gui-status-failed {
+    color: #b42318;
+}
+
+.gui-status-running {
+    color: #a15c00;
+}
+
+.gui-status-skipped {
+    color: var(--text-secondary);
+}
+
+.gui-result-error {
+    flex-basis: 100%;
+    color: #b42318;
+    font: 0.82rem/1.45 Consolas, monospace;
+    white-space: pre-wrap;
+}
+
+.gui-empty-state,
+.gui-security-note {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.gui-run-actions {
+    justify-content: flex-start;
+}
+
+.gui-security-note {
+    margin-top: 1rem;
+    line-height: 1.45;
+}
+
+.gui-preview-frame {
+    position: relative;
+    min-height: 260px;
+    aspect-ratio: 16 / 9;
+    margin-top: 1rem;
+    overflow: hidden;
+    border-radius: 12px;
+    background: #10131a;
+}
+
+.gui-preview-frame iframe {
+    width: 100%;
+    height: 100%;
+    min-height: 260px;
+    border: 0;
+    background: #10131a;
+}
+
+.gui-preview-empty {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 1rem;
+    color: #e5e7eb;
+    text-align: center;
+}
+
+.gui-preview-collapse {
+    position: absolute;
+    z-index: 2;
+    top: 0.75rem;
+    right: 0.75rem;
+    padding: 0.45rem 0.7rem;
+}
+
+.gui-dashboard {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.6rem;
+    margin-top: 1rem;
+}
+
+.gui-stat {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.65rem;
+    border-radius: 10px;
+    background: var(--glass-bg);
+}
+
+.gui-stat span {
+    color: var(--text-secondary);
+}
+
+.gui-stat-passed strong {
+    color: #16803c;
+}
+
+.gui-stat-failed strong {
+    color: #b42318;
+}
+
+.gui-stat-running strong {
+    color: #a15c00;
+}
+
+.gui-execution-logs {
+    max-height: 280px;
+    min-height: 180px;
+    margin-top: 1rem;
+    padding: 0.85rem;
+    overflow: auto;
+    border-radius: 10px;
+    background: #111827;
+    color: #e5e7eb;
+    font: 0.82rem/1.5 Consolas, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.gui-preview-frame.gui-preview-expanded {
+    position: fixed;
+    z-index: 10000;
+    inset: 3vh 3vw;
+    width: 94vw;
+    height: 94vh;
+    max-height: none;
+    aspect-ratio: auto;
+    margin: 0;
+    box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.75);
+}
+
+.gui-preview-expanded iframe {
+    height: 100%;
+    min-height: 100%;
+}
+
+@media (max-width: 850px) {
+    #guiTestPage {
+        width: 100%;
+        padding: 1rem;
+    }
+
+    .gui-test-layout,
+    .gui-bottom-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .gui-dashboard {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .gui-page-header {
+        align-items: flex-start;
+    }
+}
+
+}

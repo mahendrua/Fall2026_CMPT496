@@ -15,6 +15,7 @@
         <h2>Codebase Analysis System</h2>
 
         <button class="btn-primary unusable-btn" id="analysisBtn">Run Operations</button>
+        <button class="btn-primary" id="guiTestCasesBtn">GUI Test Cases</button>
         <button class="btn-primary" id="mainViewBtn">View Insights</button>
         <button class="btn-primary" id="apiBtn">Manage API Keys</button>
         <button class="btn-primary" id="faqAndSupportBtn">FAQ & Support</button>
@@ -22,6 +23,93 @@
 
     </div>
 
+    <!-- GUI TEST CASES -->
+    <div id="guiTestPage" class="page hidden">
+        <header class="gui-page-header">
+            <div>
+                <h1>Developer Options</h1>
+                <p>Manual GUI Testing</p>
+            </div>
+            <button class="btn-secondary" id="guiTestBackBtn">Main Menu</button>
+        </header>
+
+        <div class="gui-feature-actions">
+            <button class="btn-primary" id="uploadGuiTestsBtn">Upload Test Cases Manually</button>
+            <button class="btn-secondary gui-coming-soon" id="generateGuiTestsBtn" disabled>
+                Generate Test Cases Using AI <span>Coming Soon</span>
+            </button>
+            <label class="gui-host-label" for="guiAllowedHosts">Allowed website hosts</label>
+            <textarea id="guiAllowedHosts" class="input-glass gui-host-input" rows="2"
+                placeholder="app.example.com&#10;host.docker.internal:3000"></textarea>
+            <p class="gui-host-help">
+                Enter one hostname per line; add :port for a nonstandard port. Local apps must use
+                host.docker.internal:port. Prefix a hostname with *. to allow it and its subdomains.
+                Other private-network targets are blocked.
+            </p>
+            <p id="guiUploadError" class="gui-message hidden" role="alert"></p>
+        </div>
+
+        <div class="gui-test-layout">
+            <section class="gui-card gui-test-list-card">
+                <div class="gui-card-heading">
+                    <div>
+                        <h2>Uploaded Test Cases</h2>
+                        <p>Select test files to run. Files ending in .spec.js/.spec.ts or .test.js/.test.ts are preselected; other uploads can provide helpers.</p>
+                    </div>
+                </div>
+                <div id="guiTestList" class="gui-test-list" aria-live="polite">
+                    <p class="gui-empty-state">No test files uploaded yet.</p>
+                </div>
+                <div class="gui-run-actions">
+                    <button class="btn-primary" id="runGuiTestsBtn" disabled>Run GUI Tests</button>
+                    <button class="btn-secondary hidden" id="stopGuiTestsBtn">Stop Run</button>
+                </div>
+                <p class="gui-security-note">
+                    Tests are executable code and run in a resource-limited Docker container.
+                    Browser traffic is limited to the hostnames above; private destinations are blocked
+                    except for explicitly allowed host.docker.internal targets.
+                    Only run test files you trust. Docker must be installed and running.
+                </p>
+            </section>
+
+            <section class="gui-card gui-preview-card">
+                <div class="gui-card-heading gui-preview-heading">
+                    <div>
+                        <h2>Live Browser Preview</h2>
+                        <p id="guiCurrentTest">Waiting for a test run</p>
+                    </div>
+                    <button class="btn-secondary" id="expandGuiPreviewBtn" disabled>Expand Preview</button>
+                </div>
+                <div id="guiPreviewFrame" class="gui-preview-frame">
+                    <div id="guiPreviewEmpty" class="gui-preview-empty">
+                        The Playwright browser will appear here when a run starts.
+                    </div>
+                    <iframe id="guiPreview" title="Live Playwright browser" class="hidden"></iframe>
+                    <button id="collapseGuiPreviewBtn" class="btn-secondary gui-preview-collapse hidden">Collapse Preview</button>
+                </div>
+
+                <div class="gui-dashboard">
+                    <div class="gui-stat"><span>Total</span><strong id="guiTotalCount">0</strong></div>
+                    <div class="gui-stat gui-stat-passed"><span>Passed</span><strong id="guiPassedCount">0</strong></div>
+                    <div class="gui-stat gui-stat-failed"><span>Failed</span><strong id="guiFailedCount">0</strong></div>
+                    <div class="gui-stat gui-stat-running"><span>Running</span><strong id="guiRunningCount">0</strong></div>
+                </div>
+            </section>
+        </div>
+
+        <div class="gui-bottom-grid">
+            <section class="gui-card">
+                <h2>Execution Status</h2>
+                <div id="guiResultsList" class="gui-results-list">
+                    <p class="gui-empty-state">Results will appear here after execution begins.</p>
+                </div>
+            </section>
+            <section class="gui-card">
+                <h2>Execution Logs</h2>
+                <pre id="guiExecutionLogs" class="gui-execution-logs" aria-live="polite">Ready.</pre>
+            </section>
+        </div>
+    </div>
 
    <!-- API PAGE -->
     <div id="apiPage" class="page hidden">

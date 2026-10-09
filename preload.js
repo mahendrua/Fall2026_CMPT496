@@ -144,5 +144,16 @@ contextBridge.exposeInMainWorld(
         selectCodebase: () =>
         ipcRenderer.invoke("select-codebase"),
 
+        selectGuiTestFiles: () => ipcRenderer.invoke("select-gui-test-files"),
+        startGuiTests: (testIds, allowedHosts) =>
+            ipcRenderer.invoke("start-gui-tests", { testIds, allowedHosts }),
+        stopGuiTests: () => ipcRenderer.invoke("stop-gui-tests"),
+        onGuiTestEvent: (callback) => {
+            ipcRenderer.on("gui-test-event", (event, payload) => callback(payload));
+        },
+        removeGuiTestListener: () => {
+            ipcRenderer.removeAllListeners("gui-test-event");
+        },
+
         }
 );

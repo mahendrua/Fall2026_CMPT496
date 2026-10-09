@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Playwright browser preview</title>
+    <style>
+        html, body, #screen {
+            width: 100%;
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background: #10131a;
+        }
+
+        #screen {
+            display: grid;
+            place-items: center;
+        }
+
+        #screen canvas {
+            max-width: 100%;
+            max-height: 100%;
+        }
+
+        #status {
+            position: fixed;
+            inset: auto 0 0;
+            padding: 0.35rem 0.6rem;
+            background: rgba(0, 0, 0, 0.7);
+            color: #fff;
+            font: 12px system-ui, sans-serif;
+        }
+    </style>
+</head>
+<body>
+    <div id="screen" aria-label="Live Playwright browser"></div>
+    <div id="status">Connecting to the Playwright browser...</div>
+    <script type="module">
+        import RFB from "./core/rfb.js";
+
+        const password = new URLSearchParams(location.hash.slice(1)).get("password") || "";
+        const status = document.getElementById("status");
+        const rfb = new RFB(
+            document.getElementById("screen"),
+            `ws://${location.host}/websockify`,
+            { credentials: { password } }
+        );
+
+        rfb.scaleViewport = true;
+        rfb.addEventListener("connect", () => {
+            status.textContent = "Connected";
+        });
+        rfb.addEventListener("disconnect", event => {
+            status.textContent = event.detail.clean ? "Browser session ended" : "Browser connection lost";
+        });
+        rfb.addEventListener("credentialsrequired", () => {
+            rfb.sendCredentials({ password });
+        });
+        rfb.addEventListener("securityfailure", () => {
+            status.textContent = "Could not authenticate to the browser session";
+        });
+    </script>
+</body>
+</html>

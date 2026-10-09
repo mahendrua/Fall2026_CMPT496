@@ -3,6 +3,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 const fs = require("fs");
 const dotenv = require("dotenv");
+const { GuiTestRunner } = require("./guiTestRunner");
 
 
 let pythonProcess = null;
@@ -10,6 +11,8 @@ let mainWindow = null;
 let restartBackendAfterCancel = false;
 // Directory the backend actually writes its output to (userData when packaged).
 let backendOutputDir = __dirname;
+let guiTestRunner = null;
+let guiShutdownStarted = false;
 // ----------------------------------------------------
 // API KEYS (.env)
 // ----------------------------------------------------
@@ -1085,6 +1088,68 @@ ipcMain.handle("select-codebase", async () => {
     return result.filePaths[0];
 });
 
+function getGuiTestRunner() {
+    if (!guiTestRunner) {
+        guiTestRunner = new GuiTestRunner({
+            appRoot: __dirname,
+            resourcesPath: process.resourcesPath,
+            isPackaged: app.isPackaged,
+            onEvent: payload => {
+                if (mainWindow && !mainWindow.isDestroyed()) {
+                    mainWindow.webContents.send("gui-test-event", payload);
+                }
+            }
+        });
+    }
+    return guiTestRunner;
+}
+
+ipcMain.handle("select-gui-test-files", async () => {
+    let selection;
+    try {
+        selection = await dialog.showOpenDialog(mainWindow, {
+            title: "Upload Playwright GUI test files",
+            properties: ["openFile", "multiSelections"],
+            filters: [
+                { name: "JavaScript and TypeScript", extensions: ["js", "ts"] },
+                { name: "All files", extensions: ["*"] }
+            ]
+        });
+    } catch (error) {
+        return { success: false, error: `Could not open the test file picker: ${error.message}` };
+    }
+
+    if (selection.canceled || !selection.filePaths.length) {
+        return { success: false, cancelled: true };
+    }
+
+    try {
+        return { success: true, tests: getGuiTestRunner().addFiles(selection.filePaths) };
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+});
+
+ipcMain.handle("start-gui-tests", async (event, request = {}) => {
+    try {
+        const run = await getGuiTestRunner().start(request.testIds, request.allowedHosts);
+        return { success: true, ...run };
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+});
+
+ipcMain.handle("stop-gui-tests", async () => {
+    try {
+        const stopped = await getGuiTestRunner().stop();
+        return stopped
+            ? { success: true }
+            : { success: false, error: "There is no GUI test run to stop." };
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+});
+
 // ----------------------------------------------------
 // START PYTHON BACKEND
 // ----------------------------------------------------
@@ -1281,6 +1346,19 @@ app.on(
 
         }
 
+    }
+);
+
+app.on(
+    "before-quit",
+    (event)=>{
+        if (guiTestRunner?.activeRun && !guiShutdownStarted) {
+            event.preventDefault();
+            guiShutdownStarted = true;
+            guiTestRunner.dispose()
+                .catch(error => console.error("Failed to clean up GUI test container:", error))
+                .finally(() => app.quit());
+        }
     }
 );
 

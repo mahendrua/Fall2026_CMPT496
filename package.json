@@ -32,6 +32,14 @@
       {
         "from": "releases/main",
         "to": "backend"
+      },
+      {
+        "from": "gui-runner",
+        "to": "gui-runner"
+      },
+      {
+        "from": "gui-proxy",
+        "to": "gui-proxy"
       }
     ]
   }

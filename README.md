@@ -96,6 +96,16 @@ Flags:
 Notes:
 - Run the command from the project root so the default input path resolves correctly.
 
+## Manual GUI testing
+
+The **GUI Test Cases** screen runs uploaded JavaScript and TypeScript Playwright tests in a separate Docker environment. Docker Desktop must be installed, running Linux containers, and have at least 2 GB of available memory. The Playwright and proxy images are built automatically on the first run and rebuilt when their bundled Docker contexts change; building requires an internet connection.
+
+Upload up to 20 `.js` or `.ts` files (2 MB each, 20 MB total). Select test files to run; unselected uploads remain available as relative helper modules. Tests should use `@playwright/test` or `playwright/test`; additional npm packages are not installed.
+
+Before running, enter each allowed website hostname on its own line. Hostnames allow HTTP and HTTPS on ports 80 and 443; adding a port also allows that port, for example `app.example.com:5173`. Host entries match exactly; prefix with `*.` to allow the hostname and its subdomains. Private network destinations are blocked. To test a web app running on the host machine, use `host.docker.internal:<port>` instead of `localhost` and explicitly allow it.
+
+The application mounts only copied test files into the runner, read-only, and runs the browser in a resource-limited container. Browser traffic is routed through a separate allowlisting proxy; the live browser preview and status stream are relayed through loopback-only host ports, while the runner remains isolated from the host network. Uploaded tests are executable code: only run files you trust.
+
 ## Packaging the backend using Pyinstaller
 
 Package backend using main.spec found in releases. Copy and paste any needed programs in before going to the next step. Stuff like plantuml.jar
