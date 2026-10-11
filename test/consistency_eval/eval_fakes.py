@@ -82,22 +82,51 @@ class AgreeingLLM(_Structured):
         ]))
 
 
+class CallBudgetExhausted(RuntimeError):
+    """Raised instead of calling the provider once the call budget is used up."""
+
+
+class CallBudget:
+    """
+    The most provider requests one evaluation may make, shared by every run.
+    Each attempt counts, including the checker's re-ask of an unreadable answer.
+    """
+
+    def __init__(self, limit):
+        self.limit = limit
+        self.used = 0
+        self.refused = 0
+
+    @property
+    def exhausted(self):
+        return self.used >= self.limit
+
+
 class RecordingLLM:
     """
     Wraps a chat model: counts calls, times them, keeps each structured
     answer (no model reasoning is requested or kept), and counts answers that
-    could not be read.
+    could not be read. With a budget, a request beyond it is refused before
+    anything is sent.
     """
 
-    def __init__(self, llm):
+    def __init__(self, llm, budget=None):
         self.llm = llm
+        self.budget = budget
         self.calls = []
+        self.refused = 0
 
     def with_structured_output(self, schema):
         self.structured = self.llm.with_structured_output(schema)
         return self
 
     def invoke(self, messages):
+        if self.budget is not None:
+            if self.budget.exhausted:
+                self.refused += 1
+                self.budget.refused += 1
+                raise CallBudgetExhausted(f"call budget of {self.budget.limit} used up; nothing was sent")
+            self.budget.used += 1
         start = time.perf_counter()
         try:
             answer = self.structured.invoke(messages)
@@ -111,6 +140,7 @@ class RecordingLLM:
     def stats(self):
         return dict(
             calls=len(self.calls),
+            refused=self.refused,
             unreadable=sum(c["error"] is not None or not isinstance(c["answer"], dict) for c in self.calls),
             proposed_findings=sum(len((c["answer"] or {}).get("findings") or []) for c in self.calls if isinstance(c["answer"], dict)),
             seconds=sum(c["seconds"] for c in self.calls),

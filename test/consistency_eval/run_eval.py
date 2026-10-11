@@ -4,8 +4,11 @@
 
 Offline by default: the model is replaced by the expectation-driven oracle, so
 nothing is sent anywhere and nothing is paid for. --real uses the key and model
-selected in Manage API Keys and makes one model call per target per repeat
-(plus at most one re-ask if an answer cannot be read).
+selected in Manage API Keys. --max-calls caps every provider request the batch
+makes: the model is built without agent/llm.py's automatic retries, and each
+attempt (including the checker's re-ask of an unreadable answer) is counted
+and refused once the cap is reached. A refused or failed request is reported
+as a failure, never as a result.
 
     .venv\\Scripts\\python.exe test\\consistency_eval\\run_eval.py --list
     .venv\\Scripts\\python.exe test\\consistency_eval\\run_eval.py
@@ -31,7 +34,7 @@ sys.path.insert(0, str(HERE))
 from agent.consistency_checker import run_consistency_check  # noqa: E402
 from backend.token_usage import record_usage, track_command  # noqa: E402
 from eval_cases import CASES, CASES_BY_NAME  # noqa: E402
-from eval_fakes import OracleLLM, RecordingLLM  # noqa: E402
+from eval_fakes import CallBudget, OracleLLM, RecordingLLM  # noqa: E402
 from eval_fixtures import build_case  # noqa: E402
 from eval_scoring import score_run, summarize  # noqa: E402
 
@@ -43,10 +46,10 @@ def targets_of(case):
     return [{"path": t.path, "symbol": t.symbol} if t.symbol else t.path for t in case.targets]
 
 
-def run_one(case, repeat, out_dir, llm_factory):
+def run_one(case, repeat, out_dir, llm_factory, budget=None):
     base = out_dir / case.name / f"run{repeat}"
     root, app = build_case(case, base)
-    llm = RecordingLLM(llm_factory(case))
+    llm = RecordingLLM(llm_factory(case), budget)
 
     started = time.perf_counter()
     with track_command(app, case.name, "consistency_eval"):
@@ -63,7 +66,8 @@ def run_one(case, repeat, out_dir, llm_factory):
     tokens = usage.summary()
     stats = llm.stats()
     calls = dict(
-        case=case.name, repeat=repeat, seconds=seconds, calls=stats["calls"], unreadable=stats["unreadable"],
+        case=case.name, repeat=repeat, seconds=seconds, calls=stats["calls"], refused=stats["refused"],
+        unreadable=stats["unreadable"],
         proposed_findings=stats["proposed_findings"], waits=len(log.get("waits") or []),
         input_tokens=tokens["input_tokens"], output_tokens=tokens["output_tokens"],
         thinking_tokens=tokens.get("thinking_tokens", 0), total_tokens=tokens["total_tokens"],
@@ -136,30 +140,41 @@ def main(argv=None):
         if not args.max_calls:
             parser.error("--real needs --max-calls: the most model calls you allow for this batch.")
         if planned > min(args.max_calls, CALL_CEILING):
-            parser.error(f"This batch needs {planned} model call(s) (up to {planned * 2} if answers must be re-asked); "
+            parser.error(f"This batch needs {planned} model call(s); "
                          f"--max-calls is {args.max_calls} and the ceiling is {CALL_CEILING}.")
-        from agent.llm import get_active_config, make_llm
+        from agent.llm import build_chat_model, get_active_config
         config = get_active_config()
         model = f"{config.provider} {config.model}"
-        shared = make_llm()
+        # No automatic retries: every provider request goes through the
+        # recorder, so the budget below bounds all of them.
+        shared = build_chat_model(config, retry=False)
         factory = lambda case: shared                    # noqa: E731
-        print(f"Real model {model}: {planned} planned call(s) across {len(cases)} case(s) x {args.repeat}.")
+        budget = CallBudget(min(args.max_calls, CALL_CEILING))
+        print(f"Real model {model}: {planned} planned call(s) across {len(cases)} case(s) x {args.repeat}; "
+              f"hard cap {budget.limit} provider request(s), retries included.")
     else:
         model = "offline oracle (no model calls)"
         factory = OracleLLM
+        budget = None
 
     mode = "real" if args.real else "offline"
     out_dir = Path(args.out) if args.out else HERE / "runs" / f"{datetime.now():%Y%m%d-%H%M%S}-{mode}"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    scored, calls = [], []
+    scored, calls, not_run = [], [], []
     for case in cases:
         for repeat in range(1, args.repeat + 1):
-            run, call = run_one(case, repeat, out_dir, factory)
+            if budget is not None and budget.exhausted:
+                not_run.append(dict(case=case.name, repeat=repeat, reason="call budget used up before this run"))
+                continue
+            run, call = run_one(case, repeat, out_dir, factory, budget)
             scored.append(run)
             calls.append(call)
 
     totals = summarize(scored, calls)
+    totals["not_run"] = not_run
+    if budget is not None:
+        totals["budget"] = dict(limit=budget.limit, provider_requests=budget.used, refused=budget.refused)
     (out_dir / "report.json").write_text(
         json.dumps(dict(model=model, mode=mode, runs=scored, calls=calls, totals=totals), indent=2), encoding="utf-8",
     )

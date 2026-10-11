@@ -177,3 +177,70 @@ def test_the_runner_refuses_unbounded_or_unknown_batches_before_any_call(argv, m
     with pytest.raises(SystemExit):
         run_eval.main(argv + ["--out", str(tmp_path)])
     assert message in capsys.readouterr().err
+
+
+# ---------------------------------------------------------
+# Provider call cap (retries included)
+# ---------------------------------------------------------
+
+from eval_fakes import CallBudget, CallBudgetExhausted  # noqa: E402
+
+
+class CountingLLM:
+    """A provider stand-in that counts every request it receives."""
+
+    def __init__(self, respond):
+        self.respond, self.requests = respond, 0
+
+    def with_structured_output(self, schema):
+        return self
+
+    def invoke(self, messages):
+        self.requests += 1
+        reply = self.respond(messages)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+
+def test_the_budget_refuses_requests_beyond_the_cap_before_sending(tmp_path):
+    case = CASES_BY_NAME["cross_file_dependency"]                       # two targets
+    provider = CountingLLM(OracleLLM(case).respond)
+    budget = CallBudget(1)
+    result = run_case(case, tmp_path, RecordingLLM(provider, budget))
+    assert provider.requests == 1
+    assert (budget.used, budget.refused) == (1, 2)                       # the re-ask was refused too
+    assert any("call budget of 1 used up" in e for e in result.errors)
+    assert result.status == "partial"
+
+
+def test_re_asks_count_against_the_budget(tmp_path):
+    case = CASES_BY_NAME["inclusive_boundary"]
+    provider = CountingLLM(lambda m: ValueError("unreadable"))
+    budget = CallBudget(5)
+    run_case(case, tmp_path, RecordingLLM(provider, budget))
+    assert provider.requests == budget.used == 2                        # first attempt + one re-ask
+
+
+def test_real_mode_builds_the_model_without_hidden_retries_and_stops_at_the_cap(monkeypatch, tmp_path):
+    from agent import llm as llm_module
+    built = {}
+    provider = CountingLLM(lambda m: ValueError("unreadable"))         # forces re-asks
+
+    def fake_build(config, max_output_tokens=None, retry=True):
+        built["retry"] = retry
+        return provider
+
+    monkeypatch.setattr(llm_module, "build_chat_model", fake_build)
+    monkeypatch.setattr(llm_module, "get_active_config", lambda: llm_module.LLMConfig("google", "test-model", "k"))
+
+    out = tmp_path / "out"
+    argv = ["--real", "--cases", "inclusive_boundary,ignored_parameter,summary_injection",
+            "--max-calls", "3", "--out", str(out)]
+    assert run_eval.main(argv) == 0
+    assert built["retry"] is False
+    assert provider.requests == 3                                        # never more than --max-calls
+    report = json.loads((out / "report.json").read_text(encoding="utf-8"))
+    assert report["totals"]["budget"] == {"limit": 3, "provider_requests": 3, "refused": 1}
+    assert [r["case"] for r in report["totals"]["not_run"]] == ["summary_injection"]
+    assert all(r["status"] == "failed" for r in report["runs"])          # failures, never clean results

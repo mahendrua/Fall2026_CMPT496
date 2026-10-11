@@ -191,6 +191,7 @@ def summarize(scored, calls=None):
         rejected_verdicts = sum(r["outcome"] == "rejected" for run in scored for r in run["outcomes"])
         totals["model"] = dict(
             calls=sum(c["calls"] for c in calls),
+            refused_by_budget=sum(c.get("refused", 0) for c in calls),
             unreadable_answers=sum(c["unreadable"] for c in calls),
             provider_waits=sum(c["waits"] for c in calls),
             proposed_findings=proposed,
