@@ -26,6 +26,49 @@ let backendOutputBuffer = "";
 //loadingscreen
 const commandRequests = new window.CommandRequestTracker();
 let activeRequestId = null;
+
+// Backend calls whose response goes to the caller's promise rather than the
+// shared handler below (the Consistency Review screen). They never become the
+// active request, so they cannot take over the loading screen or error popup.
+const directRequests = new Map();
+
+function backendCall(command, args = {}) {
+    const request = commandRequests.begin(command);
+
+    return new Promise(resolve => {
+        directRequests.set(request.requestId, resolve);
+
+        const refuse = error => {
+            const failure = commandRequests.fail(request.requestId, error);
+            directRequests.delete(request.requestId);
+            resolve(failure ? failure.response : { success: false, error });
+        };
+
+        window.electronAPI.executeCommand(command, args, request.requestId)
+            .then(ack => {
+                if (ack?.accepted === true && ack.request_id === request.requestId) {
+                    commandRequests.accept(request.requestId);
+                } else {
+                    refuse(ack?.error || "The backend did not accept the command.");
+                }
+            })
+            .catch(error => refuse(error.message || "Could not send the command to the backend."));
+    });
+}
+
+// Resolves a direct call's promise with its final response. True if the
+// response belonged to a direct call (handled, or still in progress).
+function settleDirectRequest(correlated) {
+    const requestId = correlated?.request?.requestId;
+    if (!requestId || !directRequests.has(requestId)) return false;
+
+    if (correlated.terminal) {
+        const resolve = directRequests.get(requestId);
+        directRequests.delete(requestId);
+        resolve(correlated.response);
+    }
+    return true;
+}
 let pipelineMode = false;
 
 let totalSteps = 1;
@@ -1680,6 +1723,19 @@ document.getElementById("viewDisplayErrorsBtn")
 
 });
 
+document.getElementById("viewConsistencyBtn")
+.addEventListener("click", () => {
+
+    showButtons("viewConsistencyBtns");
+
+    const output = document.getElementById("viewDisplayOutputBox");
+    output.innerHTML = "";
+
+    // Reads saved results only: no check is run and no model is called.
+    window.ConsistencyReviewScreen.open(output, { call: backendCall }, selectedCodebasePath);
+
+});
+
 document.getElementById("viewUsageBtn")
 .addEventListener("click", async () => {
 
@@ -2337,11 +2393,13 @@ window.electronAPI.onBackendResponse(async (response) => {
 
         if (typeof response.request_id !== "string" || !response.request_id) {
             const failures = commandRequests.failAll("Malformed backend response: missing request ID.");
+            failures.forEach(settleDirectRequest);
             correlated = failures.find(item => item.request.requestId === activeRequestId);
         } else {
             correlated = commandRequests.handle(response);
         }
 
+        if (correlated?.matched && settleDirectRequest(correlated)) return;
         if (!correlated?.matched) return;
         if (correlated.request.requestId !== activeRequestId) return;
         if (correlated.terminal) {
