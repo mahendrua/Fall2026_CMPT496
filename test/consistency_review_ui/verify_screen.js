@@ -211,6 +211,193 @@ async function screenStates() {
     expect(/misleading_name_accurate/.test(after.all) && !/ignored_parameter/.test(after.all), "switching project changes the codebase shown");
 }
 
+// --- Evidence, verdicts and review decisions ----------------------------------
+const DETAIL = `document.querySelector('#viewDisplayOutputBox .cr-detail')`;
+
+async function detailFacts() {
+    return js(`(() => {
+        const d = ${DETAIL};
+        if (!d) return null;
+        const t = sel => [...d.querySelectorAll(sel)].map(n => n.textContent);
+        return {
+            id: d.dataset.finding,
+            text: d.textContent,
+            sections: t('.cr-section-title'),
+            chips: t('.cr-chip'),
+            claims: t('.cr-claim'),
+            evidence: t('.cr-evidence'),
+            gutters: t('.cr-evidence .cr-gutter'),
+            current: t('.cr-current'),
+            checked: (d.querySelector('.cr-radio input:checked') || {}).value,
+            note: (d.querySelector('.cr-note-input') || {}).value,
+            saveDisabled: (d.querySelector('.cr-save') || {}).disabled,
+            dirty: (d.querySelector('.cr-dirty') || {}).textContent,
+            feedback: (d.querySelector('.cr-feedback') || {}).textContent,
+        };
+    })()`);
+}
+
+async function artifactsChecked() {
+    await until(`!${DETAIL}.textContent.includes('Checking current content')`, "current content states");
+}
+
+async function clickTab(label) {
+    await js(`[...document.querySelectorAll('.cr-tab')].find(b => b.textContent.startsWith(${JSON.stringify(label)})).click()`);
+    await sleep(100);
+}
+
+async function evidenceAndReview() {
+    // --- Evidence of a mismatch
+    await openScreen(cb("findings"));
+    await chooseScope("Selected files");
+    await artifactsChecked();
+    let d = await detailFacts();
+    expect(d && ["Conflicting claims", "Evidence used by this check", "Uncertainty", "Artifacts and current content", "Your review"]
+        .every(s => d.sections.includes(s)), "finding detail shows claims, evidence, uncertainty, artifacts and review", d && d.sections);
+    expect(d.claims.length === 2 && /What the code does/.test(d.claims[0]) && /What the artifact says/.test(d.claims[1]), "source and generated claims side by side");
+    expect(d.claims[1].includes("Returns true only when the item is unused"), "generated claim excerpt shown", d.claims[1]);
+    expect(/Intended behaviour: unknown/.test(d.text), "intended behaviour shown as unknown");
+    expect(d.evidence.some(e => e.includes("Inferred by reading the code (not executed)") && e.includes("return daysSincePurchase <= 30;")),
+        "evidence origin and stored excerpt shown", d.evidence);
+    expect(d.gutters.some(g => g.split("\n")[0] === "7"), "stored evidence carries its line numbers", d.gutters);
+    expect(/Intended behaviour: no confirmed requirement/.test(d.text), "uncertainty listed");
+    expect(d.chips.includes("Unchanged since the check"), "current content checked and unchanged", d.chips);
+    await shot("08-finding-evidence");
+
+    await clickTab("Verdicts");
+    let text = await js(`document.querySelector('.cr-tabbed').textContent`);
+    expect(/Consistent/.test(text) && /Inconsistent/.test(text) && /day 30|30 or fewer|30/.test(text), "verdicts tab shows every verdict with its reason");
+    const rows = await js(`document.querySelectorAll('.cr-tabbed tbody tr').length`);
+    expect(rows === 3, "one verdict row per assessed artifact", rows);
+    await shot("09-verdicts");
+    await clickTab("Findings");
+
+    // --- Review: draft kept, single save, persisted
+    const first = d.id;
+    await js(`(() => { const r = ${DETAIL}.querySelector('.cr-radio input[value="reviewed"]'); r.click(); return true; })()`);
+    await js(`(() => { const t = ${DETAIL}.querySelector('.cr-note-input'); t.focus(); t.value = 'Checked with the team; intent still unknown.';
+        t.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+    d = await detailFacts();
+    expect(d.checked === "reviewed" && d.dirty === "Unsaved changes" && d.saveDisabled === false, "edited review shows as unsaved", d);
+    const focused = await js(`document.activeElement && document.activeElement.classList.contains('cr-note-input')`);
+    expect(focused, "typing a note keeps focus in the note");
+
+    const second = (await facts()).rowIds.find(id => id !== first);
+    await js(`document.querySelector('.cr-finding[data-id="${second}"]').click()`);
+    await artifactsChecked();
+    let rowsText = await js(`document.querySelector('.cr-finding[data-id="${first}"]').textContent`);
+    expect(/Unsaved/.test(rowsText), "the edited finding is marked unsaved in the list");
+    expect(/1 review not saved yet/.test((await facts()).all), "header counts unsaved reviews");
+    await js(`document.querySelector('.cr-finding[data-id="${first}"]').click()`);
+    d = await detailFacts();
+    expect(d.note === "Checked with the team; intent still unknown." && d.checked === "reviewed", "switching findings keeps the draft", d);
+
+    const resultPath = path.join(demo.app, "agent", "consistency_output", demo.states.findings, "consistency_result_selected.json");
+    const resultBefore = fs.readFileSync(resultPath, "utf8");
+    await js(`(() => { window.__crSaves = 0; const real = backendCall;
+        backendCall = (command, args) => { if (command === 'save_consistency_review') window.__crSaves++; return real(command, args); };
+        window.ConsistencyReviewScreen._state.api = { call: backendCall }; return true; })()`);
+    await js(`(() => { const b = ${DETAIL}.querySelector('.cr-save'); b.click(); b.click(); return true; })()`);
+    await until(`/Saved at/.test((${DETAIL}.querySelector('.cr-feedback') || {}).textContent || '')`, "save feedback");
+    const saves = await js(`window.__crSaves`);
+    expect(saves === 1, "a double click saves once", saves);
+    d = await detailFacts();
+    expect(d.chips.includes("Reviewed") && d.dirty === "" && d.saveDisabled === true, "saved review shown as saved", d);
+    expect(/Reviewed or dismissed records your decision only. It does not mean the code/.test(d.text), "review controls disclaim correctness");
+    expect(fs.readFileSync(resultPath, "utf8") === resultBefore, "saving a review leaves the saved result untouched");
+    const reviews = JSON.parse(fs.readFileSync(path.join(path.dirname(resultPath), "reviews.json"), "utf8"));
+    expect(reviews.reviews[first] && reviews.reviews[first].note === "Checked with the team; intent still unknown.", "review written to reviews.json");
+    await js(`${DETAIL}.querySelector('.cr-review').scrollIntoView({ block: 'center' })`);
+    await shot("10-review-saved");
+
+    await js(`[...document.querySelectorAll('.cr-button')].find(b => b.textContent === 'Reload').click()`);
+    await until(LOADED, "reload");
+    await js(`document.querySelector('.cr-finding[data-id="${first}"]').click()`);
+    d = await detailFacts();
+    expect(d.checked === "reviewed" && d.note === "Checked with the team; intent still unknown.", "review restored after reload", d);
+
+    await openScreen(cb("clean"));
+    await openScreen(cb("findings"));
+    await chooseScope("Selected files");
+    await js(`document.querySelector('.cr-finding[data-id="${first}"]').click()`);
+    d = await detailFacts();
+    expect(d.checked === "reviewed", "review restored after switching project and back");
+    const cleanReviews = path.join(demo.app, "agent", "consistency_output", demo.states.clean, "reviews.json");
+    expect(!fs.existsSync(cleanReviews), "no review written for another project");
+
+    // --- Keyboard selection
+    await js(`document.querySelector('.cr-finding[data-id="${second}"]').focus()`);
+    for (const type of ["keyDown", "char", "keyUp"]) win.webContents.sendInputEvent({ type, keyCode: type === "char" ? "\r" : "Enter" });
+    await sleep(300);
+    d = await detailFacts();
+    expect(d.id === second, "a finding can be opened with the keyboard", d.id);
+
+    // --- A failed save keeps the draft and says why
+    await openScreen(cb("partial_findings"));
+    await artifactsChecked();
+    await js(`(() => { const r = ${DETAIL}.querySelector('.cr-radio input[value="dismissed"]'); r.click(); return true; })()`);
+    const partialPath = path.join(demo.app, "agent", "consistency_output", demo.states.partial_findings, "consistency_result_selected.json");
+    const partial = JSON.parse(fs.readFileSync(partialPath, "utf8"));
+    partial.check_id = "replaced-elsewhere";
+    fs.writeFileSync(partialPath, JSON.stringify(partial));
+    await js(`${DETAIL}.querySelector('.cr-save').click()`);
+    await until(`/Not saved/.test((${DETAIL}.querySelector('.cr-feedback') || {}).textContent || '')`, "save error");
+    d = await detailFacts();
+    expect(/changed since this screen loaded it/.test(d.feedback) && d.checked === "dismissed" && d.dirty === "Unsaved changes",
+        "a refused save explains itself and keeps the draft", d);
+    await shot("11-save-refused");
+
+    // --- Skipped and undetermined
+    await openScreen(cb("skipped"));
+    await clickTab("Skipped");
+    text = await js(`document.querySelector('.cr-tabbed').textContent`);
+    expect(/Folder-level rule for src/.test(text) && /not assessed/.test(text), "skipped tab explains the folder-level rule");
+    await shot("12-skipped");
+    await openScreen(cb("undetermined"));
+    await clickTab("Undetermined");
+    text = await js(`document.querySelector('.cr-tabbed').textContent`);
+    expect(/could not decide/.test(text) && /Summary/.test(text), "undetermined tab lists the comparison and its reason");
+    await openScreen(cb("older"));
+    await clickTab("Verdicts");
+    text = await js(`document.querySelector('.cr-tabbed').textContent`);
+    expect(/This older result does not record the verdict/.test(text), "older result: verdicts shown as not recorded, not as none");
+
+    // --- Changed and missing content
+    await openScreen(cb("skipped"));
+    await artifactsChecked();
+    d = await detailFacts();
+    expect(d.chips.includes("Changed since the check"), "edited source marked changed", d.chips);
+    expect(d.evidence.some(e => e.includes("age >= 18")), "stored evidence still shows the original code");
+    await js(`[...${DETAIL}.querySelectorAll('.cr-current .cr-button')].find(b => b.textContent === 'Show current content').click()`);
+    d = await detailFacts();
+    expect(d.current.some(c => /changed, not the evidence used/.test(c) && c.includes("age >= 21")), "current content shown separately and labelled", d.current);
+    await js(`[...${DETAIL}.querySelectorAll('.cr-artifact')].find(a => a.textContent.includes('Changed since')).scrollIntoView({ block: 'start' })`);
+    await shot("13-changed-content");
+
+    await openScreen(cb("missing_source"));
+    await artifactsChecked();
+    d = await detailFacts();
+    expect(d.chips.includes("No longer exists") && d.evidence.some(e => e.includes("return price + price * 0.10m;")),
+        "deleted source: reported missing, stored evidence kept", d.chips);
+
+    // --- Untrusted text stays text
+    await openScreen(cb("injection"));
+    await artifactsChecked();
+    const injection = await js(`(() => {
+        const s = document.querySelector('#viewDisplayOutputBox .cr-screen');
+        return { injected: window.__crInjected, elements: s.querySelectorAll('img, script, iframe, object').length,
+                 literal: s.textContent.includes('<img src=x'), note: (s.querySelector('.cr-note-input') || {}).value || '' };
+    })()`);
+    expect(injection.injected === undefined && injection.elements === 0, "HTML in titles, claims and notes is not interpreted", injection);
+    expect(injection.literal && injection.note.includes("<script>"), "the HTML is shown as literal text", injection);
+    await clickTab("Verdicts");
+    const verdictInjection = await js(`(() => ({ injected: window.__crInjected,
+        elements: document.querySelectorAll('#viewDisplayOutputBox img, #viewDisplayOutputBox script').length }))()`);
+    expect(verdictInjection.injected === undefined && verdictInjection.elements === 0, "HTML in verdict reasons is not interpreted");
+    await clickTab("Findings");
+    await shot("14-injection-as-text");
+}
+
 // --- Run --------------------------------------------------------------------
 app.whenReady().then(async () => {
     try {
@@ -220,7 +407,7 @@ app.whenReady().then(async () => {
         win.setSize(1440, 960);
 
         await screenStates();
-        if (typeof module.exports.extra === "function") await module.exports.extra({ js, until, openScreen, chooseScope, facts, shot, expect, cb, demo, sleep });
+        await evidenceAndReview();
 
         expect(!fs.existsSync(path.join(demo.app, "MODEL_REQUESTED")), "no model was requested");
     } catch (error) {
