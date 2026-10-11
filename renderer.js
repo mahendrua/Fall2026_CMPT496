@@ -259,7 +259,9 @@ refreshApiKeyList();
 // Backend Communication Helpers
 // ============================================
 
-function showLoading(title, message) {
+// options.noPercent hides the step percentage bar, for steps whose backend
+// reports no percentage (the bar would otherwise sit at a meaningless value).
+function showLoading(title, message, options = {}) {
 
 
     const overlay =
@@ -275,6 +277,8 @@ function showLoading(title, message) {
     // show spinner & loading bar
     document.getElementById("loadingSpinner").classList.remove("hidden");
     document.getElementById("stepProgressContainer").classList.remove("hidden");
+    document.getElementById("loadingStepProgressContainer").classList.toggle("hidden", Boolean(options.noPercent));
+    document.getElementById("loadingStepProgressText").classList.toggle("hidden", Boolean(options.noPercent));
 
     // Hide pipeline progress by default
     document.getElementById("pipelineProgressContainer").classList.add("hidden");
@@ -446,9 +450,11 @@ function finishLoading(message = "Process completed successfully!") {
     }
 
 
-    // hide spinner and progress bars
+    // hide spinner and progress bars; the message itself (inside the step
+    // container) stays visible
     document.getElementById("loadingSpinner").classList.add("hidden");
-    document.getElementById("stepProgressContainer").classList.add("hidden");
+    document.getElementById("loadingStepProgressContainer").classList.add("hidden");
+    document.getElementById("loadingStepProgressText").classList.add("hidden");
     document.getElementById("pipelineProgressContainer").classList.add("hidden");
     document.getElementById("stepProgressTitle").classList.add("hidden");
 
@@ -2228,9 +2234,27 @@ document.getElementById('runConsistencyReviewOnlyBtn')
     .addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
+
+        // A new check replaces the saved result that unsaved review notes belong to.
+        const unsaved = window.ConsistencyReviewScreen.unsavedReviews(selectedCodebasePath);
+        if (unsaved) {
+            showErrorPopup(
+                `You have ${unsaved} unsaved review ${unsaved === 1 ? "note" : "notes"} for this codebase in `
+                + "View Insights → Consistency Review. Save or discard them there first: a new check replaces "
+                + "the result they belong to."
+            );
+            return;
+        }
+
         showLoading(
             "Consistency Review",
-            "Preparing..."
+            "Preparing...",
+            { noPercent: true }
+        );
+        showLoadingWarning(
+            "This compares the code with the summaries, rules and tests already generated; nothing is "
+            + "regenerated. Each file checked is a request on your selected API key. Cancel stops the check "
+            + "at once: nothing from it is saved (the previous result stays), and requests already made still count."
         );
 
         runBackendCommand(
@@ -2723,6 +2747,31 @@ window.electronAPI.onBackendResponse(async (response) => {
     }
 
 
+
+
+    // ----------------------------------------
+    // Consistency check completion
+    // ----------------------------------------
+    // Completed, incomplete and failed checks all return success (the result
+    // was saved); the title tells them apart, and the warning carries why.
+    if (activeCommand === "check_consistency" && response.success && response.result) {
+
+        const check = response.result;
+
+        finishLoading(`${check.message} Open View Insights → Consistency Review to see the result.`);
+
+        document.getElementById("loadingTitle").textContent = {
+            completed: "Complete",
+            partial: "Check incomplete",
+            failed: "Check failed",
+        }[check.status] || "Complete";
+
+        showLoadingWarning(check.warning);
+
+        activeCommand = null;
+
+        return;
+    }
 
 
     // ----------------------------------------

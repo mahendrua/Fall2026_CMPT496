@@ -470,22 +470,30 @@ async function openResults() {
     await until(LOADED, "results screen");
 }
 
-const overlay = () => js(`(() => ({
-    shown: !document.getElementById('loadingOverlay').classList.contains('hidden'),
-    title: document.getElementById('loadingTitle').textContent.trim(),
-    message: document.getElementById('loadingStepMessage').textContent.trim(),
-    warning: document.getElementById('loadingWarning').classList.contains('hidden') ? '' : document.getElementById('loadingWarning').textContent.trim(),
-    ok: !document.getElementById('loadingOkBtn').classList.contains('hidden'),
-    error: !document.getElementById('errorPopup').classList.contains('hidden')
-        ? document.getElementById('errorPopup').textContent.trim() : '',
-}))()`);
+/* What the loading overlay shows; visible means actually rendered, not just filled in. */
+const overlay = () => js(`(() => {
+    const seen = id => { const n = document.getElementById(id); return !!n && n.getClientRects().length > 0; };
+    const text = id => document.getElementById(id).textContent.trim();
+    return {
+        shown: !document.getElementById('loadingOverlay').classList.contains('hidden'),
+        title: text('loadingTitle'),
+        message: text('loadingStepMessage'),
+        messageVisible: seen('loadingStepMessage'),
+        percentVisible: seen('loadingStepProgressContainer') || seen('loadingStepProgressText'),
+        cancelVisible: seen('loadingCancelBtn'),
+        warning: document.getElementById('loadingWarning').classList.contains('hidden') ? '' : text('loadingWarning'),
+        ok: seen('loadingOkBtn'),
+        error: document.getElementById('errorPopup').classList.contains('hidden') ? '' : text('errorPopup'),
+    };
+})()`);
 
 async function runFromOperations() {
     await js(`document.getElementById('runConsistencyReviewOnlyBtn').click()`);
 }
 
 async function waitForOperation(timeout = 60000) {
-    await until(`document.getElementById('loadingTitle').textContent.trim() === 'Complete'
+    // Finished: the OK button appears (whatever the title says), or an error popup.
+    await until(`!document.getElementById('loadingOkBtn').classList.contains('hidden')
         || !document.getElementById('errorPopup').classList.contains('hidden')`, "operation to finish", timeout);
     await sleep(200);
 }
@@ -527,6 +535,8 @@ async function operationsRun() {
     const [response] = (await checkResponses()).slice(-1);
     expect(o.title === "Complete" && /Consistency check completed: no mismatches found in the assessed artifacts/.test(o.message),
         "completion message shown", o);
+    expect(o.messageVisible && /Open View Insights → Consistency Review to see the result/.test(o.message),
+        "the completion message is visible and says where to look", o);
     expect(callsFor("misleading_name_accurate") - before === 1, "one model call for the one file", callsFor("misleading_name_accurate") - before);
     expect(response && response.success && response.result.scope === "full", "a whole-codebase check was run", response && response.result);
     await shot("16-operations-complete");
@@ -536,11 +546,94 @@ async function operationsRun() {
     expect(f.fields.Check === response.result.check_id && f.fields.Result === "Whole project" && f.state === "clean",
         "View Insights shows the result of that check", [f.fields.Check, response.result.check_id, f.state]);
 
+    await operationsFeedback();
+
     // Nothing was regenerated and no pipeline step ran.
     control({});
     expect(JSON.stringify(pipelineOutputs()) === JSON.stringify(outputsBefore), "no summary, rule or test output changed");
     expect(!modelEvents().some(e => e.event === "generation"), "no generation agent or database build was started");
     expect(!fs.existsSync(path.join(demo.app, "MODEL_REQUESTED")), "no real model was ever requested");
+}
+
+async function runAndFinish(codebase, controlData) {
+    control(controlData || {});
+    await chooseCodebase(cb(codebase));
+    await runFromOperations();
+    await waitForOperation();
+    return overlay();
+}
+
+const savedCheckId = state => {
+    const file = path.join(demo.app, "agent", "consistency_output", demo.states[state], "consistency_result.json");
+    return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")).check_id : null;
+};
+
+async function operationsFeedback() {
+    // Running: real progress lines, no percentage, an honest cancel note.
+    control({ delay: 3 });
+    await chooseCodebase(cb("findings"));
+    await runFromOperations();
+    await until(`document.getElementById('loadingStepMessage').textContent.includes('Checking consistency: src/Refunds.cs')`, "progress line");
+    let o = await overlay();
+    expect(o.shown && o.messageVisible && !o.percentVisible, "running shows backend progress and no percentage", o);
+    expect(o.cancelVisible && /Cancel stops the check at once: nothing from it is saved/.test(o.warning), "Cancel is explained honestly", o.warning);
+    await shot("17-operations-running");
+    await waitForOperation();
+    o = await overlay();
+    expect(o.title === "Complete" && /2 mismatches found/.test(o.message) && o.warning === "", "a completed check with findings", o);
+
+    // Incomplete and failed checks are told apart.
+    o = await runAndFinish("partial_clean");
+    expect(o.title === "Check incomplete" && /Consistency check incomplete/.test(o.message) && o.warning, "incomplete check titled as such", o);
+    const failBefore = callsFor("cross_file_dependency");
+    o = await runAndFinish("undetermined", { fail: ["cross_file_dependency"] });
+    expect(o.title === "Check failed" && /daily limit/.test(o.warning), "daily limit titled as a failed check with the reason", o);
+    expect(callsFor("cross_file_dependency") - failBefore === 1, "a daily limit stops after one call", callsFor("cross_file_dependency") - failBefore);
+    await shot("18-operations-failed");
+
+    // A provider wait shows the backend's own message.
+    control({ wait: ["inclusive_boundary"], delay: 1 });
+    await chooseCodebase(cb("skipped"));
+    const waitBefore = callsFor("inclusive_boundary");
+    await runFromOperations();
+    await until(`/rate limit reached, waiting 1 s before retrying/.test(document.getElementById('loadingStepMessage').textContent)`, "provider wait");
+    await waitForOperation();
+    expect(callsFor("inclusive_boundary") - waitBefore === 1, "a provider wait does not resubmit the request");
+
+    // A codebase without outputs: nothing to check, no call.
+    o = await runAndFinish("no_outputs");
+    expect(o.title === "Check failed" && /Nothing to check/.test(o.warning), "no outputs: reported without a model call", o);
+
+    // Unsaved review notes block a new check until saved or discarded.
+    await openScreen(cb("findings"));
+    await js(`(() => { document.querySelector('#viewDisplayOutputBox .cr-detail .cr-radio input[value="dismissed"]').click(); return true; })()`);
+    const before = (await checkResponses()).length;
+    await chooseCodebase(cb("findings"));
+    await runFromOperations();
+    await sleep(300);
+    o = await overlay();
+    expect(/1 unsaved review note/.test(o.error) && (await checkResponses()).length === before, "unsaved review notes stop the check", o.error);
+    await js(`document.getElementById('errorPopupCloseBtn').click()`);
+    await openResults();
+    await js(`[...document.querySelectorAll('.cr-unsaved .cr-button')].find(b => b.textContent === 'Discard unsaved reviews').click()`);
+    const remaining = await js(`window.ConsistencyReviewScreen.unsavedReviews(selectedCodebasePath)`);
+    expect(remaining === 0, "unsaved notes can be discarded from the review screen", remaining);
+
+    // Cancel stops the check; nothing from it is saved and the previous result stays.
+    const previous = savedCheckId("findings");
+    control({ delay: 6 });
+    await chooseCodebase(cb("findings"));
+    await runFromOperations();
+    await until(`/Checking consistency/.test(document.getElementById('loadingStepMessage').textContent)`, "check started");
+    await js(`document.getElementById('loadingCancelBtn').click()`);
+    await until(`document.getElementById('loadingOverlay').classList.contains('hidden')`, "cancelled");
+    await sleep(500);
+    expect(savedCheckId("findings") === previous, "a cancelled check leaves the previous result", [savedCheckId("findings"), previous]);
+    control({});
+    await sleep(3000);                                      // the backend restarts after a cancel
+    await openResults();
+    const f = await facts();
+    expect(f.fields.Check === previous, "after a cancel the review screen still shows the previous result", f.fields.Check);
 }
 
 // --- Run --------------------------------------------------------------------

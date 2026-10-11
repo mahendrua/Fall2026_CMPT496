@@ -208,9 +208,19 @@
         return draft;
     }
 
+    /* Unsaved notes for this codebase in either scope: the same count the Operations run checks. */
     function unsavedCount() {
-        const prefix = `${nameOf(state.codebasePath)}|${(resultOf() || {}).check_id || ""}|`;
-        return [...state.drafts.keys()].filter(k => k.startsWith(prefix)).length;
+        return M.unsavedFor(state.drafts.keys(), nameOf(state.codebasePath));
+    }
+
+    /* Drops every unsaved review note for this codebase (an explicit choice). */
+    function discardUnsaved() {
+        const prefix = `${nameOf(state.codebasePath)}|`;
+        [...state.drafts.keys()].filter(k => k.startsWith(prefix)).forEach(k => {
+            state.drafts.delete(k);
+            state.feedback.delete(k);
+        });
+        render();
     }
 
     async function save(finding) {
@@ -341,7 +351,13 @@
             el("div", null,
                 el("h2", { class: "summary-header", text: "Consistency Review" }),
                 el("p", { class: "cr-muted", text: `Codebase: ${(review && review.codebase) || nameOf(state.codebasePath)}` }),
-                unsaved ? el("p", { class: "cr-unsaved", text: `${M.plural(unsaved, "review")} not saved yet` }) : null),
+                unsaved ? el("p", { class: "cr-unsaved" },
+                    `${M.plural(unsaved, "review")} not saved yet `,
+                    el("button", {
+                        class: "cr-button", text: "Discard unsaved reviews",
+                        attrs: { type: "button", "data-focus": "discard-unsaved" },
+                        on: { click: discardUnsaved },
+                    })) : null),
             el("div", { class: "cr-header-actions", attrs: { role: "group", "aria-label": "Result scope" } },
                 ...scopes,
                 el("button", { class: "cr-button", text: "Reload", attrs: { type: "button" }, on: { click: () => load() } })));
