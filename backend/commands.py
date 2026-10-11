@@ -52,6 +52,8 @@ from agent.llm import verify_llm_key
 from agent.BR_input_loader import load_rule_candidates, deduplicate_rule_candidates
 from agent.structured_output.UT_output import ValidatedRule
 from agent.structured_output.UTV_output import UnitTest
+from agent.consistency_store import ConsistencyStoreError
+from backend import consistency_review
 
 from src.build_database import build_database
 from src.build_database_JSON import build_database as build_summary_database
@@ -246,6 +248,59 @@ class Commands:
             }
 
         return {"success": True, "run_usage": data}
+
+    # -----------------------------------------------------
+    # Consistency Review Commands
+    # -----------------------------------------------------
+    # Read saved results and save review decisions for the Consistency Review
+    # screen. Like get_run_usage they are outside _run_command (viewing is not
+    # a run), and none of them creates or calls a model.
+
+    def get_consistency_result(self, codebase: str = "", scope: str = "full"):
+        """Return the saved full or selected consistency check for a codebase."""
+        return self._consistency_call(
+            lambda: {"review": consistency_review.load_for_review(codebase, scope, self.app_dir)}
+        )
+
+    def save_consistency_review(
+        self,
+        codebase: str = "",
+        scope: str = "full",
+        check_id: str = "",
+        finding_id: str = "",
+        status: str = "",
+        note: str = None,
+    ):
+        """Save a review status and optional note for one finding of the result being reviewed."""
+        return self._consistency_call(
+            lambda: {"saved": consistency_review.save_review(
+                codebase, scope, check_id, finding_id, status, note, self.app_dir,
+            )}
+        )
+
+    def get_consistency_artifact(
+        self,
+        codebase: str = "",
+        scope: str = "full",
+        check_id: str = "",
+        finding_id: str = "",
+        artifact_index: int = -1,
+    ):
+        """Return the current state and content of one artifact a finding refers to."""
+        return self._consistency_call(
+            lambda: {"artifact": consistency_review.read_artifact(
+                codebase, scope, check_id, finding_id, artifact_index, self.app_dir,
+            )}
+        )
+
+    @staticmethod
+    def _consistency_call(task):
+        try:
+            return {"success": True, **task()}
+        except (consistency_review.ReviewRequestError, ConsistencyStoreError) as exc:
+            return {"success": False, "error": str(exc)}
+        except OSError as exc:
+            return {"success": False, "error": f"Could not read the saved result: {exc}"}
 
     # -----------------------------------------------------
     # Calibration Commands
