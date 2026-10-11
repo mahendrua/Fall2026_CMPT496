@@ -27,6 +27,7 @@ States written:
     missing_source    arithmetic_shared_mistake: source deleted after the check
     no_check          collection_order_js: built but never checked
     undetermined      cross_file_dependency: one comparison undetermined
+    no_outputs        no_outputs: source code with no pipeline outputs
 """
 
 import json
@@ -112,6 +113,12 @@ def main(out_dir):
     check("cross_file_dependency")
     build("collection_order_js")
 
+    # Source code with no pipeline outputs at all.
+    bare = out / "codebase" / "no_outputs"
+    (bare / "src").mkdir(parents=True, exist_ok=True)
+    (bare / "src" / "Plain.cs").write_text("class Plain {}\n", encoding="utf-8")
+    roots["no_outputs"] = bare
+
     # The most recent logged run of ignored_parameter is a later one, started
     # after the checks above, so their results are from an earlier run.
     later = datetime.now() + timedelta(minutes=1)
@@ -152,7 +159,7 @@ def main(out_dir):
             partial_clean="reference_problems", partial_findings="validation_and_state", failed="summary_injection",
             unreadable="side_effects", older="same_file_helper", injection="exclusive_boundary_comments",
             missing_source="arithmetic_shared_mistake", no_check="collection_order_js",
-            undetermined="cross_file_dependency",
+            undetermined="cross_file_dependency", no_outputs="no_outputs",
         ),
     )
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")

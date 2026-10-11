@@ -274,3 +274,83 @@ def test_the_command_runs_through_the_dispatcher(env):
                               targets=["src/Refunds.cs"], request_id="r-1")
     assert out["success"] is True and out["request_id"] == "r-1"
     assert out["result"]["scope"] == "selected"
+
+
+# ---------------------------------------------------------
+# Choosing what to check (no model)
+# ---------------------------------------------------------
+
+def test_the_files_a_check_can_cover_are_listed_with_plain_counts(env):
+    env.build("validation_and_state")
+    out = env.commands.get_consistency_targets(str(env.root))
+    assert out["success"] is True
+    listed = out["targets"]
+    assert listed["files"] == [{"path": "src/Account.cs", "summary": "resolved", "rules": 2, "tests": 2,
+                                "methods_supported": True}]
+    assert listed["outputs"] == {"summaries": True, "rules": True, "tests": True}
+    assert env.models.created == 0
+
+
+def test_missing_outputs_and_unusable_summaries_are_listed_honestly(env):
+    env.build("missing_outputs")
+    listed = consistency_review.list_targets(env.root, env.app)
+    assert listed["outputs"] == {"summaries": True, "rules": False, "tests": False}
+    env.build("reference_problems")
+    listed = consistency_review.list_targets(env.root, env.app)
+    assert listed["files"][0]["summary"] == "ambiguous"
+
+
+def test_listed_files_skip_generated_test_folders(env):
+    env.build("ignored_parameter")
+    generated = env.root / "ignored_parameter.Tests"
+    generated.mkdir()
+    (generated / ".checkpoint-generated").write_text("", encoding="utf-8")
+    (generated / "UT_1.cs").write_text("class UT_1 {}", encoding="utf-8")
+    summary_dir = env.app / "agent" / "file_summary_agent_output" / "ignored_parameter"
+    first = next(summary_dir.glob("*.json"))
+    data = json.loads(first.read_text(encoding="utf-8"))
+    data["path"] = str(generated / "UT_1.cs")
+    (summary_dir / "UT_1-cs__1.json").write_text(json.dumps(data), encoding="utf-8")
+    listed = consistency_review.list_targets(env.root, env.app)
+    assert [f["path"] for f in listed["files"]] == ["src/Refunds.cs"]
+
+
+def test_methods_are_listed_and_overloads_marked(env):
+    env.build("validation_and_state")
+    (env.root / "src" / "Overloads.cs").write_text(
+        "class Calc {\n  int Add(int a) { return a; }\n  int Add(int a, int b) { return a + b; }\n  int Neg(int a) { return -a; }\n}\n",
+        encoding="utf-8")
+    out = env.commands.get_consistency_methods(str(env.root), "src/Overloads.cs")
+    methods = {m["symbol"]: m["overloaded"] for m in out["methods"]["methods"]}
+    assert methods == {"Calc.Add": True, "Calc.Neg": False}
+    account = consistency_review.list_methods(env.root, "src/Account.cs", env.app)
+    assert [m["symbol"] for m in account["methods"]] == ["Account.Account", "Account.Withdraw"]
+
+
+@pytest.mark.parametrize("path, message", [
+    ("../outside.cs", "not inside the codebase"),
+    ("src/Nope.cs", "does not exist"),
+])
+def test_method_listing_refuses_unusable_paths(env, path, message):
+    env.build("validation_and_state")
+    out = env.commands.get_consistency_methods(str(env.root), path)
+    assert out["success"] is False and message in out["error"]
+
+
+def test_files_whose_methods_cannot_be_listed_say_so(env):
+    env.build("validation_and_state")
+    (env.root / "src" / "notes.txt").write_text("plain text", encoding="utf-8")
+    out = consistency_review.list_methods(env.root, "src/notes.txt", env.app)
+    assert out["supported"] is False and "whole file" in out["reason"]
+
+
+def test_listing_through_the_dispatcher(env):
+    env.build("validation_and_state")
+    dispatcher = CommandDispatcher()
+    dispatcher.commands = env.commands
+    dispatcher.routes.update(get_consistency_targets=env.commands.get_consistency_targets,
+                             get_consistency_methods=env.commands.get_consistency_methods)
+    dispatcher.error_log = []
+    assert dispatcher.dispatch("get_consistency_targets", codebase=str(env.root))["success"] is True
+    assert dispatcher.dispatch("get_consistency_methods", codebase=str(env.root), path="src/Account.cs")["success"] is True
+    assert dispatcher.dispatch("get_consistency_targets", codebase=str(env.root / "nowhere"))["success"] is False

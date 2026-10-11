@@ -157,7 +157,7 @@
                 kind: "no_check",
                 title: `No saved check (${scope})`,
                 message: `No consistency check of this scope has been saved for ${review.codebase}. `
-                    + "Running a check from this screen is not available yet.",
+                    + "Use New check to run one.",
             };
         }
 
@@ -267,6 +267,74 @@
         };
     }
 
+    const SUMMARY_STATES = {
+        resolved: "summary",
+        missing: "no summary",
+        ambiguous: "two summaries (not compared)",
+        stale: "summary out of date",
+        unverified: "summary unreadable",
+    };
+
+    /* Plain description of what was generated for a file, for choosing what to check. */
+    function artifactsText(file) {
+        const parts = [SUMMARY_STATES[file.summary] || "summary " + file.summary];
+        parts.push(plural(file.rules, "rule"));
+        parts.push(plural(file.tests, "test"));
+        return parts.join(" · ");
+    }
+
+    /* Files a model request would be made for: a usable summary or at least one rule. */
+    function comparable(file) {
+        return file.summary === "resolved" || file.rules > 0;
+    }
+
+    /*
+     * The check request the panel describes, or an error saying why it
+     * cannot start. selected maps a file path to "" (whole file) or a method.
+     */
+    function checkRequest(panel) {
+        if (panel.scope === "full") return { scope: "full", targets: [] };
+        const targets = [...panel.selected.entries()].map(([path, symbol]) => (symbol ? { path, symbol } : path));
+        if (!targets.length) return { error: "Select at least one file to check." };
+        return { scope: "selected", targets };
+    }
+
+    /* What will be checked and at most how many model requests it can make. */
+    function describeCheck(request, files) {
+        const byPath = new Map((files || []).map(f => [f.path, f]));
+        if (request.scope === "full") {
+            const all = files || [];
+            const count = all.filter(comparable).length;
+            return {
+                scope: `The whole codebase: ${plural(all.length, "file")} with generated artifacts.`,
+                items: [],
+                requests: count,
+            };
+        }
+        const items = request.targets.map(t => {
+            const path = typeof t === "string" ? t : t.path;
+            const what = typeof t === "string" ? "whole file" : `method ${t.symbol}`;
+            return `${path} (${what})`;
+        });
+        const requests = request.targets.filter(t => {
+            const file = byPath.get(typeof t === "string" ? t : t.path);
+            return !file || comparable(file);
+        }).length;
+        return { scope: `${plural(request.targets.length, "selected file")}:`, items, requests };
+    }
+
+    function requestsText(count) {
+        if (!count) return "No model requests: nothing selected has a summary or rule to compare.";
+        return `Up to ${plural(count, "model request")} (one per file, plus at most one more for an answer that `
+            + "cannot be read).";
+    }
+
+    /* Unsaved review drafts for a codebase (draft keys start with the codebase name). */
+    function unsavedFor(draftKeys, codebase) {
+        const prefix = `${codebase}|`;
+        return [...(draftKeys || [])].filter(key => key.startsWith(prefix)).length;
+    }
+
     /* True when the form differs from what is saved (blank notes count as none). */
     function isDirty(saved, draft) {
         const savedStatus = (saved && saved.status) || "unresolved";
@@ -294,6 +362,12 @@
         filterFindings,
         paginate,
         isDirty,
+        artifactsText,
+        comparable,
+        checkRequest,
+        describeCheck,
+        requestsText,
+        unsavedFor,
         plural,
     };
 });

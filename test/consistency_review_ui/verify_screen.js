@@ -45,6 +45,14 @@ childProcess.spawn = (command, args, options) => {
     return child;
 };
 
+// Consistency checks started from the screen get the offline oracle
+// (backend_shim.py), which logs every model created and call made.
+process.env.CR_SHIM_MODELS = "oracle";
+const modelLog = path.join(demo.app, "MODEL_LOG.jsonl");
+const modelEvents = () => (fs.existsSync(modelLog)
+    ? fs.readFileSync(modelLog, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line))
+    : []);
+
 const errorLog = path.join(REPO, "error_log.json");
 const savedErrorLog = fs.existsSync(errorLog) ? fs.readFileSync(errorLog) : null;
 process.on("exit", () => {
@@ -415,6 +423,115 @@ async function evidenceAndReview() {
     await shot("14-injection-as-text");
 }
 
+// --- New check panel ---------------------------------------------------------
+const PANEL = `document.querySelector('#cr-check-panel')`;
+
+async function panelFacts() {
+    return js(`(() => {
+        const p = ${PANEL};
+        if (!p) return null;
+        const start = p.querySelector('.cr-start');
+        return {
+            text: p.textContent,
+            startDisabled: start.disabled,
+            startText: start.textContent,
+            blocked: (p.querySelector('.cr-blocked') || {}).textContent || '',
+            files: [...p.querySelectorAll('.cr-pick-path')].map(n => n.textContent),
+            plan: (p.querySelector('.cr-plan') || {}).textContent || '',
+            message: (p.querySelector('.cr-feedback') || {}).textContent || '',
+            methods: [...p.querySelectorAll('.cr-pick select option')].map(o => o.textContent),
+        };
+    })()`);
+}
+
+async function recordCommands() {
+    await js(`(() => { window.__crCommands = []; const real = window.__crRealCall || backendCall; window.__crRealCall = real;
+        backendCall = (command, args) => { window.__crCommands.push(command); return real(command, args); };
+        if (window.ConsistencyReviewScreen._state.api) window.ConsistencyReviewScreen._state.api = { call: backendCall };
+        return true; })()`);
+}
+
+const commandsSent = () => js(`window.__crCommands.slice()`);
+
+async function openPanel() {
+    await js(`[...document.querySelectorAll('.cr-header .cr-button')].find(b => b.textContent === 'New check').click()`);
+    await until(`!!${PANEL} && !${PANEL}.textContent.includes('Listing the files')`, "check panel");
+}
+
+async function newCheckPanel() {
+    const before = modelEvents().length;
+    await recordCommands();
+
+    // Opening the screen and the panel never starts a check.
+    await openScreen(cb("clean"));
+    await openPanel();
+    let p = await panelFacts();
+    let sent = await commandsSent();
+    expect(!sent.includes("check_consistency") && sent.includes("get_consistency_targets"), "opening the panel lists files, starts nothing", sent);
+    expect(/uses the AI model and API key selected in Manage API Keys/.test(p.text) && /quota/.test(p.text), "quota notice shown");
+    expect(/The whole codebase: 1 file with generated artifacts/.test(p.plan) && /Up to 1 model request/.test(p.plan), "whole-codebase plan shown", p.plan);
+    expect(!/agent\/|_output|SUMMARY|RULE_|TEST_/.test(p.text), "no internal handles or storage paths shown", p.text);
+    expect(p.startDisabled === false && p.startText === "Check Consistency", "start available for a valid scope");
+    await shot("15-new-check-panel");
+
+    // Selected files: nothing chosen cannot start; choose a file and a method.
+    await js(`${PANEL}.querySelector('input[value="selected"]').click()`);
+    p = await panelFacts();
+    expect(p.startDisabled && /Select at least one file/.test(p.blocked), "an empty selection cannot start", p.blocked);
+    expect(p.files.includes("src/Pricing.cs"), "files with artifacts are listed", p.files);
+    await js(`${PANEL}.querySelector('.cr-pick input[type=checkbox]').click()`);
+    await until(`${PANEL}.querySelectorAll('.cr-pick select option').length > 1`, "method list");
+    p = await panelFacts();
+    expect(p.methods.includes("Whole file") && p.methods.includes("Pricing.Discount"), "methods offered for the selected file", p.methods);
+    await js(`(() => { const s = ${PANEL}.querySelector('.cr-pick select'); s.value = 'Pricing.Discount';
+        s.dispatchEvent(new Event('change')); return true; })()`);
+    p = await panelFacts();
+    expect(/1 selected file:/.test(p.plan) && /src\/Pricing.cs \(method Pricing.Discount\)/.test(p.plan), "selected method shown in the plan", p.plan);
+    await shot("16-selected-method");
+
+    // Switching scope back and forth starts nothing.
+    await js(`${PANEL}.querySelector('input[value="full"]').click()`);
+    await js(`${PANEL}.querySelector('input[value="selected"]').click()`);
+    sent = await commandsSent();
+    expect(!sent.includes("check_consistency") && modelEvents().length === before, "changing scope starts nothing");
+
+    // Unsaved reviews block the start until saved or discarded.
+    await openScreen(cb("findings"));
+    await js(`(() => { const r = ${DETAIL}.querySelector('.cr-radio input[value="dismissed"]'); r.click(); return true; })()`);
+    await openPanel();
+    p = await panelFacts();
+    expect(p.startDisabled && /Save or discard your 1 unsaved review first/.test(p.blocked), "unsaved reviews block a new check", p.blocked);
+    await js(`[...${PANEL}.querySelectorAll('.cr-button')].find(b => /^Discard/.test(b.textContent)).click()`);
+    p = await panelFacts();
+    expect(!p.startDisabled, "discarding the unsaved review allows the check", p.blocked);
+
+    // A codebase without outputs cannot start a check.
+    await openScreen(cb("no_outputs"));
+    await openPanel();
+    p = await panelFacts();
+    expect(p.startDisabled && /has generated summaries, rules or tests/.test(p.blocked), "no outputs: start disabled with the reason", p.blocked);
+    await shot("17-no-outputs");
+
+    // Starting: one click, one check; a second click while running does nothing.
+    await openScreen(cb("clean"));
+    await openPanel();
+    await recordCommands();
+    const runBefore = modelEvents().filter(e => e.event === "call").length;
+    await js(`(() => { const b = ${PANEL}.querySelector('.cr-start'); b.click(); b.click(); return true; })()`);
+    p = await panelFacts();
+    expect(p.startDisabled && p.startText === "Checking…", "start disabled while the check runs", p.startText);
+    await until(`!${PANEL} || !${PANEL}.querySelector('.cr-start').disabled || /completed|incomplete|failed|did not run/.test(${PANEL}.textContent)`, "check finished", 60000);
+    await until(LOADED, "result after check", 30000);
+    sent = await commandsSent();
+    const calls = modelEvents().filter(e => e.event === "call").length - runBefore;
+    expect(sent.filter(c => c === "check_consistency").length === 1 && calls === 1, "a double click runs one check with one model call", [sent, calls]);
+    const f = await facts();
+    expect(f.state === "clean" && f.fields.Result === "Whole project", "the new whole-codebase result is shown", [f.state, f.fields.Result]);
+    p = await panelFacts();
+    expect(/Consistency check completed: no mismatches found in the assessed artifacts/.test(p.message), "completion message shown", p.message);
+    await shot("18-check-completed");
+}
+
 // --- Run --------------------------------------------------------------------
 async function openInteractive() {
     const start = Date.now();
@@ -440,6 +557,9 @@ app.whenReady().then(async () => {
 
         await screenStates();
         await evidenceAndReview();
+        const created = modelEvents().length;
+        expect(created === 0, "browsing results created no model", created);
+        await newCheckPanel();
 
         expect(!fs.existsSync(path.join(demo.app, "MODEL_REQUESTED")), "no model was requested");
     } catch (error) {

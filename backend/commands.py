@@ -279,6 +279,18 @@ class Commands:
             )}
         )
 
+    def get_consistency_targets(self, codebase: str = ""):
+        """List the source files a consistency check can cover, with what was generated for each."""
+        return self._consistency_call(
+            lambda: {"targets": consistency_review.list_targets(codebase, self.app_dir)}
+        )
+
+    def get_consistency_methods(self, codebase: str = "", path: str = ""):
+        """List the methods of one source file that a check can be limited to."""
+        return self._consistency_call(
+            lambda: {"methods": consistency_review.list_methods(codebase, path, self.app_dir)}
+        )
+
     def get_consistency_artifact(
         self,
         codebase: str = "",

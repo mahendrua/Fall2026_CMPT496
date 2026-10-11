@@ -75,6 +75,8 @@ class CommandDispatcher:
             "get_consistency_result": self.commands.get_consistency_result,
             "save_consistency_review": self.commands.save_consistency_review,
             "get_consistency_artifact": self.commands.get_consistency_artifact,
+            "get_consistency_targets": self.commands.get_consistency_targets,
+            "get_consistency_methods": self.commands.get_consistency_methods,
             "check_consistency": self.commands.check_consistency,
 
             # Error log

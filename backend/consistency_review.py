@@ -12,6 +12,8 @@ evidence stored in the result.
                         reviewed (agent/consistency_store.set_review)
     read_artifact()     the current state and content of one artifact a finding
                         refers to, compared with the stored reference
+    list_targets()      source files that have generated artifacts to check
+    list_methods()      methods of one file that can be checked on their own
     prepare_check()     validates a request to run a check now (no model yet)
     check_summary()     what the screen needs to know about a check just run
 
@@ -47,6 +49,9 @@ SOURCE_CONTEXT_LINES = 3
 
 # Most targets one selected check may name.
 MAX_TARGETS = 100
+
+# Largest source file whose methods are listed for selection.
+MAX_METHOD_FILE_BYTES = 2_000_000
 
 # A method or type name as the checker takes it: "Type.Method" or "Method".
 SYMBOL = re.compile(r"^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*$")
@@ -204,6 +209,106 @@ def read_artifact(codebase, scope, check_id, finding_id, artifact_index, app_dir
     )
 
 
+def list_targets(codebase, app_dir=APP_DIR):
+    """
+    @brief The source files a check would cover, with what was generated for each.
+    @details The same files a whole-codebase check covers (the checker's own
+    discovery: files named by a summary, rule or test, inside the codebase and
+    outside the folders the crawler skips). Counts are plain numbers; no model
+    is created and no source file is read.
+    @return dict with codebase, files [{path, summary, rules, tests,
+            methods_supported}], outputs {summaries, rules, tests} and notes.
+    """
+    from agent.consistency_checker import ConsistencyChecker, _Collected, _entry_files
+    from agent.consistency_refs import map_codebase_paths, summary_ref
+    from utils.tree_parse import LANGUAGE_DICT
+
+    root = _existing_root(codebase)
+    name = root.name
+    app_dir = Path(app_dir)
+    found = _Collected()
+    files = ConsistencyChecker(app_dir=app_dir)._all_targets(_normalize_root(root), found)
+
+    rules, _ = _read_list(app_dir / RULES_DIR / name / "validated_rules.json")
+    tests_dir = app_dir / TESTS_DIR / name
+    tests_file = tests_dir / "validated_tests.json"
+    if not tests_file.is_file():
+        tests_file = tests_dir / "unit_tests.json"
+    tests, _ = _read_list(tests_file)
+    test_ids = {t.get("id") for t in tests or [] if isinstance(t, dict)}
+
+    rules_by_file = {}
+    for rule in rules or []:
+        if isinstance(rule, dict):
+            for path in map_codebase_paths(_entry_files(rule), root)[0]:
+                rules_by_file.setdefault(path, []).append(rule.get("id"))
+
+    listed = []
+    for target in files:
+        ids = rules_by_file.get(target.path, [])
+        listed.append(dict(
+            path=target.path,
+            summary=summary_ref(root, target.path, app_dir=app_dir).status,
+            rules=len(ids),
+            tests=sum(1 for i in ids if i in test_ids),
+            methods_supported=Path(target.path).suffix in LANGUAGE_DICT,
+        ))
+
+    return dict(
+        codebase=name,
+        files=listed,
+        outputs=dict(
+            summaries=(app_dir / SUMMARY_DIR / name).is_dir(),
+            rules=rules is not None,
+            tests=tests is not None,
+        ),
+        notes=list(found.notes),
+    )
+
+
+def list_methods(codebase, path, app_dir=APP_DIR):
+    """
+    @brief Methods of one source file that a check can be limited to.
+    @details Names come from the same tree-sitter queries the checker uses to
+    find a method. A name shared by several methods (overloads) is listed as
+    overloaded: the checker would report it as ambiguous, so check the whole
+    file instead.
+    """
+    from agent.consistency_checker import _method_chunks
+
+    root, targets = prepare_check(codebase, "selected", [path])
+    rel = targets[0]
+    file = (root / rel).resolve()
+    if not file.is_relative_to(root.resolve()) or not file.is_file():
+        raise ReviewRequestError(f"{rel} does not exist in the codebase.")
+    if file.stat().st_size > MAX_METHOD_FILE_BYTES:
+        return dict(path=rel, supported=False, methods=[], reason="The file is too large to list its methods.")
+
+    chunks = _method_chunks(file.read_bytes(), rel)
+    if chunks is None:
+        return dict(path=rel, supported=False, methods=[],
+                    reason="Methods cannot be listed for this kind of file; check the whole file instead.")
+
+    def symbol(chunk):
+        container = chunk.get("container")
+        return f"{container}.{chunk['name']}" if container and container != "Global" else chunk["name"]
+
+    names = Counter(symbol(c) for c in chunks)
+    methods = [
+        dict(symbol=symbol(c), line_start=c["start_line"], line_end=c["end_line"], overloaded=names[symbol(c)] > 1)
+        for c in chunks
+    ]
+    return dict(path=rel, supported=True, methods=methods)
+
+
+def _existing_root(codebase):
+    root = Path(str(codebase or ""))
+    codebase_name(root)
+    if not root.is_dir():
+        raise ReviewRequestError(f"The codebase folder {root} does not exist.")
+    return root
+
+
 def prepare_check(codebase, scope, targets):
     """
     @brief Validates a request to run a check now, before any run is logged or model created.
@@ -213,10 +318,7 @@ def prepare_check(codebase, scope, targets):
     @return (root Path, targets for run_consistency_check, or None for a full check)
     @raises ReviewRequestError For anything that cannot be checked as asked.
     """
-    root = Path(str(codebase or ""))
-    codebase_name(root)
-    if not root.is_dir():
-        raise ReviewRequestError(f"The codebase folder {root} does not exist.")
+    root = _existing_root(codebase)
     if scope not in RESULT_NAMES:
         raise ReviewRequestError(f"Unknown check scope: {scope!r}")
 

@@ -126,3 +126,39 @@ test("locations name the file, symbol and lines", () => {
     assert.equal(M.handleOf({ kind: "business_rule", rule_id: 3 }), "Rule 3");
     assert.equal(M.handleOf({ kind: "unit_test", test_id: "UT_3", rule_id: 3 }), "UT_3");
 });
+
+test("a check request is built from the panel, and an empty selection cannot start", () => {
+    assert.deepEqual(M.checkRequest({ scope: "full", selected: new Map([["a.cs", ""]]) }), { scope: "full", targets: [] });
+    assert.deepEqual(M.checkRequest({ scope: "selected", selected: new Map() }), { error: "Select at least one file to check." });
+    assert.deepEqual(
+        M.checkRequest({ scope: "selected", selected: new Map([["src/A.cs", ""], ["src/B.cs", "B.Run"]]) }),
+        { scope: "selected", targets: ["src/A.cs", { path: "src/B.cs", symbol: "B.Run" }] });
+});
+
+test("the check summary names the scope and bounds the model requests", () => {
+    const files = [
+        { path: "src/A.cs", summary: "resolved", rules: 0, tests: 0 },
+        { path: "src/B.cs", summary: "ambiguous", rules: 2, tests: 1 },
+        { path: "src/C.cs", summary: "ambiguous", rules: 0, tests: 0 },
+    ];
+    const full = M.describeCheck({ scope: "full", targets: [] }, files);
+    assert.equal(full.scope, "The whole codebase: 3 files with generated artifacts.");
+    assert.equal(full.requests, 2);
+
+    const some = M.describeCheck({ scope: "selected", targets: ["src/C.cs", { path: "src/B.cs", symbol: "B.Run" }] }, files);
+    assert.deepEqual(some.items, ["src/C.cs (whole file)", "src/B.cs (method B.Run)"]);
+    assert.equal(some.requests, 1);
+    assert.match(M.requestsText(2), /^Up to 2 model requests/);
+    assert.match(M.requestsText(0), /^No model requests/);
+});
+
+test("artifacts are described without internal handles or paths", () => {
+    assert.equal(M.artifactsText({ summary: "resolved", rules: 2, tests: 1 }), "summary · 2 rules · 1 test");
+    assert.equal(M.artifactsText({ summary: "ambiguous", rules: 0, tests: 0 }), "two summaries (not compared) · 0 rules · 0 tests");
+});
+
+test("unsaved drafts are counted per codebase", () => {
+    const keys = ["Shop|c1|f1", "Shop|c2|f2", "Other|c9|f1"];
+    assert.equal(M.unsavedFor(keys, "Shop"), 2);
+    assert.equal(M.unsavedFor(keys, "Sho"), 0);
+});
