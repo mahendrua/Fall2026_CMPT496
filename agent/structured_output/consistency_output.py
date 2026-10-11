@@ -60,6 +60,13 @@ FindingCategory = Literal[
     "implementation_requirement",
 ]
 
+# The model's judgement of one generated artifact against the code in scope.
+#   consistent             matches what the code does
+#   inconsistent           contradicts it (backed by at least one finding)
+#   not_applicable         about behaviour outside the code in scope
+#   insufficient_evidence  cannot be decided from the code supplied
+Verdict = Literal["consistent", "inconsistent", "not_applicable", "insufficient_evidence"]
+
 # Whether the implementation does what is intended. Only a confirmed
 # requirement can move this off "unknown".
 IntendedBehaviour = Literal["unknown", "matches_requirement", "conflicts_with_requirement"]
@@ -289,6 +296,57 @@ class Undetermined(BaseModel):
     reason: str = Field(..., min_length=1, description="Why consistency could not be determined.")
 
 
+class Assessment(BaseModel):
+    """
+    @brief The verdict given for one generated artifact, with its reason.
+    @details Every artifact the model assessed gets one, so a "consistent"
+    verdict can be audited as well as an "inconsistent" one. The verdict is
+    the model's judgement; it says nothing about how complete the check was
+    (see ConsistencyCheckResult.status). reason is the short explanation the
+    model was asked for, not its private reasoning. accepted is False when
+    the verdict could not be used, e.g. "inconsistent" with no valid finding.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    artifact: ArtifactRef = Field(..., description="The generated artifact assessed.")
+    scope: ArtifactRef = Field(..., description="The source code it was compared with (file, or method and lines).")
+    verdict: Verdict = Field(..., description="The model's verdict.")
+    reason: str = Field(..., min_length=1, description="Short explanation of the verdict.")
+    finding_ids: list[str] = Field(default_factory=list, description="Findings that back an inconsistent verdict.")
+    accepted: bool = Field(True, description="False if the verdict could not be used; see problem.")
+    problem: Optional[str] = Field(None, description="Why the verdict was not used.")
+
+    @model_validator(mode="after")
+    def _check(self):
+        if self.scope.kind != "source":
+            raise ValueError("An assessment's scope is source code.")
+        if self.accepted and self.problem:
+            raise ValueError("An accepted assessment has no problem.")
+        if not self.accepted and not self.problem:
+            raise ValueError("A verdict that was not used must say why.")
+        if self.accepted and self.verdict == "inconsistent" and not self.finding_ids:
+            raise ValueError("An accepted inconsistent verdict must be backed by a finding.")
+        if self.finding_ids and self.verdict != "inconsistent":
+            raise ValueError("Only an inconsistent verdict is backed by findings.")
+        return self
+
+
+class Skipped(BaseModel):
+    """
+    @brief A linked artifact that was never assessed, and why.
+    @details Distinct from an assessment: nothing was judged. Examples are a
+    folder-level rule that names no source file, or a comparison that was
+    never sent because it was too large or the model call failed. Artifacts
+    that could not be found or resolved are in missing_artifacts and
+    unresolved_links instead.
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    artifact: ArtifactRef = Field(..., description="The artifact that was not assessed.")
+    scope: Optional[ArtifactRef] = Field(None, description="The source code it would have been compared with, if any.")
+    reason: str = Field(..., min_length=1, description="Why it was not assessed.")
+
+
 def make_finding_id(category, artifacts, discriminator=""):
     """Short hash of the category, the referenced content and the discriminator."""
     payload = json.dumps(
@@ -331,6 +389,8 @@ class ConsistencyCheckResult(BaseModel):
     unresolved_links: list[ArtifactRef] = Field(default_factory=list, description="References that were ambiguous, stale or unverifiable, so were not compared.")
     findings: list[Finding] = Field(default_factory=list, description="Disagreements found.")
     undetermined: list[Undetermined] = Field(default_factory=list, description="Artifacts compared without a conclusion.")
+    assessments: list[Assessment] = Field(default_factory=list, description="Every verdict the model gave, with its reason. Empty in results saved before verdicts were kept.")
+    skipped: list[Skipped] = Field(default_factory=list, description="Linked artifacts that were not assessed, and why.")
     errors: list[str] = Field(default_factory=list, description="Errors that stopped part or all of the check.")
     notes: list[str] = Field(default_factory=list, description="Anything else the reader should know, e.g. why no check is shown.")
 
@@ -356,6 +416,11 @@ class ConsistencyCheckResult(BaseModel):
                 raise ValueError(f"Duplicate finding ID {finding.id}; pass a discriminator to tell them apart.")
             ids.add(finding.id)
 
+        for assessment in self.assessments:
+            unknown = [fid for fid in assessment.finding_ids if fid not in ids]
+            if unknown:
+                raise ValueError(f"Assessment refers to findings that are not in this result: {', '.join(unknown)}")
+
         if self.scope == "selected" and not self.selection:
             raise ValueError("A selected check must record its selection.")
         if self.scope == "full" and self.selection:
@@ -369,7 +434,7 @@ class ConsistencyCheckResult(BaseModel):
             raise ValueError("A partial check must say what is missing, unresolved, undetermined or failed.")
         if self.status == "failed" and not self.errors:
             raise ValueError("A failed check must list its errors.")
-        if self.status == "not_run" and (self.findings or self.artifacts_checked or self.errors or self.undetermined):
+        if self.status == "not_run" and (self.findings or self.artifacts_checked or self.errors or self.undetermined or self.assessments):
             raise ValueError("A check that did not run has no findings, artifacts or errors.")
         return self
 

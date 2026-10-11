@@ -27,11 +27,12 @@ for a different rule.
 import hashlib
 import json
 import os
+import posixpath
 from pathlib import Path
 
 from pydantic import ValidationError
 
-from agent.BR_input_loader import APP_DIR, _normalize_root, _is_abs, normalize_rule_path
+from agent.BR_input_loader import APP_DIR, _DRIVE_RE, _normalize_root, _is_abs, _strip_prefix, normalize_rule_path
 from agent.structured_output.BR_output import ValidatedRule
 from agent.structured_output.consistency_output import ArtifactRef
 from agent.structured_output.UT_output import UnitTest
@@ -47,6 +48,100 @@ def content_hash(data):
     if not isinstance(data, bytes):
         data = json.dumps(data, sort_keys=True, ensure_ascii=False).encode("utf-8")
     return hashlib.sha256(data).hexdigest()[:16]
+
+
+def _root(codebase_root):
+    return codebase_root if isinstance(codebase_root, dict) else _normalize_root(codebase_root)
+
+
+def map_codebase_paths(paths, codebase_root):
+    """
+    @brief Maps artifact file paths to POSIX paths relative to the codebase root.
+    @details Uses normalize_rule_path(), so absolute paths under the root,
+    absolute paths from another machine or folder that contain the codebase
+    folder name, Windows separators and paths prefixed with the codebase name
+    all map to the same relative path. A path is not mapped (and nothing is
+    guessed) when it is outside the codebase, when the codebase folder name
+    occurs more than once in a path from elsewhere, or when no such file
+    exists: a bare file name is never matched to a file elsewhere in the tree.
+    @return (mapped, unmapped): mapped relative paths without duplicates, and
+            (original path, reason) for each path that could not be mapped.
+    """
+    root = _root(codebase_root)
+    mapped, unmapped = [], []
+
+    for raw in paths:
+        rel = normalize_rule_path(raw, root)
+        if _is_abs(rel) or rel in (".", "..") or rel.startswith("../"):
+            unmapped.append((raw, "outside the codebase"))
+        elif _repeats_codebase_name(raw, root):
+            unmapped.append((raw, f"the folder name {root['name']!r} occurs more than once, so the mapping is ambiguous"))
+        elif not (Path(root["abs"]) / rel).is_file():
+            unmapped.append((raw, f"no file {rel} exists in the codebase"))
+        elif rel not in mapped:
+            mapped.append(rel)
+    return mapped, unmapped
+
+
+def map_codebase_directory(directory, codebase_root):
+    """A directory as a POSIX path relative to the root ('.' for the root), or None if outside it."""
+    if directory is None:
+        return None
+    root = _root(codebase_root)
+    rel = normalize_rule_path(directory, root)
+    if _is_abs(rel) or rel == ".." or rel.startswith("../") or _repeats_codebase_name(directory, root):
+        return None
+    return rel
+
+
+def portable_hash(data, codebase_root):
+    """
+    @brief Content hash of a summary, rule or test entry with its paths mapped to the codebase.
+    @details The same artifact written with absolute or relative paths, or on
+    another machine, gets the same hash; any other change gives a new one.
+    """
+    root = _root(codebase_root)
+    if not isinstance(data, dict):
+        return content_hash(data)
+
+    def norm(path):
+        return normalize_rule_path(path, root) if isinstance(path, str) else path
+
+    data = dict(data)
+    if isinstance(data.get("path"), str):
+        data["path"] = norm(data["path"])
+    if isinstance(data.get("source_directory"), str):
+        data["source_directory"] = norm(data["source_directory"])
+    if isinstance(data.get("source_file_paths"), list):
+        data["source_file_paths"] = [norm(p) for p in data["source_file_paths"]]
+    if isinstance(data.get("provenance"), list):
+        data["provenance"] = [
+            dict(record, source_file_paths=[norm(p) for p in record.get("source_file_paths") or []])
+            if isinstance(record, dict) else record
+            for record in data["provenance"]
+        ]
+    return content_hash(data)
+
+
+def _repeats_codebase_name(raw, root):
+    """True for a path from outside the root that names the codebase folder more than once."""
+    path = posixpath.normpath(str(raw).strip().replace("\\", "/"))
+    if not _is_abs(path) or _strip_prefix(path, root["abs"]) is not None:
+        return False
+    ignore_case = bool(_DRIVE_RE.match(path))
+    name = root["name"].casefold() if ignore_case else root["name"]
+    parts = [part.casefold() if ignore_case else part for part in path.split("/")[1:]]
+    return parts.count(name) > 1
+
+
+def _located(paths, root):
+    """(mapped paths, note or None) for an artifact's source files."""
+    mapped, unmapped = map_codebase_paths(paths, root)
+    if not unmapped:
+        return mapped, None
+    return mapped, "Source path(s) not mapped to the codebase: " + "; ".join(
+        f"{raw} ({reason})" for raw, reason in unmapped
+    ) + "."
 
 
 def source_ref(codebase_root, path, symbol=None, line_start=None, line_end=None):
@@ -132,7 +227,7 @@ def summary_ref(codebase_root, source_path, symbol=None, app_dir=APP_DIR):
             )
         target = found[0][1]
 
-    ref["content_hash"] = content_hash(target)
+    ref["content_hash"] = portable_hash(target, root)
     return _mark_if_older(ArtifactRef(**ref), file, root, [rel])
 
 
@@ -174,16 +269,22 @@ def business_rule_ref(codebase_root, rule_id, app_dir=APP_DIR):
     except ValidationError as e:
         return ArtifactRef(**ref, status="unverified", detail=f"Business rule {rule_id} does not match its schema: {e.errors()[0]['msg']}")
 
-    files = list(dict.fromkeys(
+    raw_files = list(dict.fromkeys(
         [*rule.source_file_paths, *(p for record in rule.provenance for p in record.source_file_paths)]
     ))
+    files, unmapped = _located(raw_files, root)
+    notes = [unmapped] if unmapped else []
+    if not raw_files:
+        notes.append("Folder-level rule: no source files are recorded for it.")
+    unlocated = bool(raw_files) and not files
     built = ArtifactRef(
         **ref,
+        status="unverified" if unlocated else "resolved",
         path=files[0] if len(files) == 1 else None,
-        directory=rule.source_directory,
+        directory=map_codebase_directory(rule.source_directory, root),
         provenance=rule.provenance,
-        content_hash=content_hash(matches[0]),
-        detail=None if files else "Folder-level rule: no source files are recorded for it.",
+        content_hash=portable_hash(matches[0], root),
+        detail=" ".join(notes) or None,
     )
     return _mark_if_older(built, rules_file, root, files)
 
@@ -234,12 +335,16 @@ def unit_test_ref(codebase_root, rule_id, app_dir=APP_DIR):
     except ValidationError as e:
         return ArtifactRef(**ref, status="unverified", detail=f"Unit test {test_id} does not match its schema: {e.errors()[0]['msg']}")
 
+    files, unmapped = _located(test.source_file_paths, root)
+    notes = [unmapped] if unmapped else []
+    if tests_file != validated:
+        notes.append("Only the generated test exists; it has not been compiled or run.")
     built = ArtifactRef(
         **ref,
-        path=test.source_file_paths[0] if len(test.source_file_paths) == 1 else None,
-        directory=test.source_directory,
-        content_hash=content_hash(matches[0]),
-        detail=None if tests_file == validated else "Only the generated test exists; it has not been compiled or run.",
+        path=files[0] if len(files) == 1 else None,
+        directory=map_codebase_directory(test.source_directory, root),
+        content_hash=portable_hash(matches[0], root),
+        detail=" ".join(notes) or None,
     )
 
     rule = business_rule_ref(codebase_root, rule_id, app_dir)
@@ -257,7 +362,7 @@ def unit_test_ref(codebase_root, rule_id, app_dir=APP_DIR):
                 detail=f"{test_id} was generated for a different rule than the current business rule {rule_id}.",
             ))
 
-    return _mark_if_older(built, tests_file, root, test.source_file_paths)
+    return _mark_if_older(built, tests_file, root, files)
 
 
 def refresh_ref(ref, codebase_root, app_dir=APP_DIR):

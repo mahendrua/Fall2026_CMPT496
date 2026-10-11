@@ -68,7 +68,7 @@ class AssessmentOutput(BaseModel):
             "decided from the code supplied."
         ),
     )
-    reason: str = Field(..., description="One or two sentences explaining the verdict.")
+    reason: str = Field(..., description="One or two sentences: what the code does and what the artifact says. A conclusion, not step-by-step reasoning.")
 
 
 class ConsistencyAnalysisOutput(BaseModel):

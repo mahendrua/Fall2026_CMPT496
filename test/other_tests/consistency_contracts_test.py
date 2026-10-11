@@ -772,3 +772,156 @@ def test_finding_id_ignores_artifact_order(artifacts):
     data = finding.model_dump()
     data.update(id="", claims=list(reversed(data["claims"])), artifacts=list(reversed(data["artifacts"])))
     assert Finding.model_validate(data).id == finding.id
+
+
+# ---------------------------------------------------------
+# Part 3: path mapping, verdict records, compatibility
+# ---------------------------------------------------------
+
+from agent.consistency_refs import map_codebase_directory, map_codebase_paths, portable_hash  # noqa: E402
+from agent.structured_output.consistency_output import Assessment, Skipped  # noqa: E402
+
+
+@pytest.mark.parametrize("given", [
+    "src/Pricing.cs",
+    "src\\Pricing.cs",
+    f"{CODEBASE}/src/Pricing.cs",
+    "D:\\Old Machine\\Projects\\Shop\\src\\Pricing.cs",      # historical Windows path
+    "d:/old machine/projects/shop/src/Pricing.cs",           # drive paths compare case-insensitively
+    "/home/dev/checkouts/Shop/src/Pricing.cs",               # written on Linux or macOS
+])
+def test_historical_and_platform_paths_map_to_the_same_relative_path(env, given):
+    assert map_codebase_paths([given], env.root) == (["src/Pricing.cs"], [])
+
+
+def test_the_real_absolute_path_under_the_root_maps(env):
+    assert map_codebase_paths([str(env.source)], env.root) == (["src/Pricing.cs"], [])
+
+
+@pytest.mark.parametrize("given, reason", [
+    ("C:/elsewhere/Other.cs", "outside the codebase"),
+    ("../Pricing.cs", "outside the codebase"),
+    ("D:/work/Shop/archive/Shop/src/Pricing.cs", "occurs more than once"),
+    ("Pricing.cs", "no file Pricing.cs exists"),             # a bare name is not searched for
+])
+def test_unreliable_paths_are_reported_not_guessed(env, given, reason):
+    mapped, unmapped = map_codebase_paths([given], env.root)
+    assert mapped == []
+    assert unmapped[0][0] == given and reason in unmapped[0][1]
+
+
+def test_duplicate_file_names_are_not_resolved_by_name(env):
+    for folder in ("A", "B"):
+        (env.root / "src" / folder).mkdir()
+        (env.root / "src" / folder / "Util.cs").write_text("class Util {}", encoding="utf-8")
+    assert map_codebase_paths(["Util.cs"], env.root)[0] == []
+    assert map_codebase_paths(["src/B/Util.cs"], env.root)[0] == ["src/B/Util.cs"]
+
+
+def test_directories_map_to_the_root_relative_form(env):
+    assert map_codebase_directory(CODEBASE, env.root) == "."
+    assert map_codebase_directory("D:\\Old\\Shop\\src", env.root) == "src"
+    assert map_codebase_directory("C:/elsewhere", env.root) is None
+
+
+def test_rule_and_test_refs_map_historical_paths_and_keep_provenance(env):
+    old = "D:\\CMPT 496\\Old\\Shop\\src\\Pricing.cs"
+    provenance = [{"origin": "file", "source_file_paths": [old]}]
+    write_json(env.rules_dir / "validated_rules.json", [
+        dict(validated_rule(files=(old,), provenance=provenance), source_directory="D:\\CMPT 496\\Old\\Shop\\src"),
+    ])
+    write_json(env.tests_dir / "validated_tests.json", [dict(unit_test(), source_file_paths=[old])])
+
+    rule = business_rule_ref(env.root, 1, env.app)
+    assert (rule.status, rule.path, rule.directory, rule.detail) == ("resolved", "src/Pricing.cs", "src", None)
+    assert [p.model_dump() for p in rule.provenance] == provenance      # stored as written
+    test = unit_test_ref(env.root, 1, env.app)
+    assert (test.status, test.path, test.directory) == ("resolved", "src/Pricing.cs", "src")
+
+
+def test_a_rule_whose_paths_cannot_be_mapped_is_unverified_with_the_reason(env):
+    write_json(env.rules_dir / "validated_rules.json", [validated_rule(files=("C:/elsewhere/Pricing.cs",), provenance=[])])
+    ref = business_rule_ref(env.root, 1, env.app)
+    assert ref.status == "unverified" and ref.path is None
+    assert "C:/elsewhere/Pricing.cs (outside the codebase)" in ref.detail
+
+
+def test_equivalent_absolute_and_relative_outputs_give_the_same_ids(env):
+    def finding_for(files, directory):
+        write_json(env.rules_dir / "validated_rules.json", [dict(
+            validated_rule(files=files, provenance=[{"origin": "file", "source_file_paths": list(files)}]),
+            source_directory=directory,
+        )])
+        rule = business_rule_ref(env.root, 1, env.app)
+        return rule, Finding(
+            codebase=CODEBASE, category="source_rule", title="t", explanation="e",
+            claims=[Claim(artifact=source_ref(env.root, "src/Pricing.cs"), statement="adds"),
+                    Claim(artifact=rule, statement="discount")],
+        )
+
+    relative, a = finding_for(("src/Pricing.cs",), "src")
+    absolute, b = finding_for((str(env.source),), str(env.root / "src"))
+    assert relative.key() == absolute.key()
+    assert a.id == b.id
+
+    data = json.loads((env.rules_dir / "validated_rules.json").read_text(encoding="utf-8"))
+    data[0]["rule"] = "A different rule."
+    write_json(env.rules_dir / "validated_rules.json", data)
+    assert business_rule_ref(env.root, 1, env.app).content_hash != relative.content_hash
+
+
+def test_portable_hash_ignores_only_path_representation(env):
+    entry = validated_rule()
+    moved = dict(entry, source_file_paths=[str(env.source)])
+    assert portable_hash(entry, env.root) == portable_hash(moved, env.root)
+    assert portable_hash(entry, env.root) != portable_hash(dict(entry, rule="other"), env.root)
+
+
+SCOPE = ArtifactRef(kind="source", path="a.cs", symbol="A.M", line_start=3, line_end=9)
+RULE = ArtifactRef(kind="business_rule", rule_id=1)
+
+
+def test_assessment_records_keep_verdict_reason_and_scope():
+    assert Assessment(artifact=RULE, scope=SCOPE, verdict="consistent", reason="Both say it adds.").accepted
+    with pytest.raises(ValidationError, match="backed by a finding"):
+        Assessment(artifact=RULE, scope=SCOPE, verdict="inconsistent", reason="r")
+    with pytest.raises(ValidationError, match="must say why"):
+        Assessment(artifact=RULE, scope=SCOPE, verdict="inconsistent", reason="r", accepted=False)
+    with pytest.raises(ValidationError, match="Only an inconsistent"):
+        Assessment(artifact=RULE, scope=SCOPE, verdict="consistent", reason="r", finding_ids=["x"])
+    with pytest.raises(ValidationError, match="scope is source"):
+        Assessment(artifact=RULE, scope=RULE, verdict="consistent", reason="r")
+    with pytest.raises(ValidationError):
+        Assessment(artifact=RULE, scope=SCOPE, verdict="consistent", reason="")
+
+
+def test_assessments_and_skips_round_trip_and_must_point_at_real_findings(artifacts):
+    finding = discount_finding(artifacts)
+    result = ConsistencyCheckResult(
+        codebase=CODEBASE, status="partial", errors=["x"], findings=[finding],
+        assessments=[
+            Assessment(artifact=finding.claims[1].artifact, scope=SCOPE, verdict="inconsistent", reason="r", finding_ids=[finding.id]),
+            Assessment(artifact=RULE, scope=SCOPE, verdict="inconsistent", reason="r", accepted=False, problem="Its finding was rejected."),
+        ],
+        skipped=[Skipped(artifact=RULE, scope=SCOPE, reason="Folder-level rule.")],
+    )
+    save_check_result(result, artifacts.app)
+    assert load_check_result(CODEBASE, artifacts.app) == result
+
+    with pytest.raises(ValidationError, match="not in this result"):
+        ConsistencyCheckResult(codebase=CODEBASE, status="completed", assessments=[
+            Assessment(artifact=RULE, scope=SCOPE, verdict="inconsistent", reason="r", finding_ids=["missing"]),
+        ])
+
+
+def test_results_saved_before_verdicts_were_kept_still_load(artifacts):
+    result = ConsistencyCheckResult(codebase=CODEBASE, status="completed", findings=[discount_finding(artifacts)])
+    path = save_check_result(result, artifacts.app)
+    old = json.loads(path.read_text(encoding="utf-8"))
+    for key in ("assessments", "skipped", "undetermined", "selection"):
+        old.pop(key)
+    path.write_text(json.dumps(old), encoding="utf-8")
+
+    loaded = load_check_result(CODEBASE, artifacts.app)
+    assert loaded.assessments == [] and loaded.skipped == []
+    assert loaded.findings[0].id == result.findings[0].id

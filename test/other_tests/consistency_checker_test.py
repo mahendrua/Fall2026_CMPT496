@@ -405,7 +405,12 @@ def test_folder_level_rules_are_not_assumed_to_apply_to_a_file(env):
     llm = FakeLLM()
     result = check(env, llm)
     assert "RULE_3" not in handles_of(llm.calls[0])
-    assert any("1 folder-level business rule(s) for src" in note for note in result.notes)
+    [skipped] = result.skipped
+    assert skipped.artifact.rule_id == 3
+    assert "Folder-level rule for src" in skipped.reason and "not assessed" in skipped.reason
+    assert skipped.scope.path == "src/Pricing.cs"
+    assert not any(a.artifact.rule_id == 3 for a in result.assessments)
+    assert result.status == "completed"
 
 
 def test_a_newer_source_file_is_a_caveat_on_findings_not_a_reason_to_skip(env):
@@ -666,3 +671,177 @@ def test_a_daily_limit_stops_the_remaining_comparisons(env):
     assert result.status == "failed"
     assert len(result.errors) == 2
     assert all("daily limit" in error for error in result.errors)
+
+
+# ---------------------------------------------------------
+# Part 3: every verdict kept, skipped comparisons, identity
+# ---------------------------------------------------------
+
+def test_every_verdict_is_kept_with_its_reason_and_scope(env):
+    env.write(pricing=REDUCES)
+    llm = FakeLLM(lambda m: ConsistencyAnalysisOutput(
+        assessments=[
+            AssessmentOutput(artifact="SUMMARY", verdict="inconsistent", reason="Code adds 10%; summary says it reduces."),
+            AssessmentOutput(artifact="RULE_1", verdict="consistent", reason="Code and rule both raise the price."),
+            AssessmentOutput(artifact="TEST_1", verdict="insufficient_evidence", reason="Needs the Pricing constructor."),
+        ],
+        findings=[proposed("source_summary", [SUMMARY_CLAIM])],
+    ))
+    result = check(env, llm, save=True)
+
+    by_handle = {(a.artifact.kind, a.artifact.rule_id): a for a in result.assessments}
+    summary_a = by_handle[("summary", None)]
+    assert (summary_a.verdict, summary_a.accepted) == ("inconsistent", True)
+    assert summary_a.finding_ids == [result.findings[0].id]
+    assert by_handle[("business_rule", 1)].reason == "Code and rule both raise the price."
+    assert by_handle[("unit_test", 1)].verdict == "insufficient_evidence"
+    for assessment in result.assessments:
+        assert (assessment.scope.kind, assessment.scope.symbol) == ("source", "Pricing.Discount")
+        assert (assessment.scope.line_start, assessment.scope.line_end) == (5, 8)
+
+    # Status is about completeness; verdicts are kept separately.
+    assert result.status == "partial"
+    assert load_check_result(CODEBASE, env.app, scope="selected").assessments == result.assessments
+
+
+def test_a_verdict_whose_finding_was_rejected_is_kept_but_not_used(env):
+    env.write()
+    llm = FakeLLM(lambda m: answer(handles_of(m), {"SUMMARY": "inconsistent"},
+                                   [proposed("source_summary", [("SUMMARY", "x", "Halves the price.")])]))
+    result = check(env, llm)
+    [summary_a] = [a for a in result.assessments if a.artifact.kind == "summary"]
+    assert summary_a.accepted is False
+    assert "Its finding was rejected" in summary_a.problem and "does not appear" in summary_a.problem
+    assert not any(ref.kind == "summary" for ref in result.artifacts_checked)
+
+
+def test_unassessed_artifacts_are_listed_as_skipped(env):
+    env.write()
+    result = check(env, FakeLLM(lambda m: answer(["SUMMARY"])))
+    skipped = {s.artifact.kind: s.reason for s in result.skipped}
+    assert skipped == {"business_rule": "The model did not assess it.", "unit_test": "The model did not assess it."}
+    assert [a.artifact.kind for a in result.assessments] == ["summary"]
+
+
+@pytest.mark.parametrize("fail", ["oversized", "model_error"])
+def test_comparisons_never_sent_or_answered_are_listed_as_skipped(env, monkeypatch, fail):
+    env.write()
+    if fail == "oversized":
+        monkeypatch.setattr(checker_module, "MAX_UNIT_CHARS", 200)
+        llm = FakeLLM()
+    else:
+        llm = FakeLLM(lambda m: HTTPError("Bad request"))
+    result = check(env, llm, targets=["src/Pricing.cs"])
+    assert result.status == "failed"
+    assert result.assessments == []
+    assert sorted(s.artifact.kind for s in result.skipped) == ["business_rule", "summary", "unit_test"]
+    assert all(s.reason.startswith("Not assessed:") for s in result.skipped)
+
+
+def test_one_disagreement_keeps_its_id_whichever_valid_lines_are_cited(env):
+    env.write()
+    whole_method = "public decimal Discount(decimal price) { return price + price * 0.10m; }"
+    first = check(env, summary_finding_llm(proposed("source_summary", [SUMMARY_CLAIM])), save=True).findings[0]
+    set_review(CODEBASE, first.id, "reviewed", "Seen.", app_dir=env.app)
+
+    llm = summary_finding_llm(proposed("source_summary", [SUMMARY_CLAIM], excerpt=whole_method, lines=(5, 8)))
+    [again] = check(env, llm, save=True).findings
+    assert (again.claims[0].artifact.line_start, again.claims[0].artifact.line_end) == (5, 8)
+    assert again.id == first.id
+    assert load_check_result(CODEBASE, env.app, scope="selected").findings[0].review.status == "reviewed"
+
+
+def test_rules_with_historical_absolute_paths_are_linked_and_identified_as_relative_ones(env):
+    env.write()
+    relative = check(env, FakeLLM(lambda m: answer(handles_of(m), {"RULE_1": "inconsistent"},
+                     [proposed("source_rule", [("RULE_1", "raises", RULE_INCREASES)])]))).findings[0]
+
+    old = "D:\\Some Other Machine\\Shop\\src\\Pricing.cs"
+    rules = json.loads(env.rules_file.read_text(encoding="utf-8"))
+    rules[0]["source_file_paths"] = [old]
+    rules[0]["provenance"] = [{"origin": "file", "source_file_paths": [old]}]
+    write_json(env.rules_file, rules)
+    tests = json.loads((env.tests_dir / "validated_tests.json").read_text(encoding="utf-8"))
+    tests[0]["source_file_paths"] = [old]
+    write_json(env.tests_dir / "validated_tests.json", tests)
+
+    llm = FakeLLM(lambda m: answer(handles_of(m), {"RULE_1": "inconsistent"},
+                  [proposed("source_rule", [("RULE_1", "raises", RULE_INCREASES)])]))
+    absolute = check(env, llm).findings[0]
+    rule_ref = next(a for a in absolute.artifacts if a.kind == "business_rule")
+    assert rule_ref.path == "src/Pricing.cs"
+    assert absolute.id == relative.id
+
+
+def test_a_rule_naming_only_unmappable_files_is_reported_not_linked(env):
+    env.write()
+    rules = json.loads(env.rules_file.read_text(encoding="utf-8"))
+    rules.append(rule(5, "Some rule.", ["Pricing.cs"]))         # a bare name: not searched for
+    write_json(env.rules_file, rules)
+    llm = FakeLLM()
+    result = check(env, llm)
+    assert "RULE_5" not in handles_of(llm.calls[0])
+    assert any("Business rule 5 names no file that maps" in note for note in result.notes)
+
+
+def test_cross_file_dependency_is_recorded_as_undetermined_with_a_limitation(env):
+    env.write()
+    (env.root / "src" / "Cart.cs").write_text(CART_CS.replace("return items;", "return Tax.Apply(items);"), encoding="utf-8")
+    age(env.root / "src" / "Cart.cs", 1000)
+    llm = FakeLLM(lambda m: answer(handles_of(m), {"SUMMARY": "insufficient_evidence", "RULE_2": "insufficient_evidence"}))
+    result = check(env, llm, targets=["src/Cart.cs"])
+    assert result.status == "partial" and result.findings == []
+    assert {u.artifact.kind for u in result.undetermined} == {"summary", "business_rule"}
+    assert {a.verdict for a in result.assessments} == {"insufficient_evidence"}
+    assert any("code it calls in other files was not" in note for note in result.notes)
+
+
+ORDER_CS = """namespace Shop
+{
+    public class Order
+    {
+        public decimal Total(decimal price, int count)
+        {
+            return price * count + Fee(count);
+        }
+
+        private decimal Fee(int count)
+        {
+            return count > 5 ? 0m : 2.50m;
+        }
+
+        private decimal Unused()
+        {
+            return 99m;
+        }
+    }
+}
+"""
+FEE_CLAIM = ("SUMMARY", "Says every order pays 2.50.", "Adds a 2.50 fee to every order.")
+
+
+@pytest.mark.parametrize("excerpt, lines, accepted", [
+    ("return count > 5 ? 0m : 2.50m;", (12, 12), True),     # in Fee, which Total calls
+    ("return 99m;", (17, 17), False),                        # in a method Total does not call
+])
+def test_method_checks_accept_evidence_from_called_same_file_helpers_only(env, excerpt, lines, accepted):
+    env.write(cart=False)
+    order = env.root / "src" / "Order.cs"
+    order.write_text(ORDER_CS, encoding="utf-8")
+    age(order)
+    write_json(env.summary_dir / "Order-cs__1.json", summary(
+        env.root, "src/Order.cs", "Order", [("Total", "Adds a 2.50 fee to every order.")],
+    ))
+    llm = FakeLLM(lambda m: answer(handles_of(m), {"SUMMARY": "inconsistent"},
+                                   [proposed("source_summary", [FEE_CLAIM], excerpt=excerpt, lines=lines)]))
+    result = check(env, llm, targets=[{"path": "src/Order.cs", "symbol": "Order.Total"}])
+
+    assert "same-file methods it calls: lines 10-13 (Fee)" in prompt_of(llm.calls[0])
+    assert "Unused" not in re.search(r"^Code in scope: (.*)$", prompt_of(llm.calls[0]), re.M).group(1)
+    if accepted:
+        [finding] = result.findings
+        assert (finding.claims[0].artifact.line_start, finding.claims[0].artifact.line_end) == lines
+        assert finding.claims[0].artifact.symbol == "Order.Total"
+    else:
+        assert result.findings == []
+        assert any("does not appear in the code in scope" in e for e in result.errors)
