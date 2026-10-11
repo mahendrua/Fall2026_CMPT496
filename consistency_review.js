@@ -15,9 +15,8 @@
  *     get_consistency_result     the saved full or selected check
  *     get_consistency_artifact   current state of one artifact of a finding
  *     save_consistency_review    a finding's review status and note
- *     get_consistency_targets    files a new check can cover (no model)
- *     get_consistency_methods    methods of one file a check can be limited to
- *     check_consistency          runs a check; only ever on the Check Consistency button
+ *
+ * Checks are run from Operations → Consistency Review, not from this screen.
  */
 (function () {
     const M = window.ConsistencyReviewModel;
@@ -41,28 +40,8 @@
         feedback: new Map(),
         artifacts: new Map(),
         showCurrent: new Set(),
-        panel: newPanel(),
-        // The check that is running, if any. Kept apart from the view so
-        // switching codebase or view never loses it or misplaces its result.
-        operation: null,
-        outcomes: new Map(),       // codebase name -> { result, op, shown }
-        handoff: null,             // { expected, shown } check IDs after a check
-        ticker: null,
         visible: false,            // false once another Insights view takes the output box
     };
-
-    /* The "New check" panel. Nothing in it starts a check except the start button. */
-    function newPanel() {
-        return {
-            open: false,
-            scope: "full",
-            selected: new Map(),         // path -> "" (whole file) or a method
-            targets: null,               // { loading } | { data } | { error }
-            methods: new Map(),          // path -> { loading } | { data } | { error }
-            filter: "",
-            message: null,               // { kind, text }
-        };
-    }
 
     // ---------------------------------------------------------------
     // DOM helpers: text only, never innerHTML with data
@@ -127,7 +106,6 @@
         if (switched) {
             state.codebasePath = codebasePath;
             state.scope = "full";
-            state.panel = newPanel();
             resetView();
         }
         state.preferAvailable = switched;
@@ -135,20 +113,10 @@
             state.response = null;
             container.replaceChildren(el("div", { class: "cr-screen" },
                 el("h2", { class: "summary-header", text: "Consistency Review" }),
-                el("p", { class: "cr-muted", text: "Select a codebase first from the pipeline page." }),
-                runningNotice()));
+                el("p", { class: "cr-muted", text: "Select a codebase first from the pipeline page." })));
             return Promise.resolve();
         }
 
-        // A check of this codebase finished while it was not on screen: show its result.
-        const finished = state.outcomes.get(nameOf(codebasePath));
-        if (finished && !finished.shown && finished.result.scope) {
-            finished.shown = true;
-            state.scope = finished.result.scope;
-            state.preferAvailable = false;
-            resetView();
-            return load(finished.result.checkId);
-        }
         return load();
     }
 
@@ -160,11 +128,9 @@
         state.tab = "findings";
     }
 
-    /* Loads the saved check of the current scope. expected is the check ID a just-finished check returned. */
-    async function load(expected) {
+    async function load() {
         const token = ++state.loadToken;
         state.response = null;
-        state.handoff = null;
         render();
 
         let response;
@@ -192,8 +158,6 @@
         state.preferAvailable = false;
 
         state.response = response;
-        const shown = resultOf();
-        state.handoff = typeof expected === "string" ? { expected, shown: shown ? shown.check_id : null } : null;
         const findings = findingsOf();
         if (!findings.some(f => f.id === state.selectedId)) {
             state.selectedId = findings.length ? findings[0].id : null;
@@ -355,10 +319,6 @@
 
         return el("div", { class: "cr-screen", attrs: { "data-state": status.kind } },
             header(review),
-            runningNotice(),
-            outcomeNotice(),
-            state.panel.open ? checkPanel() : null,
-            handoffNotice(),
             el("div", { class: `cr-banner cr-banner-${status.kind}`, attrs: { role: "status" } },
                 el("strong", { class: "cr-banner-title", text: status.title }),
                 status.message ? el("p", { text: status.message }) : null),
@@ -384,14 +344,7 @@
                 unsaved ? el("p", { class: "cr-unsaved", text: `${M.plural(unsaved, "review")} not saved yet` }) : null),
             el("div", { class: "cr-header-actions", attrs: { role: "group", "aria-label": "Result scope" } },
                 ...scopes,
-                el("button", { class: "cr-button", text: "Reload", attrs: { type: "button" }, on: { click: () => load() } }),
-                el("button", {
-                    class: `cr-button ${state.panel.open ? "active-toggle" : ""}`,
-                    text: state.panel.open ? "Close new check" : "New check",
-                    attrs: { type: "button", "aria-expanded": state.panel.open ? "true" : "false",
-                             "aria-controls": "cr-check-panel", "data-focus": "panel-toggle" },
-                    on: { click: togglePanel },
-                })));
+                el("button", { class: "cr-button", text: "Reload", attrs: { type: "button" }, on: { click: () => load() } })));
     }
 
     function nameOf(path) {
@@ -837,354 +790,13 @@
             feedback ? el("p", { class: `cr-feedback cr-feedback-${feedback.kind}`, attrs: { role: "status" }, text: feedback.text }) : null);
     }
 
-    // ---------------------------------------------------------------
-    // New check: scope selection and start
-    // ---------------------------------------------------------------
-
-    function togglePanel() {
-        state.panel.open = !state.panel.open;
-        if (state.panel.open && !state.panel.targets) loadTargets();
-        render();
-    }
-
-    async function loadTargets() {
-        const panel = state.panel;
-        panel.targets = { loading: true };
-        render();
-        let response;
-        try {
-            response = await state.api.call("get_consistency_targets", { codebase: state.codebasePath });
-        } catch (error) {
-            response = { success: false, error: String(error && error.message || error) };
-        }
-        if (panel !== state.panel) return;                 // another codebase was opened meanwhile
-        panel.targets = response && response.success
-            ? { data: response.targets }
-            : { error: (response && response.error) || "The files could not be listed." };
-        render();
-    }
-
-    async function loadMethods(path) {
-        const panel = state.panel;
-        if (panel.methods.has(path)) return;
-        panel.methods.set(path, { loading: true });
-        render();
-        let response;
-        try {
-            response = await state.api.call("get_consistency_methods", { codebase: state.codebasePath, path });
-        } catch (error) {
-            response = { success: false, error: String(error && error.message || error) };
-        }
-        if (panel !== state.panel) return;
-        panel.methods.set(path, response && response.success
-            ? { data: response.methods }
-            : { error: (response && response.error) || "Methods could not be listed." });
-        render();
-    }
-
-    function checkPanel() {
-        const panel = state.panel;
-        const name = nameOf(state.codebasePath);
-        const targets = panel.targets || {};
-        const files = (targets.data && targets.data.files) || [];
-        const request = M.checkRequest(panel);
-        const plan = request.error ? null : M.describeCheck(request, files);
-        const unsaved = M.unsavedFor(state.drafts.keys(), name);
-
-        const op = state.operation;
-        const running = Boolean(op);
-        let blocked = null;
-        if (op && op.codebasePath === state.codebasePath) blocked = "A check of this codebase is running.";
-        else if (op) blocked = `A check of ${op.codebase} is running. Start another when it has finished.`;
-        else if (targets.loading) blocked = "Listing the files that can be checked…";
-        else if (targets.error) blocked = targets.error;
-        else if (!files.length) blocked = "No file of this codebase has generated summaries, rules or tests to check. "
-            + "Run the pipeline first.";
-        else if (request.error) blocked = request.error;
-        else if (unsaved) blocked = `Save or discard your ${M.plural(unsaved, "unsaved review")} first: a new check `
-            + "replaces the saved result, and unsaved notes would no longer match a finding.";
-
-        const scopeRadio = (value, label) => el("label", { class: "cr-radio" },
-            el("input", {
-                attrs: { type: "radio", name: "cr-check-scope", value, "data-focus": `check-scope-${value}` },
-                props: { checked: panel.scope === value, disabled: running },
-                on: { change: () => { panel.scope = value; panel.message = null; render(); } },
-            }),
-            el("span", { text: label }));
-
-        return el("section", { class: "cr-check-panel", attrs: { id: "cr-check-panel", "aria-label": "New consistency check" } },
-            el("h3", { class: "cr-section-title", text: `Check consistency of ${name}` }),
-            el("p", { class: "cr-muted", text: "Compares the code with the summaries, business rules and unit tests already "
-                + "generated for it. Nothing is regenerated and the pipeline does not run." }),
-            el("p", { class: "cr-quota", text: "This uses the AI model and API key selected in Manage API Keys. Each file "
-                + "checked is a model request that counts toward that key's quota and usage (see AI Usage)." }),
-            outputsNotes(targets.data),
-            el("div", { class: "cr-radios", attrs: { role: "radiogroup", "aria-label": "What to check" } },
-                scopeRadio("full", "Whole codebase"),
-                scopeRadio("selected", "Selected files")),
-            panel.scope === "selected" ? filePicker(files, targets) : null,
-            plan ? el("div", { class: "cr-plan" },
-                el("strong", { text: "Will check: " }), plan.scope,
-                plan.items.length ? list(plan.items, text => el("span", { text })) : null,
-                el("p", { class: "cr-muted", text: M.requestsText(plan.requests) })) : null,
-            unsaved && !running ? el("div", { class: "cr-actions" },
-                el("button", {
-                    class: "cr-button", text: `Discard ${M.plural(unsaved, "unsaved review")}`,
-                    attrs: { type: "button" },
-                    on: { click: discardUnsaved },
-                })) : null,
-            el("div", { class: "cr-actions" },
-                el("button", {
-                    class: "cr-button primary cr-start",
-                    text: running ? "Checking…" : "Check Consistency",
-                    attrs: { type: "button", "data-focus": "check-start" },
-                    props: { disabled: Boolean(blocked) },
-                    on: { click: startCheck },
-                }),
-                blocked && !(op && op.codebasePath === state.codebasePath)
-                    ? el("span", { class: "cr-muted cr-blocked", text: blocked }) : null),
-            panel.message ? el("p", { class: `cr-feedback cr-feedback-${panel.message.kind}`, attrs: { role: "status" },
-                text: panel.message.text }) : null);
-    }
-
-    function outputsNotes(data) {
-        if (!data) return null;
-        const missing = [];
-        if (!data.outputs.summaries) missing.push("No file summaries exist yet, so summaries will not be compared.");
-        if (!data.outputs.rules) missing.push("No validated business rules exist yet, so rules and their tests will not be compared.");
-        if (!data.outputs.tests) missing.push("No generated unit tests exist yet, so tests will not be compared.");
-        if (!missing.length) return null;
-        return el("div", { class: "cr-note" },
-            el("strong", { text: "The check will be incomplete. " }),
-            missing.join(" "));
-    }
-
-    function filePicker(files, targets) {
-        const panel = state.panel;
-        if (targets.loading) return el("p", { class: "cr-muted", text: "Listing files…" });
-        if (targets.error || !files.length) return null;
-
-        const needle = panel.filter.trim().toLowerCase();
-        const shown = files.filter(f => !needle || f.path.toLowerCase().includes(needle));
-
-        return el("div", { class: "cr-picker" },
-            el("input", {
-                class: "cr-search",
-                attrs: { type: "search", placeholder: "Filter files", "aria-label": "Filter files", "data-focus": "picker-filter" },
-                props: { value: panel.filter, disabled: Boolean(state.operation) },
-                on: { input: e => { panel.filter = e.target.value; render(); } },
-            }),
-            el("div", { class: "cr-picker-list", attrs: { role: "group", "aria-label": "Files to check" } },
-                shown.map(file => fileRow(file))),
-            shown.length < files.length ? el("p", { class: "cr-muted", text: `${shown.length} of ${files.length} files shown.` }) : null);
-    }
-
-    function fileRow(file) {
-        const panel = state.panel;
-        const checked = panel.selected.has(file.path);
-
-        let method = null;
-        if (checked && file.methods_supported) {
-            const methods = panel.methods.get(file.path) || { loading: true };
-            if (methods.data && methods.data.supported) {
-                method = el("select", {
-                    attrs: { "aria-label": `Method to check in ${file.path}`, "data-focus": `method-${file.path}` },
-                    props: { disabled: Boolean(state.operation) },
-                    on: { change: e => { panel.selected.set(file.path, e.target.value); panel.message = null; render(); } },
-                },
-                el("option", { text: "Whole file", attrs: { value: "" } }),
-                methods.data.methods.map(m => el("option", {
-                    text: m.overloaded ? `${m.symbol} (overloaded: check the whole file)` : m.symbol,
-                    attrs: { value: m.symbol, disabled: m.overloaded, selected: panel.selected.get(file.path) === m.symbol },
-                })));
-            } else if (methods.data) {
-                method = el("span", { class: "cr-muted", text: methods.data.reason || "Whole file only." });
-            } else if (methods.error) {
-                method = el("span", { class: "cr-muted", text: `Whole file only: ${methods.error}` });
-            } else {
-                method = el("span", { class: "cr-muted", text: "Listing methods…" });
-            }
-        }
-
-        return el("div", { class: `cr-pick ${checked ? "selected" : ""}` },
-            el("label", { class: "cr-pick-label" },
-                el("input", {
-                    attrs: { type: "checkbox", "data-focus": `pick-${file.path}` },
-                    props: { checked, disabled: Boolean(state.operation) },
-                    on: { change: e => togglePick(file, e.target.checked) },
-                }),
-                el("span", { class: "cr-pick-path", text: file.path }),
-                el("span", { class: "cr-muted", text: M.artifactsText(file) })),
-            method);
-    }
-
-    function togglePick(file, checked) {
-        const panel = state.panel;
-        if (checked) {
-            panel.selected.set(file.path, "");
-            if (file.methods_supported) loadMethods(file.path);
-        } else {
-            panel.selected.delete(file.path);
-        }
-        panel.message = null;
-        render();
-    }
-
-    function discardUnsaved() {
-        const prefix = `${nameOf(state.codebasePath)}|`;
-        [...state.drafts.keys()].filter(k => k.startsWith(prefix)).forEach(k => {
-            state.drafts.delete(k);
-            state.feedback.delete(k);
-        });
-        render();
-    }
-
-    async function startCheck() {
-        const panel = state.panel;
-        const request = M.checkRequest(panel);
-        if (state.operation || request.error) return;        // one check at a time, app-wide
-
-        const files = (panel.targets && panel.targets.data && panel.targets.data.files) || [];
-        const op = M.newOperation({
-            codebasePath: state.codebasePath,
-            codebase: nameOf(state.codebasePath),
-            request,
-            total: request.scope === "full" ? files.length : request.targets.length,
-        });
-        op.plan = M.describeCheck(request, files);
-        state.operation = op;
-        panel.message = null;
-        startTicker();
-        render();
-
-        let response;
-        try {
-            response = await state.api.call(
-                "check_consistency",
-                { codebase: op.codebasePath, scope: request.scope, targets: request.targets },
-                { onEvent: event => { M.applyEvent(op, event); refreshRunning(); } },
-            );
-        } catch (error) {
-            response = { success: false, error: String(error && error.message || error) };
-        }
-
-        op.done = true;
-        op.response = response;
-        op.finishedAt = Date.now();
-        state.operation = null;
-        stopTicker();
-
-        const result = M.outcome(response);
-        const here = state.codebasePath === op.codebasePath && isShowing();
-        state.outcomes.set(op.codebase, { result, op, shown: here });
-
-        if (here && result.scope) {
-            state.scope = result.scope;
-            resetView();
-            await load(result.checkId);                     // the exact result of this check
-        } else {
-            render();
-        }
-    }
-
-    function isShowing() {
-        return Boolean(state.container && state.visible);
-    }
-
-    function startTicker() {
-        stopTicker();
-        state.ticker = setInterval(() => {
-            const op = state.operation;
-            const node = state.container && state.container.querySelector(".cr-elapsed");
-            if (op && node) node.textContent = M.formatElapsed(Date.now() - op.startedAt);
-        }, 1000);
-    }
-
-    function stopTicker() {
-        if (state.ticker) clearInterval(state.ticker);
-        state.ticker = null;
-    }
-
-    /* Redraws only the running card, so typing elsewhere on the screen is not disturbed. */
-    function refreshRunning() {
-        const node = state.container && state.container.querySelector(".cr-running");
-        if (!node || !isShowing()) return;
-        const fresh = runningNotice();
-        if (fresh) node.replaceWith(fresh);
-    }
-
-    function runningNotice() {
-        const op = state.operation;
-        if (!op) return null;
-
-        if (op.codebasePath !== state.codebasePath) {
-            return el("div", { class: "cr-running cr-running-elsewhere", attrs: { role: "status" } },
-                el("strong", { text: `A consistency check of ${op.codebase} is running.` }),
-                " Other results load when it finishes, because the app's backend runs one task at a time.");
-        }
-
-        const usage = M.usageText(op.usage);
-        const latest = op.messages.slice(-6);
-        return el("section", { class: "cr-running", attrs: { "aria-label": "Running check", "aria-busy": "true" } },
-            el("div", { class: "cr-running-head" },
-                el("span", { class: "cr-spinner", attrs: { "aria-hidden": "true" } }),
-                el("strong", { text: `Checking ${op.codebase}` }), " ",
-                el("span", { class: "cr-muted", text: op.plan ? op.plan.scope : "" })),
-            op.plan && op.plan.items.length ? list(op.plan.items, text => el("span", { text })) : null,
-            el("p", null,
-                el("span", { text: `${M.filesText(op)} ` }),
-                el("span", { class: "cr-muted", text: "Elapsed " }),
-                el("span", { class: "cr-elapsed", text: M.formatElapsed(Date.now() - op.startedAt) }),
-                usage ? el("span", { class: "cr-muted", text: ` · ${usage} so far` }) : null),
-            op.waits ? el("p", { class: "cr-note", text: `The AI provider asked to wait ${M.plural(op.waits, "time")}; `
-                + "the request is retried within the existing limit, never resent by this screen." }) : null,
-            latest.length ? el("ul", { class: "cr-progress", attrs: { "aria-live": "polite" } },
-                latest.map(m => el("li", { class: m.wait ? "cr-progress-wait" : "", text: m.text }))) : null,
-            el("p", { class: "cr-muted", text: "A running check cannot be stopped without losing its result: it ends after "
-                + "every selected file has been tried. Other actions in the app wait until then." }));
-    }
-
-    function outcomeNotice() {
-        const name = nameOf(state.codebasePath);
-        const parts = [];
-
-        // Checks of other codebases that finished while this one is shown.
-        state.outcomes.forEach((o, codebase) => {
-            if (codebase !== name && !o.shown) {
-                parts.push(el("p", { class: `cr-feedback cr-feedback-${o.result.kind}`, attrs: { role: "status" },
-                    text: `The check of ${codebase} finished: ${o.result.text} Select ${codebase} and open `
-                        + "Consistency Review to see it." }));
-            }
-        });
-
-        const mine = state.outcomes.get(name);
-        if (mine && mine.shown) {
-            const usage = M.usageText(mine.op.usage);
-            parts.push(el("div", { class: `cr-outcome cr-outcome-${mine.result.kind}`, attrs: { role: "status" } },
-                el("strong", { text: "Latest check from this session: " }),
-                el("span", { text: mine.result.text }),
-                usage ? el("span", { class: "cr-muted", text: ` (${usage}; see AI Usage for the full record)` }) : null,
-                el("button", {
-                    class: "cr-button", text: "Dismiss", attrs: { type: "button" },
-                    on: { click: () => { state.outcomes.delete(name); render(); } },
-                })));
-        }
-        return parts.length ? el("div", { class: "cr-outcomes" }, parts) : null;
-    }
-
-    function handoffNotice() {
-        const h = state.handoff;
-        if (!h || !M.handoffMismatch(h.expected, h.shown)) return null;
-        return el("p", { class: "cr-note", text: `This is not the result of the check that just ran (${h.expected}). `
-            + `${h.shown ? `The saved result is now ${h.shown}.` : "No saved result was found for it."}` });
-    }
-
     window.ConsistencyReviewScreen = {
         open,
         // Called when another Insights view is opened in the same output box.
         hide: () => { state.visible = false; },
         reload: load,
-        hasUnsavedReviews: () => state.drafts.size > 0,
+        // Unsaved review notes for a codebase, which a new check would leave without a finding.
+        unsavedReviews: codebasePath => M.unsavedFor(state.drafts.keys(), nameOf(codebasePath)),
         _state: state,
     };
 })();

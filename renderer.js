@@ -2221,6 +2221,28 @@ document.getElementById('runUnitTestValidationOnlyBtn')
     });
 
 
+// Compares the code with the summaries, rules and tests already generated for
+// the selected codebase and saves the result (View Insights → Consistency
+// Review). Nothing is regenerated.
+document.getElementById('runConsistencyReviewOnlyBtn')
+    .addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        showLoading(
+            "Consistency Review",
+            "Preparing..."
+        );
+
+        runBackendCommand(
+            "check_consistency",
+            {
+                codebase:selectedCodebasePath,
+                scope:"full",
+            }
+        );
+    });
+
+
 document.getElementById('runIntegrationTestGenerationOnlyBtn')
     .addEventListener('click', (event) => {
         event.preventDefault();
