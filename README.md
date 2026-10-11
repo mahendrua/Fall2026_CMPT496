@@ -166,7 +166,7 @@ confirmed requirements in the app.
 The screen shows the latest saved check for that codebase. Whole-project and
 selected-files checks are kept apart; use the buttons at the top to switch.
 Opening the screen only reads saved results: it does not run a check or call
-a model.
+a model. A check runs only when you press **Check Consistency** (below).
 
 ### What works now
 
@@ -193,14 +193,67 @@ a model.
   correct. Reviews belong to the finding (same disagreement about the same
   content), so the same finding shows its review in either scope.
 
-### Getting a result to look at
+### Running a check
 
-There is no button to run a check yet (Part 5). Until then, results come from
-the checker's Python entry point (a paid model call):
+**New check** (top of the screen) opens the check panel. A check compares the
+code with the outputs already on disk: nothing is regenerated and no pipeline
+step runs.
 
-```powershell
-.venv\Scripts\python.exe -c "from agent.consistency_checker import run_consistency_check as r; print(r(r'C:\path\to\Codebase', save=True).status)"
-```
+1. Choose **Whole codebase**, or **Selected files** and tick files from the
+   list (only files that have generated artifacts are listed, with what was
+   generated for each). For C# and JavaScript files you can limit a file to
+   one method; overloaded methods can only be checked as the whole file.
+2. Read **Will check**: the scope and at most how many model requests the
+   check can make (one per file, plus one more only if an answer cannot be
+   read).
+3. Press **Check Consistency**. Nothing else starts a check.
+
+While it runs the screen shows the codebase and scope, how many files have
+been started, the elapsed time, AI calls and tokens so far, and the backend's
+own messages, including any rate-limit wait from the AI provider. There is no
+percentage and no cancel: stopping the backend would lose the result, so a
+check ends after every selected file has been tried. Only one check runs at a
+time, and other actions in the app wait until it finishes. You can move to
+another codebase or view; the check's result is kept for its own codebase and
+shown when you come back.
+
+The button is disabled, with the reason shown next to it, while a check is
+running, when nothing is selected, when the codebase has no generated outputs,
+and while you have unsaved review notes for the codebase (a new check replaces
+the result they belong to; save them, or discard them with the button
+offered).
+
+### What a result means
+
+| Shown as | Meaning |
+|---|---|
+| **N mismatches found** | The check completed. Each finding is a disagreement between the code and a generated artifact; which one is right is not known. |
+| **No mismatches found in assessed artifacts** | The check completed and found no disagreement in what it compared. It does not mean the code is correct or the tests pass. |
+| **Incomplete check** | Some artifacts were not compared: outputs missing (e.g. no business rules yet), links ambiguous or stale, comparisons undetermined, or errors. Findings shown are real, but others may be missing. The lists under the banner say what was not compared. |
+| **The check failed** | Nothing usable was produced, e.g. the API key hit its daily limit or no key is selected. The errors list says why. No conclusion can be drawn. |
+
+### API usage
+
+Each file checked is one model request on the key selected in Manage API Keys
+(plus at most one re-ask if an answer cannot be read; rate-limit waits and
+retries are handled by the existing provider limits, never by the screen).
+The running card and the "Latest check from this session" notice show the AI
+calls and tokens; **View Insights → AI Usage** shows the check's full record
+(it is logged as `check_consistency`). A check that made no model call is not
+logged there, as for other steps.
+
+### Trying it with a real codebase (uses your API quota)
+
+1. Run the pipeline on the codebase first, at least **Create JSON Summaries**;
+   for rule and test comparisons also **Create Directory Summaries & Business
+   Rules**, **Business Rule Validation** and **Unit Test Generation**. Without
+   rules or tests the check still runs but is reported as incomplete.
+2. Run Operations → browse to the codebase folder (the same folder the
+   pipeline used) → Submit → Return to Main Menu.
+3. View Insights → **Consistency Review** → **New check**.
+4. Start small: **Selected files**, one file → **Check Consistency**.
+5. When it finishes, open a finding to see the claims and evidence, and save a
+   review with a note if you like. Check **AI Usage** for the calls and tokens.
 
 To look at the screen without a model or real outputs, use the isolated demo
 results in [test/consistency_review_ui](test/consistency_review_ui/README.md).
@@ -208,7 +261,7 @@ results in [test/consistency_review_ui](test/consistency_review_ui/README.md).
 ### Tests
 
 ```powershell
-.venv\Scripts\python.exe -m pytest test/other_tests/consistency_review_backend_test.py test/other_tests/consistency_review_demo_test.py
+.venv\Scripts\python.exe -m pytest test/other_tests/consistency_review_backend_test.py test/other_tests/consistency_review_demo_test.py test/other_tests/consistency_check_command_test.py
 node --test test/other_tests/consistency_review_model.test.js
 ```
 
@@ -217,7 +270,6 @@ The real-app walk-through (screenshots of every state) is described in
 
 ### Not yet connected
 
-- Part 5: a button to run a check (whole project or selected files) from the app.
 - Part 6: running the check automatically after the full pipeline.
 - A packaged backend (`releases/main/main.exe`) built before this change does not
   have the screen's backend commands; rebuild it (below) before packaging.

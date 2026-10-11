@@ -209,3 +209,11 @@ test("elapsed time and the result handoff", () => {
     assert.equal(M.handoffMismatch("c1", "c2"), true);
     assert.equal(M.handoffMismatch(null, "c2"), false);
 });
+
+test("a check run from the app is not labelled as having generated the artifacts", () => {
+    const review = { run_relation: "same_run", result: { run_id: "r5" }, latest_run: { run_id: "r5", command: "check_consistency" } };
+    assert.equal(M.runLabel(review), "From run r5, a consistency check run on its own (the most recent logged run of "
+        + "this codebase). The artifacts it compared were generated earlier.");
+    const pipeline = { run_relation: "same_run", result: { run_id: "r6" }, latest_run: { run_id: "r6", command: "full_pipeline" } };
+    assert.equal(M.runLabel(pipeline), "From run r6, the most recent logged run of this codebase.");
+});

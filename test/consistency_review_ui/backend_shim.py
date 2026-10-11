@@ -17,6 +17,9 @@ prompt; each model created and each call is appended to MODEL_LOG.jsonl in
 An optional <app_dir>/SHIM_CONTROL.json, read on every call, can slow calls
 down ({"delay": seconds}), announce a provider wait for some codebases
 ({"wait": [names]}) or fail them with a daily-limit error ({"fail": [names]}).
+
+Generation agents and database builds are replaced with functions that log a
+"generation" event to MODEL_LOG.jsonl and raise, so any attempt is caught.
 """
 
 import json
@@ -107,6 +110,20 @@ llm.build_chat_model = refuse
 
 import backend.commands as commands  # noqa: E402
 commands.APP_DIR = app_dir
+
+
+def no_generation(name):
+    def refuse_generation(*args, **kwargs):
+        log("generation", name=name)
+        raise RuntimeError(f"{name} must not run while verifying the Consistency Review screen.")
+    return refuse_generation
+
+
+# A consistency check must never regenerate artifacts or run pipeline steps;
+# any attempt is logged (event "generation") and refused.
+for _name in ("FileSummaryAgent", "DirectoryAgent", "BRAgent", "UTAgent", "UTVAgent", "ITAgent",
+              "build_database", "build_summary_database"):
+    setattr(commands, _name, no_generation(_name))
 
 if os.environ.get("CR_SHIM_MODELS") == "oracle":
     import agent.consistency_checker as checker  # noqa: E402

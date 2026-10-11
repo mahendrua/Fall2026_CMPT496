@@ -19,6 +19,7 @@
  */
 const path = require("path");
 const fs = require("fs");
+const crypto = require("crypto");
 const childProcess = require("child_process");
 const { app, BrowserWindow } = require("electron");
 
@@ -667,6 +668,107 @@ async function runningAndHandoff() {
     expect(sent.filter(c => c === "check_consistency").length === (await js(`window.__crChecks.length`)), "every check request was answered once");
 }
 
+// --- End to end, through the app's own controls ----------------------------------
+
+/* Hash of every pipeline output in the demo (everything under agent/ except consistency results). */
+function pipelineOutputs() {
+    const root = path.join(demo.app, "agent");
+    const hashes = {};
+    const walk = dir => fs.readdirSync(dir, { withFileTypes: true }).forEach(entry => {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) { if (entry.name !== "consistency_output") walk(full); return; }
+        hashes[path.relative(root, full)] = crypto.createHash("sha256").update(fs.readFileSync(full)).digest("hex");
+    });
+    walk(root);
+    return hashes;
+}
+
+/* Home -> Run Operations -> codebase path -> Submit -> back -> View Insights -> Consistency Review. */
+async function selectThroughUi(codebase) {
+    await js(`(() => { showPage('homePage'); document.getElementById('analysisBtn').click(); return true; })()`);
+    const page = await js(`!document.getElementById('codebasePipelinePage').classList.contains('hidden')`);
+    // The Browse button opens a native folder dialog; the path is entered in its place.
+    await js(`(() => { document.getElementById('codebasePath').value = ${JSON.stringify(codebase)};
+        document.getElementById('submitPathBtn').click(); return true; })()`);
+    await js(`(() => { document.getElementById('analysisBackBtn').click(); document.getElementById('mainViewBtn').click();
+        document.getElementById('viewConsistencyBtn').click(); return true; })()`);
+    await sleep(150);
+    await until(LOADED, `screen for ${codebase}`);
+    return page;
+}
+
+async function endToEnd(outputsBefore) {
+    await recordCommands();
+    control({});
+
+    // Select codebase and a method -> Check Consistency -> exact result -> evidence -> review note.
+    const reachedPicker = await selectThroughUi(cb("findings"));
+    expect(reachedPicker, "Run Operations leads to the codebase page");
+    await chooseScope("Whole project");
+    const fullBefore = (await facts()).fields.Check;
+    await openPanel();
+    await js(`${PANEL}.querySelector('input[value="selected"]').click()`);
+    await js(`${PANEL}.querySelector('.cr-pick input[type=checkbox]').click()`);
+    await until(`${PANEL}.querySelectorAll('.cr-pick select option').length > 1`, "method list");
+    await js(`(() => { const s = ${PANEL}.querySelector('.cr-pick select'); s.value = 'Refunds.CanRefund';
+        s.dispatchEvent(new Event('change')); return true; })()`);
+    const callsBefore = callsFor("ignored_parameter");
+    await js(`${PANEL}.querySelector('.cr-start').click()`);
+    await waitForCheck();
+    const response = await lastCheck();
+    let f = await facts();
+    expect(f.fields.Result === "Selected files" && f.fields.Selection === "src/Refunds.cs#Refunds.CanRefund"
+        && f.fields.Check === response.result.check_id, "method check: its exact result is shown", f.fields);
+    expect(f.rows.length === 2 && callsFor("ignored_parameter") - callsBefore === 1, "method check found the contradictions with one call",
+        [f.rows.length, callsFor("ignored_parameter") - callsBefore]);
+    expect(/independent|on its own/.test(f.fields.Run) || /most recent run of this codebase is not logged/.test(f.fields.Run),
+        "the run label does not credit this check with generating the artifacts", f.fields.Run);
+
+    await js(`document.querySelector('.cr-finding').click()`);
+    await artifactsChecked();
+    let d = await detailFacts();
+    expect(d.evidence.some(e => e.includes("return daysSincePurchase <= 30;")), "the new finding shows its evidence");
+    await js(`(() => { ${DETAIL}.querySelector('.cr-radio input[value="reviewed"]').click(); return true; })()`);
+    await js(`(() => { const t = ${DETAIL}.querySelector('.cr-note-input'); t.value = 'End-to-end note.';
+        t.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+    await js(`${DETAIL}.querySelector('.cr-save').click()`);
+    await until(`/Saved at/.test((${DETAIL}.querySelector('.cr-feedback') || {}).textContent || '')`, "review saved");
+    const reviewedId = d.id;
+    await shot("22-end-to-end-review");
+
+    await selectThroughUi(cb("clean"));
+    await selectThroughUi(cb("findings"));
+    await chooseScope("Selected files");
+    f = await facts();
+    expect(f.fields.Result === "Selected files" && f.fields.Check === response.result.check_id, "the selected result is still the new check after switching back");
+    await js(`document.querySelector('.cr-finding[data-id="${reviewedId}"]').click()`);
+    d = await detailFacts();
+    expect(d.checked === "reviewed" && d.note === "End-to-end note.", "the review note survives switching projects");
+    await chooseScope("Whole project");
+    f = await facts();
+    expect(f.fields.Check === fullBefore, "the selected check did not overwrite the whole-project result", [f.fields.Check, fullBefore]);
+
+    // Missing outputs: an honest incomplete result, one call for the one summary.
+    await selectThroughUi(cb("missing_outputs"));
+    await openPanel();
+    let p = await panelFacts();
+    expect(/No validated business rules exist yet/.test(p.text) && /No generated unit tests exist yet/.test(p.text),
+        "the panel warns which outputs are missing before starting", p.text);
+    const missingBefore = callsFor("missing_outputs");
+    await js(`${PANEL}.querySelector('.cr-start').click()`);
+    await waitForCheck();
+    f = await facts();
+    expect(f.state === "partial" && f.openDetails.some(t => t.startsWith("Missing or unresolved artifacts")),
+        "missing outputs give an incomplete result that names them", [f.state, f.openDetails]);
+    expect(callsFor("missing_outputs") - missingBefore === 1, "only the one comparable artifact cost a call", callsFor("missing_outputs") - missingBefore);
+    await shot("23-missing-outputs-incomplete");
+
+    // Nothing was regenerated and no pipeline step ran.
+    expect(JSON.stringify(pipelineOutputs()) === JSON.stringify(outputsBefore), "no summary, rule or test output changed");
+    expect(!modelEvents().some(e => e.event === "generation"), "no generation agent or database build was started");
+    expect(!fs.existsSync(path.join(demo.app, "MODEL_REQUESTED")), "no real model was ever requested");
+}
+
 // --- Run --------------------------------------------------------------------
 async function openInteractive() {
     const start = Date.now();
@@ -694,10 +796,12 @@ app.whenReady().then(async () => {
         await evidenceAndReview();
         const created = modelEvents().length;
         expect(created === 0, "browsing results created no model", created);
+        const outputsBefore = pipelineOutputs();
         await newCheckPanel();
         await runningAndHandoff();
+        await endToEnd(outputsBefore);
 
-        expect(!fs.existsSync(path.join(demo.app, "MODEL_REQUESTED")), "no model was requested");
+        expect(!fs.existsSync(path.join(demo.app, "MODEL_REQUESTED")), "no real model was requested");
     } catch (error) {
         expect(false, "verification crashed", String(error && error.stack || error));
     }

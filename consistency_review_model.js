@@ -209,6 +209,11 @@
         const latest = review && review.latest_run;
         switch (review && review.run_relation) {
             case "same_run":
+                // A check run from the app is a run of its own; the artifacts it compared are older.
+                if (latest && latest.command === "check_consistency") {
+                    return `From run ${result.run_id}, a consistency check run on its own (the most recent logged run of `
+                        + "this codebase). The artifacts it compared were generated earlier.";
+                }
                 return `From run ${result.run_id}, the most recent logged run of this codebase.`;
             case "earlier_run":
                 return `From an earlier run (${result.run_id}). The most recent logged run of this codebase is `

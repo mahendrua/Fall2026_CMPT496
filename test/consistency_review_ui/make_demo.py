@@ -28,6 +28,7 @@ States written:
     no_check          collection_order_js: built but never checked
     undetermined      cross_file_dependency: one comparison undetermined
     no_outputs        no_outputs: source code with no pipeline outputs
+    missing_outputs   missing_outputs: a summary but no rule or test outputs, never checked
 """
 
 import json
@@ -112,6 +113,7 @@ def main(out_dir):
     check("arithmetic_shared_mistake")
     check("cross_file_dependency")
     build("collection_order_js")
+    build("missing_outputs")
 
     # Source code with no pipeline outputs at all.
     bare = out / "codebase" / "no_outputs"
@@ -121,7 +123,8 @@ def main(out_dir):
 
     # The most recent logged run of ignored_parameter is a later one, started
     # after the checks above, so their results are from an earlier run.
-    later = datetime.now() + timedelta(minutes=1)
+    # One second later: after the checks above, before any check run afterwards.
+    later = datetime.now() + timedelta(seconds=1)
     (app / "last_run_log.json").write_text(json.dumps({
         "run_id": "demo-run-2", "codebase": "ignored_parameter", "command": "full_pipeline", "status": "success",
         "started_at": later.isoformat(timespec="seconds"),
@@ -159,7 +162,7 @@ def main(out_dir):
             partial_clean="reference_problems", partial_findings="validation_and_state", failed="summary_injection",
             unreadable="side_effects", older="same_file_helper", injection="exclusive_boundary_comments",
             missing_source="arithmetic_shared_mistake", no_check="collection_order_js",
-            undetermined="cross_file_dependency", no_outputs="no_outputs",
+            undetermined="cross_file_dependency", no_outputs="no_outputs", missing_outputs="missing_outputs",
         ),
     )
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
