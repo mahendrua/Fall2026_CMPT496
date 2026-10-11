@@ -52,6 +52,7 @@ from agent.llm import verify_llm_key
 from agent.BR_input_loader import load_rule_candidates, deduplicate_rule_candidates
 from agent.structured_output.UT_output import ValidatedRule
 from agent.structured_output.UTV_output import UnitTest
+from agent.consistency_checker import run_consistency_check
 from agent.consistency_store import ConsistencyStoreError
 from backend import consistency_review
 
@@ -292,6 +293,44 @@ class Commands:
                 codebase, scope, check_id, finding_id, artifact_index, self.app_dir,
             )}
         )
+
+    def check_consistency(
+        self,
+        codebase: str = "",
+        scope: str = "full",
+        targets: list = None,
+        individualStep=True,
+    ):
+        """
+        Run a Consistency Review check now, for the whole codebase or selected
+        files (optionally one method each), and save its result.
+
+        Uses the outputs already on disk: nothing is regenerated and no
+        pipeline step runs. The request is validated before anything is
+        logged, and the checker only creates a model for comparisons that
+        have artifacts to compare, so missing outputs cost no call. It runs
+        as its own command, so its run ID, AI calls, tokens and timing go to
+        the run log like any other step.
+        """
+        try:
+            root, checked_targets = consistency_review.prepare_check(codebase, scope, targets)
+        except (consistency_review.ReviewRequestError, ConsistencyStoreError) as exc:
+            return {
+                "success": False,
+                "command": "check_consistency",
+                "individualStep": individualStep,
+                "error": str(exc),
+            }
+
+        def task():
+            what = "the whole codebase" if checked_targets is None else (
+                f"{len(checked_targets)} selected file{'s' if len(checked_targets) != 1 else ''}"
+            )
+            progress(f"Checking consistency of {what} in {root.name}...")
+            result = run_consistency_check(root, targets=checked_targets, app_dir=self.app_dir, save=True)
+            return consistency_review.check_summary(result)
+
+        return self._run_command("check_consistency", task, individualStep=individualStep)
 
     @staticmethod
     def _consistency_call(task):

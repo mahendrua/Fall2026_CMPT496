@@ -31,6 +31,7 @@ States written:
 
 import json
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -111,10 +112,13 @@ def main(out_dir):
     check("cross_file_dependency")
     build("collection_order_js")
 
-    # The most recent logged run of ignored_parameter is a later one.
+    # The most recent logged run of ignored_parameter is a later one, started
+    # after the checks above, so their results are from an earlier run.
+    later = datetime.now() + timedelta(minutes=1)
     (app / "last_run_log.json").write_text(json.dumps({
-        "run_id": "demo-run-2", "codebase": "ignored_parameter", "command": "full_pipeline",
-        "status": "success", "started_at": "2026-10-11T09:00:00", "finished_at": "2026-10-11T09:20:00",
+        "run_id": "demo-run-2", "codebase": "ignored_parameter", "command": "full_pipeline", "status": "success",
+        "started_at": later.isoformat(timespec="seconds"),
+        "finished_at": (later + timedelta(minutes=20)).isoformat(timespec="seconds"),
     }), encoding="utf-8")
 
     # Current content differs from the evidence the check stored.

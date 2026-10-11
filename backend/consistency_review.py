@@ -12,6 +12,8 @@ evidence stored in the result.
                         reviewed (agent/consistency_store.set_review)
     read_artifact()     the current state and content of one artifact a finding
                         refers to, compared with the stored reference
+    prepare_check()     validates a request to run a check now (no model yet)
+    check_summary()     what the screen needs to know about a check just run
 
 The screen never sends a path. It names a result (codebase, scope, check ID),
 a finding ID and the index of one of that finding's artifacts; the reference
@@ -20,12 +22,13 @@ selected codebase or that codebase's pipeline output folders.
 """
 
 import json
+import re
 from collections import Counter
 from pathlib import Path
 
 from pydantic import ValidationError
 
-from agent.BR_input_loader import APP_DIR
+from agent.BR_input_loader import APP_DIR, _is_abs, _normalize_root, normalize_rule_path
 from agent.consistency_refs import (
     RULES_DIR, SUMMARY_DIR, TESTS_DIR, _find_symbol, _read_list, refresh_ref,
 )
@@ -41,6 +44,12 @@ MAX_NOTE_CHARS = 4000
 # Most source lines returned around a cited range, and the context added.
 MAX_SOURCE_LINES = 400
 SOURCE_CONTEXT_LINES = 3
+
+# Most targets one selected check may name.
+MAX_TARGETS = 100
+
+# A method or type name as the checker takes it: "Type.Method" or "Method".
+SYMBOL = re.compile(r"^[A-Za-z_$][\w$]*(\.[A-Za-z_$][\w$]*)*$")
 
 # Fields older saved results may lack; their absence is reported, not hidden.
 LATER_FIELDS = ("selection", "undetermined", "assessments", "skipped")
@@ -71,7 +80,9 @@ def load_for_review(codebase, scope="full", app_dir=APP_DIR):
         available_scopes  scopes that have a saved result
         missing_fields  newer result fields absent from an older saved file
         latest_run      the most recent logged run of this codebase, if known
-        run_relation    same_run, earlier_run, no_run or unknown
+        run_relation    same_run, earlier_run, later_run (run on its own after
+                        the latest logged run, e.g. a check that made no
+                        model call), no_run or unknown
     """
     name = codebase_name(codebase)
     if scope not in RESULT_NAMES:
@@ -99,8 +110,14 @@ def load_for_review(codebase, scope="full", app_dir=APP_DIR):
         relation = "no_run"
     elif latest is None:
         relation = "unknown"
+    elif latest["run_id"] == result.run_id:
+        relation = "same_run"
+    elif result.started_at and latest.get("started_at") and result.started_at >= latest["started_at"]:
+        # Runs that make no model call are not logged, so a check can be newer
+        # than the latest logged run without being part of it.
+        relation = "later_run"
     else:
-        relation = "same_run" if latest["run_id"] == result.run_id else "earlier_run"
+        relation = "earlier_run"
 
     return dict(
         base,
@@ -185,6 +202,103 @@ def read_artifact(codebase, scope, check_id, finding_id, artifact_index, app_dir
         content=content,
         lines=lines,
     )
+
+
+def prepare_check(codebase, scope, targets):
+    """
+    @brief Validates a request to run a check now, before any run is logged or model created.
+    @param codebase The codebase folder, as every command receives it.
+    @param scope "full" (no targets) or "selected" (one or more targets).
+    @param targets Source paths, or {"path", "symbol"} dicts, inside the codebase.
+    @return (root Path, targets for run_consistency_check, or None for a full check)
+    @raises ReviewRequestError For anything that cannot be checked as asked.
+    """
+    root = Path(str(codebase or ""))
+    codebase_name(root)
+    if not root.is_dir():
+        raise ReviewRequestError(f"The codebase folder {root} does not exist.")
+    if scope not in RESULT_NAMES:
+        raise ReviewRequestError(f"Unknown check scope: {scope!r}")
+
+    targets = targets or []
+    if not isinstance(targets, list):
+        raise ReviewRequestError("Targets must be a list of files or {path, symbol} entries.")
+    if scope == "full":
+        if targets:
+            raise ReviewRequestError("A whole-codebase check takes no selected files.")
+        return root, None
+    if not targets:
+        raise ReviewRequestError("Select at least one file to check.")
+    if len(targets) > MAX_TARGETS:
+        raise ReviewRequestError(f"{len(targets)} selections is more than the {MAX_TARGETS} one check can take.")
+
+    norm_root = _normalize_root(root)
+    checked = []
+    for raw in targets:
+        if isinstance(raw, str):
+            path, symbol = raw, None
+        elif isinstance(raw, dict) and set(raw) <= {"path", "symbol"} and isinstance(raw.get("path"), str):
+            path, symbol = raw["path"], raw.get("symbol")
+        else:
+            raise ReviewRequestError(f"Not a valid selection: {raw!r}")
+
+        if not path.strip():
+            raise ReviewRequestError("A selected file has no path.")
+        rel = normalize_rule_path(path, norm_root)
+        if _is_abs(rel) or rel in (".", "..") or rel.startswith("../"):
+            raise ReviewRequestError(f"{path} is not inside the codebase {root.name}.")
+
+        if symbol is not None:
+            if not isinstance(symbol, str) or not symbol.strip():
+                symbol = None
+            elif not SYMBOL.match(symbol.strip()):
+                raise ReviewRequestError(f"{symbol!r} is not a method name such as Type.Method.")
+            else:
+                symbol = symbol.strip()
+
+        target = {"path": rel, "symbol": symbol} if symbol else rel
+        if target not in checked:
+            checked.append(target)
+    return root, checked
+
+
+def check_summary(result):
+    """
+    @brief What the screen needs about a check that has just run.
+    @details check_id and scope identify the exact saved result to load.
+    A warning is set for anything short of a completed check, as test steps
+    do for the Complete screen.
+    """
+    findings = len(result.findings)
+    if result.status == "completed":
+        message = (f"Consistency check completed: {findings} mismatch{'es' if findings != 1 else ''} found."
+                   if findings else "Consistency check completed: no mismatches found in the assessed artifacts.")
+    elif result.status == "partial":
+        message = (f"Consistency check incomplete: {findings} mismatch{'es' if findings != 1 else ''} found, "
+                   "but some artifacts were not compared.")
+    else:
+        message = "Consistency check failed: no conclusion can be drawn."
+
+    summary = dict(
+        message=message,
+        codebase=result.codebase,
+        scope=result.scope,
+        selection=list(result.selection),
+        check_id=result.check_id,
+        run_id=result.run_id,
+        status=result.status,
+        outcome=result.outcome,
+        findings=findings,
+        missing_artifacts=len(result.missing_artifacts),
+        unresolved_links=len(result.unresolved_links),
+        skipped=len(result.skipped),
+        undetermined=len(result.undetermined),
+        errors=list(result.errors),
+    )
+    if result.status != "completed":
+        first = result.errors[0] if result.errors else "Some artifacts were missing, unresolved or undetermined."
+        summary["warning"] = f"{message} {first}"
+    return summary
 
 
 # ---------------------------------------------------------

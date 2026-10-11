@@ -213,6 +213,9 @@
             case "earlier_run":
                 return `From an earlier run (${result.run_id}). The most recent logged run of this codebase is `
                     + `${latest.run_id}; this result is not from it.`;
+            case "later_run":
+                return `From run ${result.run_id}, a check run on its own after the most recent logged run (`
+                    + `${latest.run_id}). The artifacts it compared were generated earlier.`;
             case "no_run":
                 return "Run on its own, not as part of a pipeline run.";
             case "unknown":

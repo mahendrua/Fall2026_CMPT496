@@ -72,6 +72,8 @@ test("a result from an earlier run is labelled as such", () => {
         "From an earlier run (r1). The most recent logged run of this codebase is r2; this result is not from it.");
     assert.match(M.runLabel({ run_relation: "same_run", result: { run_id: "r2" } }), /most recent logged run/);
     assert.match(M.runLabel({ run_relation: "no_run", result: {} }), /not as part of a pipeline run/);
+    assert.equal(M.runLabel({ run_relation: "later_run", result: { run_id: "r3" }, latest_run: { run_id: "r2" } }),
+        "From run r3, a check run on its own after the most recent logged run (r2). The artifacts it compared were generated earlier.");
     assert.match(M.runLabel({ run_relation: "unknown", result: { run_id: "r1" } }), /current is unknown/);
 });
 
