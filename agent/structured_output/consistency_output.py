@@ -126,9 +126,10 @@ class ArtifactRef(BaseModel):
             raise ValueError("line_end must not be before line_start.")
         if self.kind == "source" and not self.path:
             raise ValueError("A source reference needs a path.")
-        if self.kind == "business_rule" and self.rule_id is None:
+        # A missing output file (e.g. no validated_rules.json) has no ID to name.
+        if self.kind == "business_rule" and self.rule_id is None and self.status != "missing":
             raise ValueError("A business rule reference needs a rule_id.")
-        if self.kind == "unit_test" and self.test_id is None and self.rule_id is None:
+        if self.kind == "unit_test" and self.test_id is None and self.rule_id is None and self.status != "missing":
             raise ValueError("A unit test reference needs a test_id or rule_id.")
         if self.provenance and self.kind != "business_rule":
             raise ValueError("Only business rule references carry provenance.")
@@ -276,6 +277,18 @@ class Finding(BaseModel):
         return self
 
 
+class Undetermined(BaseModel):
+    """
+    @brief An artifact that was compared but whose consistency could not be decided.
+    @details Not a finding and not agreement: the evidence supplied was not
+    enough (e.g. the behaviour depends on code in another file).
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    artifact: ArtifactRef = Field(..., description="The artifact that could not be judged.")
+    reason: str = Field(..., min_length=1, description="Why consistency could not be determined.")
+
+
 def make_finding_id(category, artifacts, discriminator=""):
     """Short hash of the category, the referenced content and the discriminator."""
     payload = json.dumps(
@@ -298,7 +311,9 @@ class ConsistencyCheckResult(BaseModel):
 
     missing_artifacts lists artifacts the check needed but could not find
     (e.g. no validated_rules.json). A method that simply has no generated
-    test is not missing; it is just not compared.
+    test is not missing; it is just not compared. undetermined lists
+    artifacts that were compared without a conclusion; they make the check
+    partial, since their consistency is unknown.
     """
     model_config = ConfigDict(extra="forbid")
 
@@ -307,6 +322,7 @@ class ConsistencyCheckResult(BaseModel):
     codebase: str = Field(..., min_length=1, description="Codebase (root folder name) that was checked.")
     run_id: Optional[str] = Field(None, description="Pipeline run the check belonged to, if any.")
     scope: Literal["full", "selected"] = Field("full", description="Whether every artifact or only selected ones were checked.")
+    selection: list[str] = Field(default_factory=list, description="What a selected check covered: source paths, or 'path#Type.Method'. Empty for a full check.")
     status: CheckStatus = Field(..., description="Whether the check finished, and how completely.")
     started_at: Optional[str] = Field(None, description="When the check started.")
     finished_at: Optional[str] = Field(None, description="When the check finished.")
@@ -314,6 +330,7 @@ class ConsistencyCheckResult(BaseModel):
     missing_artifacts: list[ArtifactRef] = Field(default_factory=list, description="Artifacts the check needed but could not find.")
     unresolved_links: list[ArtifactRef] = Field(default_factory=list, description="References that were ambiguous, stale or unverifiable, so were not compared.")
     findings: list[Finding] = Field(default_factory=list, description="Disagreements found.")
+    undetermined: list[Undetermined] = Field(default_factory=list, description="Artifacts compared without a conclusion.")
     errors: list[str] = Field(default_factory=list, description="Errors that stopped part or all of the check.")
     notes: list[str] = Field(default_factory=list, description="Anything else the reader should know, e.g. why no check is shown.")
 
@@ -339,15 +356,20 @@ class ConsistencyCheckResult(BaseModel):
                 raise ValueError(f"Duplicate finding ID {finding.id}; pass a discriminator to tell them apart.")
             ids.add(finding.id)
 
-        incomplete = bool(self.errors or self.missing_artifacts or self.unresolved_links)
+        if self.scope == "selected" and not self.selection:
+            raise ValueError("A selected check must record its selection.")
+        if self.scope == "full" and self.selection:
+            raise ValueError("A full check has no selection.")
+
+        incomplete = bool(self.errors or self.missing_artifacts or self.unresolved_links or self.undetermined)
 
         if self.status == "completed" and incomplete:
-            raise ValueError("A check with errors, missing artifacts or unresolved links is partial, not completed.")
+            raise ValueError("A check with errors, missing artifacts, unresolved links or undetermined comparisons is partial, not completed.")
         if self.status == "partial" and not incomplete:
-            raise ValueError("A partial check must say what is missing, unresolved or failed.")
+            raise ValueError("A partial check must say what is missing, unresolved, undetermined or failed.")
         if self.status == "failed" and not self.errors:
             raise ValueError("A failed check must list its errors.")
-        if self.status == "not_run" and (self.findings or self.artifacts_checked or self.errors):
+        if self.status == "not_run" and (self.findings or self.artifacts_checked or self.errors or self.undetermined):
             raise ValueError("A check that did not run has no findings, artifacts or errors.")
         return self
 

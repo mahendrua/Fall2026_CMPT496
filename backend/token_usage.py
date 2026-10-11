@@ -618,6 +618,15 @@ class RunLog:
                 pass
 
 
+def current_run_id():
+    """
+    ID of the run being logged (as in last_run_log.json), or None outside a
+    tracked command. Read-only: it never starts or changes a run.
+    """
+    run = _run_var.get()
+    return run.run_id if run is not None else None
+
+
 def record_wait(reason, seconds):
     """
     Note in the current run's log that a call is waiting to retry.

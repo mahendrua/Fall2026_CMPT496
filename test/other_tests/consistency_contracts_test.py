@@ -23,7 +23,7 @@ from agent.consistency_store import (
     save_check_result, set_review,
 )
 from agent.structured_output.consistency_output import (
-    ArtifactRef, Claim, ConsistencyCheckResult, Evidence, Finding,
+    ArtifactRef, Claim, ConsistencyCheckResult, Evidence, Finding, Undetermined,
 )
 
 CODEBASE = "Shop"
@@ -328,11 +328,24 @@ def test_summary_ref_reports_missing_summaries_and_members(env):
     assert "does not describe Pricing.Markup" in missing_member.detail
 
 
-def test_summary_ref_is_stale_when_the_source_changed_after_the_summary(artifacts):
+def test_a_newer_source_modification_time_is_a_caveat_not_proof_of_staleness(artifacts):
+    # The pipeline records no hash of the source a summary was made from, so a
+    # later modification time (a checkout does this too) only adds a caveat.
     age(artifacts.summary_dir / "Pricing-cs__1.json", seconds=1000)
     ref = summary_ref(artifacts.root, "src/Pricing.cs", app_dir=artifacts.app)
-    assert ref.status == "stale"
-    assert "src/Pricing.cs changed after" in ref.detail
+    assert ref.status == "resolved"
+    assert "Possibly out of date: src/Pricing.cs was modified after" in ref.detail
+    assert "content may be unchanged" in ref.detail
+
+
+def test_modification_time_caveat_keeps_the_uncompiled_test_note(env):
+    write_json(env.rules_dir / "validated_rules.json", [validated_rule()])
+    tests = write_json(env.tests_dir / "unit_tests.json", [unit_test()])
+    age(tests, seconds=1000)
+    ref = unit_test_ref(env.root, 1, env.app)
+    assert ref.status == "resolved"
+    assert "not been compiled or run" in ref.detail
+    assert "Possibly out of date" in ref.detail
 
 
 # ---------------------------------------------------------
@@ -583,7 +596,7 @@ def test_check_result_rejects_findings_from_another_codebase_or_run_and_duplicat
 
 def test_saved_result_round_trips_and_is_not_mistaken_for_another_artifact(artifacts):
     result = ConsistencyCheckResult(
-        codebase=CODEBASE, status="partial", scope="selected",
+        codebase=CODEBASE, status="partial", scope="selected", selection=["src/Pricing.cs"],
         started_at="2026-10-10T12:00:00", finished_at="2026-10-10T12:01:00",
         artifacts_checked=[source_ref(artifacts.root, "src/Pricing.cs")],
         missing_artifacts=[MISSING_RULES], unresolved_links=[AMBIGUOUS],
@@ -591,9 +604,9 @@ def test_saved_result_round_trips_and_is_not_mistaken_for_another_artifact(artif
         notes=["Selected Pricing.cs only."],
     )
     path = save_check_result(result, artifacts.app)
-    assert path == artifacts.app / "agent" / "consistency_output" / CODEBASE / "consistency_result.json"
+    assert path == artifacts.app / "agent" / "consistency_output" / CODEBASE / "consistency_result_selected.json"
 
-    assert load_check_result(CODEBASE, artifacts.app) == result
+    assert load_check_result(CODEBASE, artifacts.app, scope="selected") == result
 
     # main.js detectFileType() reads top-level arrays as business rules and
     # objects with summary/functions/types as file summaries.
@@ -703,3 +716,59 @@ def test_set_review_rejects_unknown_findings_and_statuses(artifacts):
         set_review(CODEBASE, finding.id, "correct", app_dir=artifacts.app)
     with pytest.raises(ConsistencyStoreError, match="no finding"):
         set_review("Billing", finding.id, "reviewed", app_dir=artifacts.app)
+
+
+# ---------------------------------------------------------
+# Corrections made for the checker (Part 2)
+# ---------------------------------------------------------
+
+def test_a_selected_check_is_stored_apart_from_the_full_check(artifacts):
+    full = ConsistencyCheckResult(codebase=CODEBASE, status="completed", findings=[discount_finding(artifacts)])
+    selected = ConsistencyCheckResult(codebase=CODEBASE, status="completed", scope="selected", selection=["src/Pricing.cs"])
+    save_check_result(full, artifacts.app)
+    save_check_result(selected, artifacts.app)
+
+    assert load_check_result(CODEBASE, artifacts.app) == full
+    assert load_check_result(CODEBASE, artifacts.app, scope="selected") == selected
+
+    # A finding in either latest check can be reviewed.
+    set_review(CODEBASE, full.findings[0].id, "reviewed", app_dir=artifacts.app)
+    assert load_check_result(CODEBASE, artifacts.app).findings[0].review.status == "reviewed"
+
+
+def test_selection_must_match_the_scope():
+    with pytest.raises(ValidationError, match="record its selection"):
+        ConsistencyCheckResult(codebase=CODEBASE, status="completed", scope="selected")
+    with pytest.raises(ValidationError, match="no selection"):
+        ConsistencyCheckResult(codebase=CODEBASE, status="completed", selection=["a.cs"])
+
+
+def test_a_scope_mismatch_in_a_stored_file_is_refused(artifacts):
+    selected = ConsistencyCheckResult(codebase=CODEBASE, status="completed", scope="selected", selection=["a.cs"])
+    path = save_check_result(selected, artifacts.app)
+    path.replace(path.with_name("consistency_result.json"))
+    with pytest.raises(ConsistencyStoreError, match="selected check, not a full one"):
+        load_check_result(CODEBASE, artifacts.app)
+
+
+def test_undetermined_comparisons_make_a_check_partial(artifacts):
+    rule = business_rule_ref(artifacts.root, 1, artifacts.app)
+    undetermined = [Undetermined(artifact=rule, reason="Depends on TaxService, which was not supplied.")]
+    with pytest.raises(ValidationError, match="partial, not completed"):
+        ConsistencyCheckResult(codebase=CODEBASE, status="completed", undetermined=undetermined)
+    result = ConsistencyCheckResult(codebase=CODEBASE, status="partial", undetermined=undetermined)
+    assert result.outcome == "incomplete"
+
+
+def test_a_missing_output_file_needs_no_id(env):
+    assert ArtifactRef(kind="business_rule", status="missing", detail="validated_rules.json does not exist.").rule_id is None
+    assert ArtifactRef(kind="unit_test", status="missing", detail="No unit tests exist.").test_id is None
+    with pytest.raises(ValidationError, match="rule_id"):
+        ArtifactRef(kind="business_rule", status="ambiguous", detail="d", candidates=["a", "b"])
+
+
+def test_finding_id_ignores_artifact_order(artifacts):
+    finding = discount_finding(artifacts)
+    data = finding.model_dump()
+    data.update(id="", claims=list(reversed(data["claims"])), artifacts=list(reversed(data["artifacts"])))
+    assert Finding.model_validate(data).id == finding.id

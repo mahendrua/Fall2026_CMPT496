@@ -4,8 +4,8 @@
 @details Each builder looks up one artifact the way the pipeline wrote it and
 returns an ArtifactRef. Lookups never fall back to a similar-looking artifact:
 if nothing matches, the reference is "missing"; if several match, it is
-"ambiguous" and lists them; if the artifact looks older than what it was
-generated from, it is "stale".
+"ambiguous" and lists them; if it was provably generated from other content,
+it is "stale".
 
     source file     the file itself, under the codebase root
     summary         agent/file_summary_agent_output/<codebase>/*.json, matched
@@ -18,8 +18,10 @@ generated from, it is "stale".
 The app has no store of human-confirmed requirements, so there is no builder
 for them; generated business rules are never treated as requirements.
 
-Staleness from modification times is a hint: it shows the artifact was written
-before its source last changed, not that its content is wrong.
+A source file modified after an artifact was written only adds a caveat to the
+reference: modification times do not prove the content changed. "stale" is kept
+for proven changes: a content hash that differs (refresh_ref) or a test generated
+for a different rule.
 """
 
 import hashlib
@@ -339,7 +341,12 @@ def _signature(member):
 
 
 def _mark_if_older(ref, artifact_file, root, source_paths):
-    """Stale if any source file was modified after the artifact was written."""
+    """
+    Adds a caveat if any source file was modified after the artifact was
+    written. The reference stays resolved: the pipeline records no hash of the
+    source an artifact was generated from, so a later modification time does
+    not prove the content changed (a checkout or copy also updates it).
+    """
     try:
         written = os.path.getmtime(artifact_file)
     except OSError:
@@ -353,7 +360,8 @@ def _mark_if_older(ref, artifact_file, root, source_paths):
 
     if not newer:
         return ref
-    return ref.model_copy(update=dict(
-        status="stale",
-        detail=f"{', '.join(newer)} changed after this artifact was generated.",
-    ))
+    caveat = (
+        f"Possibly out of date: {', '.join(newer)} was modified after this artifact "
+        "was generated (by modification time only; the content may be unchanged)."
+    )
+    return ref.model_copy(update=dict(detail=" ".join(filter(None, [ref.detail, caveat]))))
