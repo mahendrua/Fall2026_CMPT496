@@ -19,12 +19,19 @@ import agent.llm as llm_module
 from backend import consistency_review as review
 
 
+def real_consistency_outputs():
+    """Files in the repository's real consistency output folder, with their modification times."""
+    folder = PROJECT_ROOT / "agent" / "consistency_output"
+    return sorted((str(p), p.stat().st_mtime_ns) for p in folder.rglob("*") if p.is_file()) if folder.is_dir() else []
+
+
 @pytest.fixture(scope="module")
 def demo(tmp_path_factory):
     def refuse(*args, **kwargs):
         raise AssertionError("The demo must not create a model.")
     saved = (llm_module.make_llm, checker_module.make_llm)
     llm_module.make_llm = checker_module.make_llm = refuse
+    real_before = real_consistency_outputs()
     try:
         import make_demo
         out = tmp_path_factory.mktemp("demo")
@@ -32,6 +39,7 @@ def demo(tmp_path_factory):
     finally:
         llm_module.make_llm, checker_module.make_llm = saved
     manifest = json.loads((out / "manifest.json").read_text(encoding="utf-8"))
+    manifest["real_outputs_before"] = real_before
     return manifest
 
 
@@ -97,4 +105,4 @@ def test_the_injection_state_carries_markup_as_plain_text(demo):
 
 def test_nothing_is_written_outside_the_demo_folder(demo):
     assert Path(demo["app"]).is_relative_to(Path(demo["app"]).parent)
-    assert not (PROJECT_ROOT / "agent" / "consistency_output").exists()
+    assert real_consistency_outputs() == demo["real_outputs_before"]      # the real outputs are untouched

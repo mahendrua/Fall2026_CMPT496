@@ -306,6 +306,21 @@ class Commands:
             )}
         )
 
+    def _consistency_review_stage(self, codebase_path, outputs_before):
+        """
+        The full pipeline's Consistency Review stage: its own stage in the
+        pipeline's run (run ID, usage and timing), whole-codebase scope, and
+        only this run's outputs. Not the independent check_consistency command.
+        """
+
+        def task():
+            progress("Checking consistency of the outputs this run generated...")
+            return consistency_review.review_pipeline_outputs(
+                codebase_path, self.app_dir, outputs_before, run_consistency_check,
+            )
+
+        return self._run_command("consistency_review", task, individualStep=False)
+
     def check_consistency(
         self,
         codebase: str = "",
@@ -1064,6 +1079,12 @@ class Commands:
 
             1. Full Codebase Analysis Pipeline
 
+        After the generation steps, a Consistency Review stage checks the
+        whole codebase against the outputs this run wrote and saves the result
+        (View Insights -> Consistency Review). A mismatch is a finding, and an
+        incomplete or failed review is reported, but neither fails the
+        pipeline or touches what was generated. A failed generation step stops
+        the pipeline before the review, as before.
         """
 
         codebase_path = Path(codebase)
@@ -1116,6 +1137,10 @@ class Commands:
 
             steps = []
 
+            # What the review stage could read before this run wrote anything,
+            # so it can tell this run's outputs from leftovers.
+            outputs_before = consistency_review.snapshot_outputs(codebase_name, self.app_dir)
+
             pipeline_progress("Building database...", 5)
             steps.append( self._require_success(self.build_database(str(codebase_path), False)))
 
@@ -1153,8 +1178,14 @@ class Commands:
                     failed
                 )
 
+            # Not through _require_success: a review problem must not fail a
+            # run whose generation succeeded.
+            pipeline_progress("Checking consistency...", 97)
+            review = self._consistency_review_stage(codebase_path, outputs_before)
+
             summary = {
                 "steps": steps,
+                "consistency_review": review,
                 "message": "Full pipeline completed",
             }
 
@@ -1166,6 +1197,14 @@ class Commands:
                 if isinstance(step.get("result"), dict)
                 and step["result"].get("warning")
             ]
+
+            if not review["success"]:
+                warnings.append(
+                    "The Consistency Review stage did not finish: "
+                    f"{review.get('error', 'unknown error')}. Everything generated before it was kept."
+                )
+            elif review["result"].get("warning"):
+                warnings.append(review["result"]["warning"])
 
             if warnings:
                 summary["warning"] = "\n\n".join(warnings)

@@ -26,6 +26,12 @@ from eval_fixtures import build_case
 import run_eval
 from eval_scoring import score_run, summarize
 
+def real_consistency_outputs():
+    """Files in the repository's real consistency output folder, with their modification times."""
+    folder = PROJECT_ROOT / "agent" / "consistency_output"
+    return sorted((str(p), p.stat().st_mtime_ns) for p in folder.rglob("*") if p.is_file()) if folder.is_dir() else []
+
+
 GOOD = {"detected", "correct", "acceptable", "ambiguous"}
 
 
@@ -157,11 +163,12 @@ def test_the_recorder_counts_calls_and_proposed_findings(tmp_path):
 
 def test_the_runner_is_offline_by_default_and_keeps_outputs_in_its_folder(tmp_path, capsys):
     out = tmp_path / "out"
+    real_before = real_consistency_outputs()
     assert run_eval.main(["--cases", "inclusive_boundary,reference_problems", "--repeat", "2", "--out", str(out)]) == 0
     report = json.loads((out / "report.json").read_text(encoding="utf-8"))
     assert report["mode"] == "offline" and report["totals"]["runs"] == 4
     assert (out / "inclusive_boundary" / "run2" / "app" / "agent" / "consistency_output").is_dir()
-    assert not (PROJECT_ROOT / "agent" / "consistency_output").exists()
+    assert real_consistency_outputs() == real_before        # nothing written to the real outputs
     assert "offline oracle (no model calls)" in capsys.readouterr().out
 
 
