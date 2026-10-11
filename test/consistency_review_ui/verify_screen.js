@@ -8,6 +8,10 @@
  *   .venv\Scripts\python.exe test\consistency_review_ui\make_demo.py <demo_dir>
  *   node_modules\.bin\electron test\consistency_review_ui\verify_screen.js <demo_dir>\manifest.json <out_dir>
  *
+ * With --interactive instead of <out_dir>, nothing is checked: the app opens on
+ * the demo results (optionally a named state, e.g. --interactive injection)
+ * and stays open for you to use. Close the window to stop it.
+ *
  * Only the backend's start-up is changed: main.py is started through
  * backend_shim.py, which points APP_DIR at the demo folder and makes model
  * creation fail (leaving a MODEL_REQUESTED file). main.js clears the repo's
@@ -19,13 +23,15 @@ const childProcess = require("child_process");
 const { app, BrowserWindow } = require("electron");
 
 const REPO = path.resolve(__dirname, "..", "..");
-const [manifestPath, outDir] = process.argv.slice(2);
-if (!manifestPath || !outDir) {
-    console.error("Usage: electron verify_screen.js <manifest.json> <out_dir>");
+const [manifestPath, outArg, interactiveState] = process.argv.slice(2);
+const interactive = outArg === "--interactive";
+const outDir = interactive ? null : outArg;
+if (!manifestPath || !outArg) {
+    console.error("Usage: electron verify_screen.js <manifest.json> (<out_dir> | --interactive [state])");
     process.exit(2);
 }
 const demo = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-fs.mkdirSync(outDir, { recursive: true });
+if (outDir) fs.mkdirSync(outDir, { recursive: true });
 
 // --- Start the backend through the shim -------------------------------------
 const realSpawn = childProcess.spawn;
@@ -325,6 +331,17 @@ async function evidenceAndReview() {
     const cleanReviews = path.join(demo.app, "agent", "consistency_output", demo.states.clean, "reviews.json");
     expect(!fs.existsSync(cleanReviews), "no review written for another project");
 
+    // Results stay apart by scope; a review belongs to the finding (same
+    // category and content), so the same finding shows it in either scope.
+    const selectedCheck = (await facts()).fields.Check;
+    await chooseScope("Whole project");
+    let full = await facts();
+    expect(full.fields.Check !== selectedCheck && full.fields.Result === "Whole project", "whole-project result is its own check");
+    await js(`document.querySelector('.cr-finding[data-id="${first}"]').click()`);
+    d = await detailFacts();
+    expect(d.checked === "reviewed" && full.counts["Unresolved reviews"] === 1, "the same finding shows its review in the other scope", full.counts);
+    await chooseScope("Selected files");
+
     // --- Keyboard selection
     await js(`document.querySelector('.cr-finding[data-id="${second}"]').focus()`);
     for (const type of ["keyDown", "char", "keyUp"]) win.webContents.sendInputEvent({ type, keyCode: type === "char" ? "\r" : "Enter" });
@@ -399,7 +416,22 @@ async function evidenceAndReview() {
 }
 
 // --- Run --------------------------------------------------------------------
+async function openInteractive() {
+    const start = Date.now();
+    while (!(win = BrowserWindow.getAllWindows()[0]) && Date.now() - start < 20000) await sleep(100);
+    if (win.webContents.isLoading()) await new Promise(resolve => win.webContents.once("did-finish-load", resolve));
+    const state = interactiveState || "findings";
+    console.log("Demo codebases (paste one into the codebase path on the Run Operations page to switch):");
+    Object.entries(demo.states).forEach(([name, codebase]) => console.log(`  ${name.padEnd(17)} ${demo.codebases[codebase]}`));
+    await openScreen(cb(state));
+    console.log(`\nShowing "${state}". Model creation is disabled; close the window to stop.`);
+}
+
 app.whenReady().then(async () => {
+    if (interactive) {
+        await openInteractive();
+        return;
+    }
     try {
         const start = Date.now();
         while (!(win = BrowserWindow.getAllWindows()[0]) && Date.now() - start < 20000) await sleep(100);

@@ -150,6 +150,78 @@ To try these without touching real outputs, copy the codebase's two `business_ru
 3. Open **Discarded Business Rules** and **Validated Business Rules** and point out a `directory_inferred` rule, a root (`.`) folder rule, and a rule with both `file` and folder provenance.
 4. Rename the folder-level `business_rules.json`, run validation again, and show the missing-input warning; then rename it back.
 
+## Consistency Review screen
+
+Consistency Review compares source code with its generated summaries, business
+rules and unit tests, and flags disagreements for a person to review. A
+finding says that an artifact and the code disagree; it never says which one
+is right. Intended behaviour is always shown as unknown, because there are no
+confirmed requirements in the app.
+
+### Opening it
+
+1. Select a codebase (Run Operations → enter or browse to the path → Submit).
+2. View Insights → **Consistency Review**.
+
+The screen shows the latest saved check for that codebase. Whole-project and
+selected-files checks are kept apart; use the buttons at the top to switch.
+Opening the screen only reads saved results: it does not run a check or call
+a model.
+
+### What works now
+
+- The check's identity (check ID, run, time, selection), with a label when it
+  comes from an earlier run than the most recent logged one.
+- Its status, told apart: completed with mismatches, **no mismatches found in
+  assessed artifacts**, incomplete, failed, no saved check, or unreadable.
+  Zero findings never reads as "the code is correct".
+- Counts of findings, unresolved reviews, compared artifacts, verdicts,
+  skipped items, undetermined comparisons and errors; errors, missing
+  artifacts and limitations listed.
+- Findings with search and file, category and review-status filters.
+- For each finding: the conflicting claims side by side, the evidence stored
+  with the check (with its origin and line numbers), uncertainty, rule
+  provenance, and whether each artifact has changed since the check. Changed
+  content is shown separately as current content, never in place of the
+  stored evidence.
+- Every verdict with its reason, skipped artifacts and undetermined
+  comparisons, each in its own tab.
+- Saving a review: unresolved, reviewed or dismissed, with an optional note.
+  Unsaved notes are kept while you move around the app. A review is a record
+  of your decision only; it changes nothing in the code, artifacts, findings
+  or verdicts, and "reviewed" or "dismissed" does not mean anything is
+  correct. Reviews belong to the finding (same disagreement about the same
+  content), so the same finding shows its review in either scope.
+
+### Getting a result to look at
+
+There is no button to run a check yet (Part 5). Until then, results come from
+the checker's Python entry point (a paid model call):
+
+```powershell
+.venv\Scripts\python.exe -c "from agent.consistency_checker import run_consistency_check as r; print(r(r'C:\path\to\Codebase', save=True).status)"
+```
+
+To look at the screen without a model or real outputs, use the isolated demo
+results in [test/consistency_review_ui](test/consistency_review_ui/README.md).
+
+### Tests
+
+```powershell
+.venv\Scripts\python.exe -m pytest test/other_tests/consistency_review_backend_test.py test/other_tests/consistency_review_demo_test.py
+node --test test/other_tests/consistency_review_model.test.js
+```
+
+The real-app walk-through (screenshots of every state) is described in
+[test/consistency_review_ui/README.md](test/consistency_review_ui/README.md).
+
+### Not yet connected
+
+- Part 5: a button to run a check (whole project or selected files) from the app.
+- Part 6: running the check automatically after the full pipeline.
+- A packaged backend (`releases/main/main.exe`) built before this change does not
+  have the screen's backend commands; rebuild it (below) before packaging.
+
 ## Packaging the backend using Pyinstaller
 
 Package backend using main.spec found in releases. Copy and paste any needed programs in before going to the next step. Stuff like plantuml.jar
