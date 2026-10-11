@@ -166,7 +166,7 @@ confirmed requirements in the app.
 The screen shows the latest saved check for that codebase. Whole-project and
 selected-files checks are kept apart; use the buttons at the top to switch.
 Opening the screen only reads saved results: it does not run a check or call
-a model. A check runs only when you press **Check Consistency** (below).
+a model. Checks are run from **Operations → Consistency Review** (below).
 
 ### What works now
 
@@ -195,33 +195,26 @@ a model. A check runs only when you press **Check Consistency** (below).
 
 ### Running a check
 
-**New check** (top of the screen) opens the check panel. A check compares the
-code with the outputs already on disk: nothing is regenerated and no pipeline
-step runs.
+Run Operations → select the codebase → **Consistency Review** (with the other
+operations). It checks the whole codebase: every source file that has a
+generated summary, business rule or unit test is compared with those outputs.
+Nothing is regenerated and no pipeline step runs; it uses the outputs already
+on disk.
 
-1. Choose **Whole codebase**, or **Selected files** and tick files from the
-   list (only files that have generated artifacts are listed, with what was
-   generated for each). For C# and JavaScript files you can limit a file to
-   one method; overloaded methods can only be checked as the whole file.
-2. Read **Will check**: the scope and at most how many model requests the
-   check can make (one per file, plus one more only if an answer cannot be
-   read).
-3. Press **Check Consistency**. Nothing else starts a check.
+While it runs, the loading screen shows the backend's own progress (the file
+being checked, and any rate-limit wait from the AI provider) and the token
+meter. There is no percentage, because the check does not report one.
+**Cancel** stops the check at once: nothing from it is saved, the previous
+result stays, and requests already made still count toward your quota.
 
-While it runs the screen shows the codebase and scope, how many files have
-been started, the elapsed time, AI calls and tokens so far, and the backend's
-own messages, including any rate-limit wait from the AI provider. There is no
-percentage and no cancel: stopping the backend would lose the result, so a
-check ends after every selected file has been tried. Only one check runs at a
-time, and other actions in the app wait until it finishes. You can move to
-another codebase or view; the check's result is kept for its own codebase and
-shown when you come back.
+When it finishes, the title says **Complete**, **Check incomplete** or
+**Check failed**, with the reason underneath, and points you to View Insights
+→ Consistency Review, which then shows that check's result.
 
-The button is disabled, with the reason shown next to it, while a check is
-running, when nothing is selected, when the codebase has no generated outputs,
-and while you have unsaved review notes for the codebase (a new check replaces
-the result they belong to; save them, or discard them with the button
-offered).
+It will not start while another operation is running, or while you have
+unsaved review notes for the codebase on the Consistency Review screen (a new
+check replaces the result they belong to): save them, or use **Discard unsaved
+reviews** on that screen.
 
 ### What a result means
 
@@ -236,11 +229,11 @@ offered).
 
 Each file checked is one model request on the key selected in Manage API Keys
 (plus at most one re-ask if an answer cannot be read; rate-limit waits and
-retries are handled by the existing provider limits, never by the screen).
-The running card and the "Latest check from this session" notice show the AI
-calls and tokens; **View Insights → AI Usage** shows the check's full record
-(it is logged as `check_consistency`). A check that made no model call is not
-logged there, as for other steps.
+retries are handled by the existing provider limits). A codebase with no
+outputs, or files with nothing to compare, cost no request. The token meter on
+the loading screen shows calls and tokens as they happen, and **View Insights
+→ AI Usage** shows the check's full record (logged as `check_consistency`). A
+check that made no model call is not logged there, as for other steps.
 
 ### Trying it with a real codebase (uses your API quota)
 
@@ -249,11 +242,13 @@ logged there, as for other steps.
    Rules**, **Business Rule Validation** and **Unit Test Generation**. Without
    rules or tests the check still runs but is reported as incomplete.
 2. Run Operations → browse to the codebase folder (the same folder the
-   pipeline used) → Submit → Return to Main Menu.
-3. View Insights → **Consistency Review** → **New check**.
-4. Start small: **Selected files**, one file → **Check Consistency**.
-5. When it finishes, open a finding to see the claims and evidence, and save a
-   review with a note if you like. Check **AI Usage** for the calls and tokens.
+   pipeline used) → Submit.
+3. On Operations press **Consistency Review**. It makes one request per file
+   that has outputs, so try it on a small codebase first.
+4. When it finishes, read the title and message, press OK, then go to View
+   Insights → **Consistency Review**.
+5. Open a finding to see the claims and evidence, and save a review with a
+   note if you like. Check **AI Usage** for the calls and tokens.
 
 To look at the screen without a model or real outputs, use the isolated demo
 results in [test/consistency_review_ui](test/consistency_review_ui/README.md).

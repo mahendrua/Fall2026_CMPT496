@@ -2235,6 +2235,10 @@ document.getElementById('runConsistencyReviewOnlyBtn')
         event.preventDefault();
         event.stopPropagation();
 
+        // Focus stays on this button under the loading screen; a second Enter
+        // or click must not start another check while one is pending.
+        if (activeRequestId) return;
+
         // A new check replaces the saved result that unsaved review notes belong to.
         const unsaved = window.ConsistencyReviewScreen.unsavedReviews(selectedCodebasePath);
         if (unsaved) {

@@ -547,6 +547,7 @@ async function operationsRun() {
         "View Insights shows the result of that check", [f.fields.Check, response.result.check_id, f.state]);
 
     await operationsFeedback();
+    await operationsEndToEnd();
 
     // Nothing was regenerated and no pipeline step ran.
     control({});
@@ -634,6 +635,71 @@ async function operationsFeedback() {
     await openResults();
     const f = await facts();
     expect(f.fields.Check === previous, "after a cancel the review screen still shows the previous result", f.fields.Check);
+}
+
+const savedSelectedCheckId = state => {
+    const file = path.join(demo.app, "agent", "consistency_output", demo.states[state], "consistency_result_selected.json");
+    return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")).check_id : null;
+};
+
+async function operationsEndToEnd() {
+    // Duplicate starts: two clicks and an Enter on the focused button run one check.
+    control({ delay: 2 });
+    await chooseCodebase(cb("clean"));
+    const checksBefore = (await checkResponses()).length;
+    const callsBefore = callsFor("misleading_name_accurate");
+    await js(`(() => { const b = document.getElementById('runConsistencyReviewOnlyBtn'); b.focus(); b.click(); b.click(); return true; })()`);
+    await js(`document.getElementById('runConsistencyReviewOnlyBtn').focus()`);
+    for (const type of ["keyDown", "char", "keyUp"]) win.webContents.sendInputEvent({ type, keyCode: type === "char" ? "\r" : "Enter" });
+    await waitForOperation();
+    await sleep(1500);
+    expect((await checkResponses()).length - checksBefore === 1 && callsFor("misleading_name_accurate") - callsBefore === 1,
+        "repeated clicks and Enter while running start one check with one call",
+        [(await checkResponses()).length - checksBefore, callsFor("misleading_name_accurate") - callsBefore]);
+
+    // The whole workflow on a contradiction: select -> run -> result -> evidence -> review note.
+    const selectedBefore = savedSelectedCheckId("findings");
+    let o = await runAndFinish("findings");
+    const [response] = (await checkResponses()).slice(-1);
+    expect(o.title === "Complete" && /2 mismatches found/.test(o.message), "contradictions reported on completion", o.message);
+    expect(savedSelectedCheckId("findings") === selectedBefore, "a whole-codebase run leaves the selected-files result alone");
+    await js(`document.getElementById('loadingOkBtn').click()`);
+    await openResults();
+    let f = await facts();
+    expect(f.fields.Check === response.result.check_id && f.rows.length === 2, "the new result lists its findings", [f.fields.Check, f.rows.length]);
+    await js(`document.querySelector('.cr-finding').click()`);
+    await artifactsChecked();
+    let d = await detailFacts();
+    expect(d.evidence.some(e => e.includes("return daysSincePurchase <= 30;")) && /Intended behaviour: unknown/.test(d.text),
+        "its finding shows the stored evidence and unknown intent");
+    await js(`(() => { ${DETAIL}.querySelector('.cr-radio input[value="reviewed"]').click(); return true; })()`);
+    await js(`(() => { const t = ${DETAIL}.querySelector('.cr-note-input'); t.value = 'Checked after the Operations run.';
+        t.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+    await js(`${DETAIL}.querySelector('.cr-save').click()`);
+    await until(`/Saved at/.test((${DETAIL}.querySelector('.cr-feedback') || {}).textContent || '')`, "review saved");
+    const reviewedId = d.id;
+    await shot("19-operations-review");
+
+    await chooseCodebase(cb("clean"));
+    await openResults();
+    f = await facts();
+    expect(/misleading_name_accurate/.test(f.all) && f.rows.length === 0, "another codebase shows only its own result");
+    await chooseCodebase(cb("findings"));
+    await openResults();
+    await js(`document.querySelector('.cr-finding[data-id="${reviewedId}"]').click()`);
+    d = await detailFacts();
+    expect(d.checked === "reviewed" && d.note === "Checked after the Operations run.", "the review note survives switching projects");
+
+    // Missing outputs: an incomplete result that names them, one call for the one summary.
+    const missingBefore = callsFor("missing_outputs");
+    o = await runAndFinish("missing_outputs");
+    expect(o.title === "Check incomplete" && callsFor("missing_outputs") - missingBefore === 1, "missing outputs: incomplete, one call",
+        [o.title, callsFor("missing_outputs") - missingBefore]);
+    await js(`document.getElementById('loadingOkBtn').click()`);
+    await openResults();
+    f = await facts();
+    expect(f.state === "partial" && /No validated business rules exist/.test(f.all) && /No generated unit tests exist/.test(f.all),
+        "the result lists the missing outputs", f.state);
 }
 
 // --- Run --------------------------------------------------------------------
