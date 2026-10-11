@@ -162,3 +162,50 @@ test("unsaved drafts are counted per codebase", () => {
     assert.equal(M.unsavedFor(keys, "Shop"), 2);
     assert.equal(M.unsavedFor(keys, "Sho"), 0);
 });
+
+test("a running check counts only what the backend reports", () => {
+    const op = M.newOperation({ codebasePath: "C:/x/Shop", codebase: "Shop", request: { scope: "full", targets: [] }, total: 3, now: 0 });
+    assert.equal(M.filesText(op), "Preparing the comparison…");
+    M.applyEvent(op, { type: "progress", stage: "Checking consistency of the whole codebase in Shop..." });
+    M.applyEvent(op, { type: "progress", stage: "Checking consistency: src/A.cs" });
+    M.applyEvent(op, { type: "progress", stage: "Google rate limit reached, waiting 31 s before retrying..." });
+    M.applyEvent(op, { type: "progress", stage: "Checking consistency: src/B.cs#B.Run" });
+    M.applyEvent(op, { type: "token_usage", calls: 2, input_tokens: 1000, output_tokens: 234, total_tokens: 1234 });
+    assert.equal(op.started, 2);
+    assert.equal(op.waits, 1);
+    assert.equal(M.filesText(op), "Started 2 of 3 files.");
+    assert.equal(M.usageText(op.usage), "2 AI calls · 1,234 tokens");
+    assert.deepEqual(op.messages.map(m => m.wait), [false, false, true, false]);
+    assert.equal(M.usageText(null), null);
+    const unknown = M.newOperation({ request: {}, total: undefined, now: 0 });
+    M.applyEvent(unknown, { type: "progress", stage: "Checking consistency: a.cs" });
+    assert.equal(M.filesText(unknown), "Started 1 file.");
+});
+
+test("streamed messages are bounded and malformed events ignored", () => {
+    const op = M.newOperation({ request: {}, now: 0 });
+    for (let i = 0; i < 80; i += 1) M.applyEvent(op, { type: "progress", stage: `line ${i}` });
+    M.applyEvent(op, null);
+    M.applyEvent(op, { type: "progress", stage: 5 });
+    assert.equal(op.messages.length, 50);
+    assert.equal(op.messages[0].text, "line 30");
+});
+
+test("finished checks are told apart", () => {
+    const done = status => M.outcome({ success: true, result: { status, message: `m-${status}`, check_id: "c1", scope: "full" } });
+    assert.deepEqual([done("completed").kind, done("partial").kind, done("failed").kind], ["good", "warn", "bad"]);
+    assert.equal(done("completed").checkId, "c1");
+    const warned = M.outcome({ success: true, result: { status: "partial", message: "m", warning: "w", check_id: "c2" } });
+    assert.equal(warned.text, "w");
+    const lost = M.outcome({ success: false, error: "Command cancelled" });
+    assert.equal(lost.status, "not_run");
+    assert.equal(lost.text, "The check did not finish: Command cancelled");
+});
+
+test("elapsed time and the result handoff", () => {
+    assert.equal(M.formatElapsed(42_400), "42 s");
+    assert.equal(M.formatElapsed(65_000), "1 min 05 s");
+    assert.equal(M.handoffMismatch("c1", "c1"), false);
+    assert.equal(M.handoffMismatch("c1", "c2"), true);
+    assert.equal(M.handoffMismatch(null, "c2"), false);
+});

@@ -335,6 +335,76 @@
         return [...(draftKeys || [])].filter(key => key.startsWith(prefix)).length;
     }
 
+    // ---------------------------------------------------------------
+    // A running check: only what the backend actually reports
+    // ---------------------------------------------------------------
+
+    const FILE_STARTED = /^Checking consistency: /;
+    const PROVIDER_WAIT = /waiting \d+ s before retrying/i;
+    const MAX_MESSAGES = 50;
+
+    /* A check that has been started; total is how many files it covers, if known. */
+    function newOperation({ codebasePath, codebase, request, total, now }) {
+        return {
+            codebasePath, codebase, request,
+            total: Number.isInteger(total) ? total : null,
+            startedAt: now === undefined ? Date.now() : now,
+            started: 0, waits: 0, messages: [], usage: null,
+            done: false, response: null,
+        };
+    }
+
+    /* Folds one streamed backend event into the operation. */
+    function applyEvent(op, event) {
+        if (!event || typeof event !== "object") return op;
+        if (event.type === "progress" && typeof event.stage === "string") {
+            const wait = PROVIDER_WAIT.test(event.stage);
+            if (FILE_STARTED.test(event.stage)) op.started += 1;
+            if (wait) op.waits += 1;
+            op.messages.push({ text: event.stage, wait });
+            if (op.messages.length > MAX_MESSAGES) op.messages.splice(0, op.messages.length - MAX_MESSAGES);
+        } else if (event.type === "token_usage" || event.type === "token_usage_stage") {
+            const calls = Number(event.calls) || 0;
+            const input = Number(event.input_tokens) || 0;
+            const output = Number(event.output_tokens) || 0;
+            op.usage = { calls, input, output, total: Number(event.total_tokens) || input + output };
+        }
+        return op;
+    }
+
+    function filesText(op) {
+        if (!op.started) return "Preparing the comparison…";
+        return op.total ? `Started ${op.started} of ${plural(op.total, "file")}.` : `Started ${plural(op.started, "file")}.`;
+    }
+
+    function usageText(usage) {
+        if (!usage || !usage.calls) return null;
+        return `${plural(usage.calls, "AI call")} · ${usage.total.toLocaleString("en-US")} tokens`;
+    }
+
+    function formatElapsed(ms) {
+        const seconds = Math.max(0, Math.floor(ms / 1000));
+        const minutes = Math.floor(seconds / 60);
+        return minutes ? `${minutes} min ${String(seconds % 60).padStart(2, "0")} s` : `${seconds} s`;
+    }
+
+    /* How a finished check went, told apart: completed, incomplete, failed, or did not run. */
+    function outcome(response) {
+        if (response && response.success && response.result) {
+            const r = response.result;
+            const kind = r.status === "completed" ? "good" : r.status === "partial" ? "warn" : "bad";
+            return { kind, status: r.status, text: r.warning || r.message, checkId: r.check_id, scope: r.scope,
+                     codebase: r.codebase };
+        }
+        const error = (response && response.error) || "no answer from the backend.";
+        return { kind: "bad", status: "not_run", text: `The check did not finish: ${error}`, checkId: null, scope: null };
+    }
+
+    /* True when the result shown is not the one the check produced. */
+    function handoffMismatch(expectedCheckId, shownCheckId) {
+        return Boolean(expectedCheckId) && expectedCheckId !== shownCheckId;
+    }
+
     /* True when the form differs from what is saved (blank notes count as none). */
     function isDirty(saved, draft) {
         const savedStatus = (saved && saved.status) || "unresolved";
@@ -368,6 +438,13 @@
         describeCheck,
         requestsText,
         unsavedFor,
+        newOperation,
+        applyEvent,
+        filesText,
+        usageText,
+        formatElapsed,
+        outcome,
+        handoffMismatch,
         plural,
     };
 });

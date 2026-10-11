@@ -13,6 +13,10 @@ consistency check gets an offline stand-in that answers from the tracked
 evaluation expectations (test/consistency_eval) for the codebase named in the
 prompt; each model created and each call is appended to MODEL_LOG.jsonl in
 <app_dir>, so a test can count them. Every other model request still raises.
+
+An optional <app_dir>/SHIM_CONTROL.json, read on every call, can slow calls
+down ({"delay": seconds}), announce a provider wait for some codebases
+({"wait": [names]}) or fail them with a daily-limit error ({"fail": [names]}).
 """
 
 import json
@@ -72,9 +76,23 @@ class RoutingOracle:
         user = messages[-1][1]
         name = re.search(r"^Codebase: (.+)$", user, re.M).group(1)
         log("call", codebase=name, file=re.search(r"^File: (.+)$", user, re.M).group(1))
-        delay = float(os.environ.get("CR_SHIM_DELAY", "0"))
-        if delay:
-            time.sleep(delay)
+
+        # Optional behaviour for a verification run, read on every call.
+        control = {}
+        if (app_dir / "SHIM_CONTROL.json").is_file():
+            control = json.loads((app_dir / "SHIM_CONTROL.json").read_text(encoding="utf-8"))
+        if name in control.get("wait", []):
+            # The message agent/llm.py announces before retrying a rate-limited call.
+            from backend.progress_logging import progress
+            progress("Google rate limit reached, waiting 1 s before retrying...")
+            time.sleep(1)
+        if control.get("delay"):
+            time.sleep(float(control["delay"]))
+        if name in control.get("fail", []):
+            raise llm.DailyLimitError(
+                "This Google API key has hit its daily limit or is out of credit. Try again later, check your "
+                "plan and billing, or select a different key."
+            )
         return TolerantOracle(CASES_BY_NAME[name])._answer(messages)
 
 

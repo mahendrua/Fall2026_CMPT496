@@ -309,7 +309,7 @@ async function evidenceAndReview() {
     const resultPath = path.join(demo.app, "agent", "consistency_output", demo.states.findings, "consistency_result_selected.json");
     const resultBefore = fs.readFileSync(resultPath, "utf8");
     await js(`(() => { window.__crSaves = 0; const real = backendCall;
-        backendCall = (command, args) => { if (command === 'save_consistency_review') window.__crSaves++; return real(command, args); };
+        backendCall = (command, args, options) => { if (command === 'save_consistency_review') window.__crSaves++; return real(command, args, options); };
         window.ConsistencyReviewScreen._state.api = { call: backendCall }; return true; })()`);
     await js(`(() => { const b = ${DETAIL}.querySelector('.cr-save'); b.click(); b.click(); return true; })()`);
     await until(`/Saved at/.test((${DETAIL}.querySelector('.cr-feedback') || {}).textContent || '')`, "save feedback");
@@ -444,9 +444,17 @@ async function panelFacts() {
     })()`);
 }
 
+// Wraps the screen's backend calls to record each command and every check's
+// response, passing all arguments (including the progress callback) through.
 async function recordCommands() {
-    await js(`(() => { window.__crCommands = []; const real = window.__crRealCall || backendCall; window.__crRealCall = real;
-        backendCall = (command, args) => { window.__crCommands.push(command); return real(command, args); };
+    await js(`(() => { window.__crCommands = []; window.__crChecks = [];
+        const real = window.__crRealCall || backendCall; window.__crRealCall = real;
+        backendCall = (command, args, options) => {
+            window.__crCommands.push(command);
+            const p = real(command, args, options);
+            if (command === 'check_consistency') p.then(r => window.__crChecks.push(r));
+            return p;
+        };
         if (window.ConsistencyReviewScreen._state.api) window.ConsistencyReviewScreen._state.api = { call: backendCall };
         return true; })()`);
 }
@@ -454,7 +462,8 @@ async function recordCommands() {
 const commandsSent = () => js(`window.__crCommands.slice()`);
 
 async function openPanel() {
-    await js(`[...document.querySelectorAll('.cr-header .cr-button')].find(b => b.textContent === 'New check').click()`);
+    await js(`(() => { if (document.querySelector('#cr-check-panel')) return true;
+        [...document.querySelectorAll('.cr-header .cr-button')].find(b => b.textContent === 'New check').click(); return true; })()`);
     await until(`!!${PANEL} && !${PANEL}.textContent.includes('Listing the files')`, "check panel");
 }
 
@@ -527,9 +536,135 @@ async function newCheckPanel() {
     expect(sent.filter(c => c === "check_consistency").length === 1 && calls === 1, "a double click runs one check with one model call", [sent, calls]);
     const f = await facts();
     expect(f.state === "clean" && f.fields.Result === "Whole project", "the new whole-codebase result is shown", [f.state, f.fields.Result]);
-    p = await panelFacts();
-    expect(/Consistency check completed: no mismatches found in the assessed artifacts/.test(p.message), "completion message shown", p.message);
+    const outcome = await js(`(document.querySelector('.cr-outcome') || {}).textContent || ''`);
+    expect(/Latest check from this session: Consistency check completed: no mismatches found in the assessed artifacts/.test(outcome),
+        "completion message shown", outcome);
     await shot("18-check-completed");
+}
+
+// --- Running state, progress and result handoff --------------------------------
+const control = data => fs.writeFileSync(path.join(demo.app, "SHIM_CONTROL.json"), JSON.stringify(data));
+const callsFor = codebase => modelEvents().filter(e => e.event === "call" && e.codebase === codebase).length;
+
+const lastCheck = () => js(`(window.__crChecks || []).slice(-1)[0] || null`);
+const isRunning = () => js(`!!window.ConsistencyReviewScreen._state.operation`);
+
+async function startFromPanel(scope) {
+    await openPanel();
+    if (scope === "selected-first") {
+        await js(`${PANEL}.querySelector('input[value="selected"]').click()`);
+        await js(`${PANEL}.querySelector('.cr-pick input[type=checkbox]').click()`);
+    }
+    await js(`${PANEL}.querySelector('.cr-start').click()`);
+}
+
+async function waitForCheck(timeout = 60000) {
+    await until(`!window.ConsistencyReviewScreen._state.operation`, "check to finish", timeout);
+    await sleep(200);
+}
+
+async function runningAndHandoff() {
+    await recordCommands();
+
+    // --- Running state with genuine progress, then the exact result
+    control({ delay: 3 });
+    await openScreen(cb("clean"));
+    await startFromPanel("full");
+    await until(`/Started 1 of 1 file/.test((document.querySelector('.cr-running') || {}).textContent || '')`, "file progress");
+    let card = await js(`document.querySelector('.cr-running').textContent`);
+    expect(/Checking misleading_name_accurate/.test(card) && /The whole codebase: 1 file/.test(card), "running card names the codebase and scope", card);
+    expect(/Elapsed \d+ s/.test(card) && !/%/.test(card), "elapsed time shown, no invented percentage", card);
+    expect(/Checking consistency: src\/Pricing.cs/.test(card), "backend progress messages shown", card);
+    expect(/cannot be stopped without losing its result/.test(card), "explains why there is no cancel", card);
+    const cancel = await js(`[...document.querySelectorAll('#viewDisplayOutputBox button')].some(b => /cancel|stop/i.test(b.textContent))`);
+    expect(!cancel, "no cancel control that cannot work");
+    await shot("19-running");
+    await waitForCheck();
+    let response = await lastCheck();
+    let f = await facts();
+    expect(response && response.success && f.fields.Check === response.result.check_id, "the result shown is the one the check produced",
+        [response && response.result && response.result.check_id, f.fields.Check]);
+    expect(f.fields.Result === "Whole project" && f.state === "clean", "completed check shown as clean", [f.fields.Result, f.state]);
+
+    // --- Switching codebase while a check runs
+    control({ delay: 4 });
+    await openScreen(cb("findings"));
+    const cleanCheck = (await js(`(() => { return true; })()`)) && f.fields.Check;
+    await startFromPanel("full");
+    await until(`!!window.ConsistencyReviewScreen._state.operation`, "check started");
+    await js(`(() => { selectedCodebasePath = ${JSON.stringify(cb("clean"))}; document.getElementById('viewConsistencyBtn').click(); return true; })()`);
+    await sleep(400);
+    const elsewhere = await js(`(document.querySelector('.cr-running-elsewhere') || {}).textContent || ''`);
+    expect(/A consistency check of ignored_parameter is running/.test(elsewhere), "another codebase shows the running check of the first", elsewhere);
+    await js(`document.getElementById('viewDisplayErrorsBtn').click()`);         // another view takes the output box
+    await until(`!document.querySelector('#viewDisplayOutputBox .cr-screen')`, "errors view");
+    await waitForCheck();
+    await sleep(500);
+    const otherViewKept = await js(`!document.querySelector('#viewDisplayOutputBox .cr-screen')`);
+    expect(otherViewKept, "a check finishing while another view is open does not draw over it");
+    await openScreen(cb("clean"));
+    f = await facts();
+    expect(f.fields.Check === cleanCheck && /misleading_name_accurate/.test(f.all), "the other codebase keeps its own result", f.fields.Check);
+    expect(/The check of ignored_parameter finished: Consistency check completed: 2 mismatches found/.test(f.all),
+        "the finished check is announced on the other codebase");
+    response = await lastCheck();
+    await openScreen(cb("findings"));
+    f = await facts();
+    expect(f.fields.Check === response.result.check_id && f.fields.Result === "Whole project",
+        "returning to the codebase shows that check's exact result", [f.fields.Check, response.result.check_id]);
+    await js(`document.querySelector('.cr-finding').click()`);
+    const reviewed = await js(`[...document.querySelectorAll('.cr-finding')].some(r => /Reviewed/.test(r.textContent))`);
+    expect(reviewed, "reviews stay with their findings after a new check");
+
+    // --- One check at a time, app-wide
+    control({ delay: 3 });
+    await openScreen(cb("findings"));
+    await startFromPanel("full");
+    await until(`!!window.ConsistencyReviewScreen._state.operation`, "check started");
+    await js(`(() => { selectedCodebasePath = ${JSON.stringify(cb("clean"))}; document.getElementById('viewConsistencyBtn').click(); return true; })()`);
+    await sleep(300);
+    await openPanel();
+    const blockedElsewhere = await panelFacts();
+    expect(blockedElsewhere.startDisabled && /A check of ignored_parameter is running/.test(blockedElsewhere.blocked),
+        "no second check can start while one runs", blockedElsewhere.blocked);
+    await waitForCheck();
+
+    // --- Incomplete and failed checks are told apart
+    control({});
+    await openScreen(cb("partial_clean"));
+    await startFromPanel("full");
+    await waitForCheck();
+    let outcome = await js(`(document.querySelector('.cr-outcome') || {}).className + ' ' + ((document.querySelector('.cr-outcome') || {}).textContent || '')`);
+    f = await facts();
+    expect(/cr-outcome-warn/.test(outcome) && /Consistency check incomplete/.test(outcome) && f.state === "partial", "incomplete check shown as incomplete", outcome);
+
+    control({ fail: ["cross_file_dependency"] });
+    const before = callsFor("cross_file_dependency");
+    await openScreen(cb("undetermined"));
+    await startFromPanel("full");
+    await waitForCheck();
+    outcome = await js(`(document.querySelector('.cr-outcome') || {}).className + ' ' + ((document.querySelector('.cr-outcome') || {}).textContent || '')`);
+    f = await facts();
+    expect(/cr-outcome-bad/.test(outcome) && /failed/.test(outcome) && /daily limit/.test(outcome), "daily limit shown as a failed check", outcome);
+    expect(f.state === "failed" && f.openDetails.some(t => t.startsWith("Errors")), "failed check shows its errors", f.openDetails);
+    expect(callsFor("cross_file_dependency") - before === 1, "a daily limit stops after one call, with no retries", callsFor("cross_file_dependency") - before);
+    await shot("20-failed-daily-limit");
+
+    // --- Provider waits are shown from the backend's own messages
+    control({ wait: ["inclusive_boundary"], delay: 2 });
+    const waitBefore = callsFor("inclusive_boundary");
+    await openScreen(cb("skipped"));
+    await startFromPanel("selected-first");
+    await until(`!!document.querySelector('.cr-running .cr-progress-wait')`, "provider wait message");
+    card = await js(`document.querySelector('.cr-running').textContent`);
+    expect(/rate limit reached, waiting 1 s before retrying/.test(card) && /asked to wait 1 time/.test(card), "provider wait shown", card);
+    await shot("21-provider-wait");
+    await waitForCheck();
+    expect(callsFor("inclusive_boundary") - waitBefore === 1, "a provider wait does not resubmit the request", callsFor("inclusive_boundary") - waitBefore);
+    control({});
+
+    const sent = await commandsSent();
+    expect(sent.filter(c => c === "check_consistency").length === (await js(`window.__crChecks.length`)), "every check request was answered once");
 }
 
 // --- Run --------------------------------------------------------------------
@@ -560,6 +695,7 @@ app.whenReady().then(async () => {
         const created = modelEvents().length;
         expect(created === 0, "browsing results created no model", created);
         await newCheckPanel();
+        await runningAndHandoff();
 
         expect(!fs.existsSync(path.join(demo.app, "MODEL_REQUESTED")), "no model was requested");
     } catch (error) {

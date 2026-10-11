@@ -32,11 +32,13 @@ let activeRequestId = null;
 // active request, so they cannot take over the loading screen or error popup.
 const directRequests = new Map();
 
-function backendCall(command, args = {}) {
+// options.onEvent receives the request's streamed messages (progress, provider
+// waits, running token totals) before the final response resolves the promise.
+function backendCall(command, args = {}, options = {}) {
     const request = commandRequests.begin(command);
 
     return new Promise(resolve => {
-        directRequests.set(request.requestId, resolve);
+        directRequests.set(request.requestId, { resolve, onEvent: options.onEvent });
 
         const refuse = error => {
             const failure = commandRequests.fail(request.requestId, error);
@@ -62,10 +64,12 @@ function settleDirectRequest(correlated) {
     const requestId = correlated?.request?.requestId;
     if (!requestId || !directRequests.has(requestId)) return false;
 
+    const entry = directRequests.get(requestId);
     if (correlated.terminal) {
-        const resolve = directRequests.get(requestId);
         directRequests.delete(requestId);
-        resolve(correlated.response);
+        entry.resolve(correlated.response);
+    } else if (entry.onEvent && correlated.response && correlated.response.accepted !== true) {
+        try { entry.onEvent(correlated.response); } catch (error) { console.error("Progress handler failed:", error); }
     }
     return true;
 }
@@ -1480,6 +1484,12 @@ function showPage(pageId) {
 }
 
 function showButtons(buttonId) {
+
+    // Another view is taking the output box: the Consistency Review screen
+    // must not draw into it when a background load or check finishes.
+    if (buttonId !== "viewConsistencyBtns" && window.ConsistencyReviewScreen) {
+        window.ConsistencyReviewScreen.hide();
+    }
 
     document.querySelectorAll('.viewBtnContainer').forEach(buttonContainer => {
         if (buttonContainer.id !== "mainViewBtns") {

@@ -42,6 +42,13 @@
         artifacts: new Map(),
         showCurrent: new Set(),
         panel: newPanel(),
+        // The check that is running, if any. Kept apart from the view so
+        // switching codebase or view never loses it or misplaces its result.
+        operation: null,
+        outcomes: new Map(),       // codebase name -> { result, op, shown }
+        handoff: null,             // { expected, shown } check IDs after a check
+        ticker: null,
+        visible: false,            // false once another Insights view takes the output box
     };
 
     /* The "New check" panel. Nothing in it starts a check except the start button. */
@@ -53,7 +60,6 @@
             targets: null,               // { loading } | { data } | { error }
             methods: new Map(),          // path -> { loading } | { data } | { error }
             filter: "",
-            running: false,
             message: null,               // { kind, text }
         };
     }
@@ -116,6 +122,7 @@
     function open(container, api, codebasePath) {
         const switched = codebasePath !== state.codebasePath;
         state.container = container;
+        state.visible = true;
         state.api = api;
         if (switched) {
             state.codebasePath = codebasePath;
@@ -128,8 +135,19 @@
             state.response = null;
             container.replaceChildren(el("div", { class: "cr-screen" },
                 el("h2", { class: "summary-header", text: "Consistency Review" }),
-                el("p", { class: "cr-muted", text: "Select a codebase first from the pipeline page." })));
+                el("p", { class: "cr-muted", text: "Select a codebase first from the pipeline page." }),
+                runningNotice()));
             return Promise.resolve();
+        }
+
+        // A check of this codebase finished while it was not on screen: show its result.
+        const finished = state.outcomes.get(nameOf(codebasePath));
+        if (finished && !finished.shown && finished.result.scope) {
+            finished.shown = true;
+            state.scope = finished.result.scope;
+            state.preferAvailable = false;
+            resetView();
+            return load(finished.result.checkId);
         }
         return load();
     }
@@ -142,9 +160,11 @@
         state.tab = "findings";
     }
 
-    async function load() {
+    /* Loads the saved check of the current scope. expected is the check ID a just-finished check returned. */
+    async function load(expected) {
         const token = ++state.loadToken;
         state.response = null;
+        state.handoff = null;
         render();
 
         let response;
@@ -172,6 +192,8 @@
         state.preferAvailable = false;
 
         state.response = response;
+        const shown = resultOf();
+        state.handoff = typeof expected === "string" ? { expected, shown: shown ? shown.check_id : null } : null;
         const findings = findingsOf();
         if (!findings.some(f => f.id === state.selectedId)) {
             state.selectedId = findings.length ? findings[0].id : null;
@@ -303,7 +325,8 @@
 
     /* Re-render, keeping focus, cursor and scroll position. */
     function render() {
-        if (!state.container) return;
+        // Another Insights view now owns the output box: draw nothing there.
+        if (!state.container || !state.visible) return;
 
         const active = document.activeElement;
         const focusKey = active && state.container.contains(active) ? active.getAttribute("data-focus") : null;
@@ -332,7 +355,10 @@
 
         return el("div", { class: "cr-screen", attrs: { "data-state": status.kind } },
             header(review),
+            runningNotice(),
+            outcomeNotice(),
             state.panel.open ? checkPanel() : null,
+            handoffNotice(),
             el("div", { class: `cr-banner cr-banner-${status.kind}`, attrs: { role: "status" } },
                 el("strong", { class: "cr-banner-title", text: status.title }),
                 status.message ? el("p", { text: status.message }) : null),
@@ -358,7 +384,7 @@
                 unsaved ? el("p", { class: "cr-unsaved", text: `${M.plural(unsaved, "review")} not saved yet` }) : null),
             el("div", { class: "cr-header-actions", attrs: { role: "group", "aria-label": "Result scope" } },
                 ...scopes,
-                el("button", { class: "cr-button", text: "Reload", attrs: { type: "button" }, on: { click: load } }),
+                el("button", { class: "cr-button", text: "Reload", attrs: { type: "button" }, on: { click: () => load() } }),
                 el("button", {
                     class: `cr-button ${state.panel.open ? "active-toggle" : ""}`,
                     text: state.panel.open ? "Close new check" : "New check",
@@ -865,8 +891,11 @@
         const plan = request.error ? null : M.describeCheck(request, files);
         const unsaved = M.unsavedFor(state.drafts.keys(), name);
 
+        const op = state.operation;
+        const running = Boolean(op);
         let blocked = null;
-        if (panel.running) blocked = "A check is already running.";
+        if (op && op.codebasePath === state.codebasePath) blocked = "A check of this codebase is running.";
+        else if (op) blocked = `A check of ${op.codebase} is running. Start another when it has finished.`;
         else if (targets.loading) blocked = "Listing the files that can be checked…";
         else if (targets.error) blocked = targets.error;
         else if (!files.length) blocked = "No file of this codebase has generated summaries, rules or tests to check. "
@@ -878,7 +907,7 @@
         const scopeRadio = (value, label) => el("label", { class: "cr-radio" },
             el("input", {
                 attrs: { type: "radio", name: "cr-check-scope", value, "data-focus": `check-scope-${value}` },
-                props: { checked: panel.scope === value, disabled: panel.running },
+                props: { checked: panel.scope === value, disabled: running },
                 on: { change: () => { panel.scope = value; panel.message = null; render(); } },
             }),
             el("span", { text: label }));
@@ -898,7 +927,7 @@
                 el("strong", { text: "Will check: " }), plan.scope,
                 plan.items.length ? list(plan.items, text => el("span", { text })) : null,
                 el("p", { class: "cr-muted", text: M.requestsText(plan.requests) })) : null,
-            unsaved && !panel.running ? el("div", { class: "cr-actions" },
+            unsaved && !running ? el("div", { class: "cr-actions" },
                 el("button", {
                     class: "cr-button", text: `Discard ${M.plural(unsaved, "unsaved review")}`,
                     attrs: { type: "button" },
@@ -907,12 +936,13 @@
             el("div", { class: "cr-actions" },
                 el("button", {
                     class: "cr-button primary cr-start",
-                    text: panel.running ? "Checking…" : "Check Consistency",
+                    text: running ? "Checking…" : "Check Consistency",
                     attrs: { type: "button", "data-focus": "check-start" },
                     props: { disabled: Boolean(blocked) },
                     on: { click: startCheck },
                 }),
-                blocked && !panel.running ? el("span", { class: "cr-muted cr-blocked", text: blocked }) : null),
+                blocked && !(op && op.codebasePath === state.codebasePath)
+                    ? el("span", { class: "cr-muted cr-blocked", text: blocked }) : null),
             panel.message ? el("p", { class: `cr-feedback cr-feedback-${panel.message.kind}`, attrs: { role: "status" },
                 text: panel.message.text }) : null);
     }
@@ -941,7 +971,7 @@
             el("input", {
                 class: "cr-search",
                 attrs: { type: "search", placeholder: "Filter files", "aria-label": "Filter files", "data-focus": "picker-filter" },
-                props: { value: panel.filter, disabled: panel.running },
+                props: { value: panel.filter, disabled: Boolean(state.operation) },
                 on: { input: e => { panel.filter = e.target.value; render(); } },
             }),
             el("div", { class: "cr-picker-list", attrs: { role: "group", "aria-label": "Files to check" } },
@@ -959,7 +989,7 @@
             if (methods.data && methods.data.supported) {
                 method = el("select", {
                     attrs: { "aria-label": `Method to check in ${file.path}`, "data-focus": `method-${file.path}` },
-                    props: { disabled: panel.running },
+                    props: { disabled: Boolean(state.operation) },
                     on: { change: e => { panel.selected.set(file.path, e.target.value); panel.message = null; render(); } },
                 },
                 el("option", { text: "Whole file", attrs: { value: "" } }),
@@ -980,7 +1010,7 @@
             el("label", { class: "cr-pick-label" },
                 el("input", {
                     attrs: { type: "checkbox", "data-focus": `pick-${file.path}` },
-                    props: { checked, disabled: panel.running },
+                    props: { checked, disabled: Boolean(state.operation) },
                     on: { change: e => togglePick(file, e.target.checked) },
                 }),
                 el("span", { class: "cr-pick-path", text: file.path }),
@@ -1012,40 +1042,147 @@
     async function startCheck() {
         const panel = state.panel;
         const request = M.checkRequest(panel);
-        if (panel.running || request.error) return;        // one check at a time
+        if (state.operation || request.error) return;        // one check at a time, app-wide
 
-        panel.running = true;
-        panel.message = { kind: "pending", text: "Checking…" };
+        const files = (panel.targets && panel.targets.data && panel.targets.data.files) || [];
+        const op = M.newOperation({
+            codebasePath: state.codebasePath,
+            codebase: nameOf(state.codebasePath),
+            request,
+            total: request.scope === "full" ? files.length : request.targets.length,
+        });
+        op.plan = M.describeCheck(request, files);
+        state.operation = op;
+        panel.message = null;
+        startTicker();
         render();
 
         let response;
         try {
-            response = await state.api.call("check_consistency", {
-                codebase: state.codebasePath,
-                scope: request.scope,
-                targets: request.targets,
-            });
+            response = await state.api.call(
+                "check_consistency",
+                { codebase: op.codebasePath, scope: request.scope, targets: request.targets },
+                { onEvent: event => { M.applyEvent(op, event); refreshRunning(); } },
+            );
         } catch (error) {
             response = { success: false, error: String(error && error.message || error) };
         }
-        panel.running = false;
-        if (panel !== state.panel) return;
 
-        if (response && response.success && response.result) {
-            const result = response.result;
-            panel.message = { kind: result.status === "completed" ? "good" : "bad",
-                              text: result.warning || result.message };
+        op.done = true;
+        op.response = response;
+        op.finishedAt = Date.now();
+        state.operation = null;
+        stopTicker();
+
+        const result = M.outcome(response);
+        const here = state.codebasePath === op.codebasePath && isShowing();
+        state.outcomes.set(op.codebase, { result, op, shown: here });
+
+        if (here && result.scope) {
             state.scope = result.scope;
             resetView();
-            await load();
+            await load(result.checkId);                     // the exact result of this check
         } else {
-            panel.message = { kind: "bad", text: `The check did not run: ${(response && response.error) || "no answer from the backend."}` };
             render();
         }
     }
 
+    function isShowing() {
+        return Boolean(state.container && state.visible);
+    }
+
+    function startTicker() {
+        stopTicker();
+        state.ticker = setInterval(() => {
+            const op = state.operation;
+            const node = state.container && state.container.querySelector(".cr-elapsed");
+            if (op && node) node.textContent = M.formatElapsed(Date.now() - op.startedAt);
+        }, 1000);
+    }
+
+    function stopTicker() {
+        if (state.ticker) clearInterval(state.ticker);
+        state.ticker = null;
+    }
+
+    /* Redraws only the running card, so typing elsewhere on the screen is not disturbed. */
+    function refreshRunning() {
+        const node = state.container && state.container.querySelector(".cr-running");
+        if (!node || !isShowing()) return;
+        const fresh = runningNotice();
+        if (fresh) node.replaceWith(fresh);
+    }
+
+    function runningNotice() {
+        const op = state.operation;
+        if (!op) return null;
+
+        if (op.codebasePath !== state.codebasePath) {
+            return el("div", { class: "cr-running cr-running-elsewhere", attrs: { role: "status" } },
+                el("strong", { text: `A consistency check of ${op.codebase} is running.` }),
+                " Other results load when it finishes, because the app's backend runs one task at a time.");
+        }
+
+        const usage = M.usageText(op.usage);
+        const latest = op.messages.slice(-6);
+        return el("section", { class: "cr-running", attrs: { "aria-label": "Running check", "aria-busy": "true" } },
+            el("div", { class: "cr-running-head" },
+                el("span", { class: "cr-spinner", attrs: { "aria-hidden": "true" } }),
+                el("strong", { text: `Checking ${op.codebase}` }), " ",
+                el("span", { class: "cr-muted", text: op.plan ? op.plan.scope : "" })),
+            op.plan && op.plan.items.length ? list(op.plan.items, text => el("span", { text })) : null,
+            el("p", null,
+                el("span", { text: `${M.filesText(op)} ` }),
+                el("span", { class: "cr-muted", text: "Elapsed " }),
+                el("span", { class: "cr-elapsed", text: M.formatElapsed(Date.now() - op.startedAt) }),
+                usage ? el("span", { class: "cr-muted", text: ` · ${usage} so far` }) : null),
+            op.waits ? el("p", { class: "cr-note", text: `The AI provider asked to wait ${M.plural(op.waits, "time")}; `
+                + "the request is retried within the existing limit, never resent by this screen." }) : null,
+            latest.length ? el("ul", { class: "cr-progress", attrs: { "aria-live": "polite" } },
+                latest.map(m => el("li", { class: m.wait ? "cr-progress-wait" : "", text: m.text }))) : null,
+            el("p", { class: "cr-muted", text: "A running check cannot be stopped without losing its result: it ends after "
+                + "every selected file has been tried. Other actions in the app wait until then." }));
+    }
+
+    function outcomeNotice() {
+        const name = nameOf(state.codebasePath);
+        const parts = [];
+
+        // Checks of other codebases that finished while this one is shown.
+        state.outcomes.forEach((o, codebase) => {
+            if (codebase !== name && !o.shown) {
+                parts.push(el("p", { class: `cr-feedback cr-feedback-${o.result.kind}`, attrs: { role: "status" },
+                    text: `The check of ${codebase} finished: ${o.result.text} Select ${codebase} and open `
+                        + "Consistency Review to see it." }));
+            }
+        });
+
+        const mine = state.outcomes.get(name);
+        if (mine && mine.shown) {
+            const usage = M.usageText(mine.op.usage);
+            parts.push(el("div", { class: `cr-outcome cr-outcome-${mine.result.kind}`, attrs: { role: "status" } },
+                el("strong", { text: "Latest check from this session: " }),
+                el("span", { text: mine.result.text }),
+                usage ? el("span", { class: "cr-muted", text: ` (${usage}; see AI Usage for the full record)` }) : null,
+                el("button", {
+                    class: "cr-button", text: "Dismiss", attrs: { type: "button" },
+                    on: { click: () => { state.outcomes.delete(name); render(); } },
+                })));
+        }
+        return parts.length ? el("div", { class: "cr-outcomes" }, parts) : null;
+    }
+
+    function handoffNotice() {
+        const h = state.handoff;
+        if (!h || !M.handoffMismatch(h.expected, h.shown)) return null;
+        return el("p", { class: "cr-note", text: `This is not the result of the check that just ran (${h.expected}). `
+            + `${h.shown ? `The saved result is now ${h.shown}.` : "No saved result was found for it."}` });
+    }
+
     window.ConsistencyReviewScreen = {
         open,
+        // Called when another Insights view is opened in the same output box.
+        hide: () => { state.visible = false; },
         reload: load,
         hasUnsavedReviews: () => state.drafts.size > 0,
         _state: state,
