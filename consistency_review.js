@@ -7,7 +7,10 @@
  * and is untrusted text: it is only ever set with textContent, never parsed
  * as HTML.
  *
- *     ConsistencyReviewScreen.open(container, api, codebasePath)
+ *     ConsistencyReviewScreen.open(container, api, codebasePath, options)
+ *
+ * options.scope opens that scope; options.expectCheckId names the check the
+ * caller just ran, and the screen says so if the saved result is another one.
  *
  * api.call(command, args) returns a promise of the backend's response.
  *
@@ -41,6 +44,8 @@
         artifacts: new Map(),
         showCurrent: new Set(),
         visible: false,            // false once another Insights view takes the output box
+        expected: null,            // check ID the next load should show (a just-finished run)
+        handoff: null,             // { expected, shown } after such a load
     };
 
     // ---------------------------------------------------------------
@@ -98,7 +103,7 @@
     // Loading
     // ---------------------------------------------------------------
 
-    function open(container, api, codebasePath) {
+    function open(container, api, codebasePath, options = {}) {
         const switched = codebasePath !== state.codebasePath;
         state.container = container;
         state.visible = true;
@@ -109,6 +114,14 @@
             resetView();
         }
         state.preferAvailable = switched;
+        if (options.scope) {
+            if (options.scope !== state.scope) {
+                state.scope = options.scope;
+                resetView();
+            }
+            state.preferAvailable = false;
+        }
+        state.expected = options.expectCheckId || null;
         if (!codebasePath) {
             state.response = null;
             container.replaceChildren(el("div", { class: "cr-screen" },
@@ -158,6 +171,9 @@
         state.preferAvailable = false;
 
         state.response = response;
+        const shown = resultOf();
+        state.handoff = state.expected ? { expected: state.expected, shown: shown ? shown.check_id : null } : null;
+        state.expected = null;
         const findings = findingsOf();
         if (!findings.some(f => f.id === state.selectedId)) {
             state.selectedId = findings.length ? findings[0].id : null;
@@ -329,12 +345,22 @@
 
         return el("div", { class: "cr-screen", attrs: { "data-state": status.kind } },
             header(review),
+            handoffNotice(),
             el("div", { class: `cr-banner cr-banner-${status.kind}`, attrs: { role: "status" } },
                 el("strong", { class: "cr-banner-title", text: status.title }),
                 status.message ? el("p", { text: status.message }) : null),
             result ? overview(review, result) : null,
             result ? problems(result, status.kind) : null,
             result ? tabs(result) : null);
+    }
+
+    /* Shown when the result on screen is not the check the caller just ran. */
+    function handoffNotice() {
+        const h = state.handoff;
+        if (!h || h.expected === h.shown) return null;
+        return el("p", { class: "cr-note", attrs: { role: "status" }, text:
+            `This is not the check that just ran (${h.expected}). `
+            + (h.shown ? `The saved result is now check ${h.shown}.` : "No saved result was found for it.") });
     }
 
     function header(review) {

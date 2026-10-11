@@ -19,7 +19,10 @@ down ({"delay": seconds}), announce a provider wait for some codebases
 ({"wait": [names]}) or fail them with a daily-limit error ({"fail": [names]}).
 
 Generation agents and database builds are replaced with functions that log a
-"generation" event to MODEL_LOG.jsonl and raise, so any attempt is caught.
+"generation" event to MODEL_LOG.jsonl and raise, so any attempt is caught. In
+oracle mode the full pipeline's steps are replaced too: each keeps the real
+stage machinery but only rewrites the codebase's existing outputs (logged as
+"pipeline_step"); {"pipeline_fail": step} in SHIM_CONTROL.json fails one.
 """
 
 import json
@@ -46,6 +49,12 @@ from eval_fakes import OracleLLM  # noqa: E402
 def refuse(*args, **kwargs):
     (app_dir / "MODEL_REQUESTED").write_text("A model was requested.", encoding="utf-8")
     raise RuntimeError("Model creation is disabled while verifying the Consistency Review screen.")
+
+
+def read_control():
+    """Optional behaviour for a verification run, from SHIM_CONTROL.json (read each time)."""
+    path = app_dir / "SHIM_CONTROL.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
 
 
 def log(event, **fields):
@@ -81,9 +90,7 @@ class RoutingOracle:
         log("call", codebase=name, file=re.search(r"^File: (.+)$", user, re.M).group(1))
 
         # Optional behaviour for a verification run, read on every call.
-        control = {}
-        if (app_dir / "SHIM_CONTROL.json").is_file():
-            control = json.loads((app_dir / "SHIM_CONTROL.json").read_text(encoding="utf-8"))
+        control = read_control()
         if name in control.get("wait", []):
             # The message agent/llm.py announces before retrying a rate-limited call.
             from backend.progress_logging import progress
@@ -125,8 +132,45 @@ for _name in ("FileSummaryAgent", "DirectoryAgent", "BRAgent", "UTAgent", "UTVAg
               "build_database", "build_summary_database"):
     setattr(commands, _name, no_generation(_name))
 
+# Full pipeline steps that rewrite this folder of the codebase's outputs.
+PIPELINE_OUTPUTS = {
+    "generate_file_summaries": "file_summary_agent_output",
+    "validate_business_rules": "BR_agent_output",
+    "generate_unit_tests": "UT_agent_output",
+}
+
+
+def fake_step(name):
+    """
+    A full-pipeline step that keeps the real stage machinery (_run_command:
+    run log, usage scope) but generates nothing: it rewrites the codebase's
+    existing outputs for its folder, as a real run writes them again. Logged
+    as a "pipeline_step" event; SHIM_CONTROL {"pipeline_fail": name} fails it.
+    """
+    def step(self, *args, **kwargs):
+        target = str(args[0]) if args else str(kwargs.get("codebase", ""))
+
+        def task():
+            log("pipeline_step", name=name)
+            if read_control().get("pipeline_fail") == name:
+                raise RuntimeError(f"{name} failed (verification run)")
+            folder = PIPELINE_OUTPUTS.get(name)
+            if folder:
+                base = app_dir / "agent" / folder / Path(target).name
+                for file in base.rglob("*") if base.is_dir() else []:
+                    if file.is_file():
+                        file.write_bytes(file.read_bytes())
+            return {"message": f"{name} done (verification run)"}
+
+        return self._run_command(name, task, individualStep=False)
+    return step
+
+
 if os.environ.get("CR_SHIM_MODELS") == "oracle":
     import agent.consistency_checker as checker  # noqa: E402
     checker.make_llm = oracle_model
+    for _step in ("build_database", "generate_file_summaries", "build_summary_database", "generate_directory_summaries",
+                  "validate_business_rules", "generate_unit_tests", "generate_integration_tests", "generate_all_uml"):
+        setattr(commands.Commands, _step, fake_step(_step))
 
 runpy.run_path(str(REPO / "main.py"), run_name="__main__")

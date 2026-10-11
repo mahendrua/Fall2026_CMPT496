@@ -140,3 +140,21 @@ test("a check run from the app is not labelled as having generated the artifacts
     const pipeline = { run_relation: "same_run", result: { run_id: "r6" }, latest_run: { run_id: "r6", command: "full_pipeline" } };
     assert.equal(M.runLabel(pipeline), "From run r6, the most recent logged run of this codebase.");
 });
+
+test("the pipeline's review outcome is told apart from generation", () => {
+    const stage = result => ({ success: true, command: "consistency_review", result });
+    const done = M.pipelineReview(stage({ status: "completed", message: "Consistency check completed: 2 mismatches found.", check_id: "c1" }));
+    assert.deepEqual([done.kind, done.status, done.checkId], ["good", "completed", "c1"]);
+    assert.equal(done.text, "Consistency Review: Consistency check completed: 2 mismatches found.");
+
+    const partial = M.pipelineReview(stage({ status: "partial", message: "m", check_id: "c2", leftover_outputs: 3 }));
+    assert.equal(partial.kind, "warn");
+    assert.match(partial.text, /3 output files left over from an earlier run were not compared/);
+
+    assert.equal(M.pipelineReview(stage({ status: "failed", message: "f", check_id: "c3" })).kind, "bad");
+
+    const crashed = M.pipelineReview({ success: false, error: "checker exploded" });
+    assert.equal(crashed.checkId, null);
+    assert.equal(crashed.text, "Consistency Review did not finish: checker exploded. Everything generated was kept.");
+    assert.equal(M.pipelineReview(undefined).status, "not_run");
+});

@@ -1180,7 +1180,7 @@ class Commands:
 
             # Not through _require_success: a review problem must not fail a
             # run whose generation succeeded.
-            pipeline_progress("Checking consistency...", 97)
+            pipeline_progress("Checking consistency...", 97, step_percent=False)
             review = self._consistency_review_stage(codebase_path, outputs_before)
 
             summary = {

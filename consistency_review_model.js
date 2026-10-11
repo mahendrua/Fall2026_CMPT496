@@ -272,6 +272,28 @@
         };
     }
 
+    /*
+     * The full pipeline's Consistency Review stage, told apart from the
+     * generation outcome: completed, incomplete, failed, or did not finish.
+     */
+    function pipelineReview(review) {
+        if (!review) {
+            return { kind: "bad", status: "not_run", checkId: null, text: "Consistency Review: not run." };
+        }
+        if (review.success === false) {
+            return { kind: "bad", status: "not_run", checkId: null,
+                     text: `Consistency Review did not finish: ${review.error || "unknown error"}. Everything generated was kept.` };
+        }
+        const r = review.result || {};
+        const kind = r.status === "completed" ? "good" : r.status === "partial" ? "warn" : "bad";
+        let text = `Consistency Review: ${r.message || "finished."}`;
+        if (r.leftover_outputs) {
+            text += ` ${plural(r.leftover_outputs, "output file")} left over from an earlier run `
+                + `${r.leftover_outputs === 1 ? "was" : "were"} not compared.`;
+        }
+        return { kind, status: r.status, checkId: r.check_id || null, text };
+    }
+
     /* Unsaved review drafts for a codebase (draft keys start with the codebase name). */
     function unsavedFor(draftKeys, codebase) {
         const prefix = `${codebase}|`;
@@ -306,6 +328,7 @@
         paginate,
         isDirty,
         unsavedFor,
+        pipelineReview,
         plural,
     };
 });

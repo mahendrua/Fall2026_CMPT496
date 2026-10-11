@@ -548,6 +548,7 @@ async function operationsRun() {
 
     await operationsFeedback();
     await operationsEndToEnd();
+    await pipelineRun();
 
     // Nothing was regenerated and no pipeline step ran.
     control({});
@@ -700,6 +701,115 @@ async function operationsEndToEnd() {
     f = await facts();
     expect(f.state === "partial" && /No validated business rules exist/.test(f.all) && /No generated unit tests exist/.test(f.all),
         "the result lists the missing outputs", f.state);
+}
+
+// --- The full pipeline's Consistency Review stage -------------------------------
+const pipelineResponses = () => js(`window.__crBackend.filter(r => r.command === 'full_pipeline')`);
+const runStages = () => JSON.parse(fs.readFileSync(path.join(demo.app, "last_run_log.json"), "utf8")).stages.map(s => s.stage);
+const PIPELINE_STAGES = ["build_database", "generate_file_summaries", "build_summary_database", "generate_directory_summaries",
+    "validate_business_rules", "generate_unit_tests", "generate_integration_tests", "generate_all_uml"];
+
+async function runPipeline() {
+    await js(`document.getElementById('codebaseAnalysisPipelineBtn').click()`);
+}
+
+async function pipelineRun() {
+    // Before starting: the pipeline says it ends with a review that uses the API.
+    await chooseCodebase(cb("findings"));
+    const note = await js(`document.getElementById('pipelineReviewNote').textContent`);
+    expect(/Consistency Review/.test(note) && /AI request per source file/.test(note), "the pipeline button says it ends with a review", note);
+    await js(`document.getElementById('estimateTokensBtn').click()`);
+    await waitForOperation();
+    const estimate = await js(`(document.getElementById('estimateOutput') || {}).textContent || ''`);
+    expect(/consistency_review\s+at least [\d,]+/.test(estimate), "the token estimate includes the review stage as a lower bound", estimate.slice(-400));
+    await js(`document.getElementById('loadingOkBtn').click()`);
+
+    // A run: the review is a real, last stage with its own status.
+    const selectedBefore = savedSelectedCheckId("findings");
+    control({ delay: 2 });
+    await chooseCodebase(cb("findings"));
+    await runPipeline();
+    await until(`/Checking consistency/.test(document.getElementById('loadingPipelineMessage').textContent)`, "review stage");
+    let o = await overlay();
+    expect(o.shown && !o.percentVisible, "the review stage shows no step percentage", o);
+    await until(`document.getElementById('loadingStepMessage').textContent.includes('Checking consistency: src/Refunds.cs')`, "review progress");
+    await shot("20-pipeline-review-stage");
+    await waitForOperation();
+    o = await overlay();
+    let [response] = (await pipelineResponses()).slice(-1);
+    const review = response.result.consistency_review.result;
+    expect(o.title === "Complete" && /^Full pipeline completed\. Consistency Review: Consistency check completed: 2 mismatches found\./.test(o.message),
+        "generation and review outcomes are both reported", o.message);
+    expect(JSON.stringify(runStages()) === JSON.stringify([...PIPELINE_STAGES, "consistency_review"]),
+        "the review is the last stage, after every generation stage in order", runStages());
+    const openShown = await js(`!document.getElementById('loadingOpenReviewBtn').classList.contains('hidden')`);
+    expect(openShown, "an Open Consistency Review button is offered");
+    await shot("21-pipeline-complete");
+
+    await js(`document.getElementById('loadingOpenReviewBtn').click()`);
+    await until(LOADED, "review screen from the pipeline");
+    let f = await facts();
+    expect(f.fields.Check === review.check_id && f.fields.Result === "Whole project", "it opens the exact check the pipeline saved",
+        [f.fields.Check, review.check_id, f.fields.Result]);
+    expect(/the most recent logged run of this codebase/.test(f.fields.Run) && !/This is not the check that just ran/.test(f.all),
+        "labelled as from this pipeline run", f.fields.Run);
+    expect(savedSelectedCheckId("findings") === selectedBefore, "the pipeline left the selected-files result alone");
+
+    // A failed review stage is a review outcome, not a pipeline failure.
+    control({ fail: ["ignored_parameter"] });
+    await chooseCodebase(cb("findings"));
+    await runPipeline();
+    await waitForOperation();
+    o = await overlay();
+    [response] = (await pipelineResponses()).slice(-1);
+    expect(o.title === "Complete" && /Consistency Review: Consistency check failed/.test(o.message) && /daily limit/.test(o.warning),
+        "a failed review is reported apart from a successful generation", o);
+    await js(`document.getElementById('loadingOpenReviewBtn').click()`);
+    await until(LOADED, "failed review");
+    f = await facts();
+    expect(f.state === "failed" && f.fields.Check === response.result.consistency_review.result.check_id, "the failed review opens as failed");
+
+    // A failed generation step stops the pipeline: no review, the old one is not this run's.
+    control({ pipeline_fail: "generate_unit_tests" });
+    const fullBefore = savedCheckId("findings");
+    await chooseCodebase(cb("findings"));
+    await runPipeline();
+    await waitForOperation();
+    o = await overlay();
+    expect(o.error && !runStages().includes("consistency_review"), "a failed generation step stops before the review", o.error);
+    expect(savedCheckId("findings") === fullBefore, "no review result is saved for the failed run");
+    await js(`document.getElementById('errorPopupCloseBtn').click()`);
+    await chooseCodebase(cb("findings"));
+    await openResults();
+    f = await facts();
+    expect(/From an earlier run/.test(f.fields.Run), "the previous review is labelled as from an earlier run", f.fields.Run);
+
+    // Guards: unsaved review notes, and repeated starts.
+    control({ delay: 1 });
+    await chooseScope("Selected files");                  // the whole-project review is the failed one
+    await js(`document.querySelector('.cr-finding').click()`);
+    await js(`(() => { document.querySelector('#viewDisplayOutputBox .cr-detail .cr-radio input[value="dismissed"]').click(); return true; })()`);
+    const before = (await pipelineResponses()).length;
+    await chooseCodebase(cb("findings"));
+    await runPipeline();
+    await sleep(300);
+    o = await overlay();
+    expect(/1 unsaved review note/.test(o.error) && (await pipelineResponses()).length === before, "unsaved review notes stop the pipeline", o.error);
+    await js(`document.getElementById('errorPopupCloseBtn').click()`);
+    await openResults();
+    await js(`[...document.querySelectorAll('.cr-unsaved .cr-button')].find(b => b.textContent === 'Discard unsaved reviews').click()`);
+
+    await chooseCodebase(cb("clean"));
+    const calls = callsFor("misleading_name_accurate");
+    await js(`(() => { const b = document.getElementById('codebaseAnalysisPipelineBtn'); b.focus(); b.click(); b.click(); return true; })()`);
+    await js(`document.getElementById('codebaseAnalysisPipelineBtn').focus()`);
+    for (const type of ["keyDown", "char", "keyUp"]) win.webContents.sendInputEvent({ type, keyCode: type === "char" ? "\r" : "Enter" });
+    await waitForOperation();
+    await sleep(1500);
+    expect((await pipelineResponses()).length - before === 1 && callsFor("misleading_name_accurate") - calls === 1,
+        "repeated clicks and Enter start one pipeline with one review call",
+        [(await pipelineResponses()).length - before, callsFor("misleading_name_accurate") - calls]);
+    control({});
 }
 
 // --- Run --------------------------------------------------------------------
