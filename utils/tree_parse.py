@@ -41,6 +41,19 @@ LANGUAGE_DICT = {
         "property_type": "pair",
         "import_query": "(import_statement) @import",
         "namespace_query": "" # JS has no namespaces, so this is left empty
+    },
+    ".py": {
+        "name": "python",
+        "query": """
+            (function_definition name: (identifier) @name) @chunk
+        """,
+        "container_type": "class_definition",
+        "property_type": None,
+        "import_query": """
+            (import_statement) @import
+            (import_from_statement) @import
+        """,
+        "namespace_query": ""
     }
 }
 
@@ -162,8 +175,12 @@ def get_chunks(bundle: CodeBundle) -> list[dict]:
     if not isinstance(bundle.language, str):
         raise TypeError(f"Expected 'bundle.language' to be a string, got {type(bundle.language).__name__}")
     
-    ext = bundle.path.suffix
+    ext = bundle.path.suffix.lower()
     config = LANGUAGE_DICT.get(ext)
+
+    if bundle.tree.root_node.has_error:
+        print(f"Skipping {bundle.path}: source contains syntax errors.")
+        return []
 
     # Validate that the file extension is supported
     if not config: 
@@ -199,9 +216,13 @@ def get_chunks(bundle: CodeBundle) -> list[dict]:
             code_text = bundle.content[chunk_node.start_byte:chunk_node.end_byte].decode("utf-8")
             
             # Handle Property Grouping
-            if chunk_node.type == config["property_type"]:
+            if (
+                config["property_type"] is not None
+                and chunk_node.type == config["property_type"]
+            ):
                 if parent_container not in grouped_properties:
                     grouped_properties[parent_container] = []
+                
                 grouped_properties[parent_container].append(code_text)
                 continue
 
