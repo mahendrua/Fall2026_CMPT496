@@ -150,7 +150,7 @@ To try these without touching real outputs, copy the codebase's two `business_ru
 3. Open **Discarded Business Rules** and **Validated Business Rules** and point out a `directory_inferred` rule, a root (`.`) folder rule, and a rule with both `file` and folder provenance.
 4. Rename the folder-level `business_rules.json`, run validation again, and show the missing-input warning; then rename it back.
 
-## Consistency Review screen
+## Consistency Review
 
 Consistency Review compares source code with its generated summaries, business
 rules and unit tests, and flags disagreements for a person to review. A
@@ -166,7 +166,45 @@ confirmed requirements in the app.
 The screen shows the latest saved check for that codebase. Whole-project and
 selected-files checks are kept apart; use the buttons at the top to switch.
 Opening the screen only reads saved results: it does not run a check or call
-a model. Checks are run from **Operations → Consistency Review** (below).
+a model. A check runs in one of two ways:
+
+- **Automatically at the end of the Full Codebase Analysis Pipeline** (below):
+  the pipeline generates its outputs, reviews them, and offers **Open
+  Consistency Review** on its Complete screen.
+- **On its own, from Operations → Consistency Review**, against outputs
+  already on disk, without regenerating anything.
+
+Both save a whole-project check. Neither changes the selected-files result or
+saved reviews.
+
+### After the full pipeline
+
+Run Operations → select the codebase → **Full Codebase Analysis Pipeline**.
+The note under the button says it ends with a Consistency Review that makes
+one more AI request per source file. **Estimate Token Usage** lists the review as
+its own stage with a lower bound ("at least N"), because the size of the
+review's answers is not known in advance.
+
+After every generation step has succeeded, the last stage, **Checking
+consistency...**, compares the whole codebase with the outputs this run wrote.
+Output files left over from an earlier run, which this run did not write
+again, are not compared; the result's notes list them. The stage shows the
+file being checked but no step percentage.
+
+The Complete screen reports the generation outcome and the review outcome
+separately, e.g. "Full pipeline completed. Consistency Review: Consistency
+check completed: 2 mismatches found." **Open Consistency Review** opens that
+exact check, labelled as from the most recent run.
+
+- Mismatches are findings, not a pipeline failure.
+- An incomplete or failed review (e.g. the key's daily limit is reached during
+  the review) is reported as a warning; everything generated is kept and the
+  pipeline still completes.
+- If a generation step fails, the pipeline stops before the review as before.
+  No review is saved for that run, and the previous review is labelled "From
+  an earlier run".
+- The pipeline will not start while you have unsaved review notes for the
+  codebase (the new review replaces the result they belong to).
 
 ### What works now
 
@@ -193,13 +231,25 @@ a model. Checks are run from **Operations → Consistency Review** (below).
   correct. Reviews belong to the finding (same disagreement about the same
   content), so the same finding shows its review in either scope.
 
-### Running a check
+### Running an independent check
 
 Run Operations → select the codebase → **Consistency Review** (with the other
 operations). It checks the whole codebase: every source file that has a
 generated summary, business rule or unit test is compared with those outputs.
 Nothing is regenerated and no pipeline step runs; it uses the outputs already
-on disk.
+on disk, whichever run wrote them.
+
+What it needs on disk for the codebase (matched by folder name):
+
+| Output | Written by | Without it |
+|---|---|---|
+| `agent/file_summary_agent_output/<codebase>/` | Create JSON Summaries | No summary comparisons |
+| `agent/BR_agent_output/<codebase>/validated_rules.json` | Business Rule Validation | No rule comparisons; the check is incomplete |
+| `agent/UT_agent_output/<codebase>/validated_tests.json` (or `unit_tests.json`) | Unit Test Generation | No test comparisons; the check is incomplete |
+
+With none of them there is nothing to compare: the check makes no request and
+is reported as failed ("Nothing to check"). Results are saved under
+`agent/consistency_output/<codebase>/` (git-ignored).
 
 While it runs, the loading screen shows the backend's own progress (the file
 being checked, and any rate-limit wait from the AI provider) and the token
@@ -225,30 +275,86 @@ reviews** on that screen.
 | **Incomplete check** | Some artifacts were not compared: outputs missing (e.g. no business rules yet), links ambiguous or stale, comparisons undetermined, or errors. Findings shown are real, but others may be missing. The lists under the banner say what was not compared. |
 | **The check failed** | Nothing usable was produced, e.g. the API key hit its daily limit or no key is selected. The errors list says why. No conclusion can be drawn. |
 
-### API usage
+### Reading a finding and recording a decision
+
+- **Scope:** whole project (the pipeline and the Operations check) or selected
+  files; each keeps its own latest result.
+- **Evidence:** the code and the artifact's claim as stored with the check,
+  with file and line numbers, and whether either has changed since.
+- **Intended behaviour: unknown**, always: a finding records a disagreement,
+  not which side is right.
+- **Review decision:** unresolved, reviewed or dismissed, with an optional
+  note. It is a record for people only: it changes no code, artifact or
+  verdict, and stays on the same finding across later checks and reruns.
+
+### API usage and provider limits
 
 Each file checked is one model request on the key selected in Manage API Keys
-(plus at most one re-ask if an answer cannot be read; rate-limit waits and
-retries are handled by the existing provider limits). A codebase with no
+(plus at most one re-ask if an answer cannot be read). A codebase with no
 outputs, or files with nothing to compare, cost no request. The token meter on
 the loading screen shows calls and tokens as they happen, and **View Insights
-→ AI Usage** shows the check's full record (logged as `check_consistency`). A
-check that made no model call is not logged there, as for other steps.
+→ AI Usage** shows the full record: an independent check is logged as
+`check_consistency`; in a pipeline run the review is its own
+`consistency_review` stage, counted once. A check that made no model call is
+not logged, as for other steps.
+
+Provider limits use the app's existing handling: on a rate limit or a busy
+provider the call waits and retries (the wait is shown on the loading
+screen), for up to 10 minutes per call. If the key reaches its daily limit, or
+the provider keeps refusing for that long, the check makes no further
+requests: findings already made are kept, the remaining files are listed as
+not checked, and the result is incomplete (or failed, if nothing was
+assessed). Cancel stops the backend; requests already sent still count.
+
+### Coverage and limits
+
+- The code in scope for one comparison is one file (or one method). Behaviour
+  that depends on another file is only partly visible; such comparisons may
+  be reported as undetermined.
+- Folder-level business rules name no source file, so they are skipped and
+  listed as skipped.
+- A file whose source and artifacts exceed one request's size limit is left
+  unassessed (listed, never truncated); select single methods instead.
+- One request per file: time and cost grow with codebase size, and the
+  feature has not been measured on large codebases.
+- Verdicts are a model's reading of the code; nothing is compiled or run, and
+  no accuracy figure is claimed. The offline evaluation in
+  [test/consistency_eval](test/consistency_eval/README.md) checks the
+  workflow on small tracked cases, not a real model's accuracy.
 
 ### Trying it with a real codebase (uses your API quota)
 
-1. Run the pipeline on the codebase first, at least **Create JSON Summaries**;
-   for rule and test comparisons also **Create Directory Summaries & Business
-   Rules**, **Business Rule Validation** and **Unit Test Generation**. Without
-   rules or tests the check still runs but is reported as incomplete.
-2. Run Operations → browse to the codebase folder (the same folder the
-   pipeline used) → Submit.
-3. On Operations press **Consistency Review**. It makes one request per file
-   that has outputs, so try it on a small codebase first.
-4. When it finishes, read the title and message, press OK, then go to View
-   Insights → **Consistency Review**.
-5. Open a finding to see the claims and evidence, and save a review with a
-   note if you like. Check **AI Usage** for the calls and tokens.
+Use a small C# codebase (a handful of files) under `targetCodebases/`, and a
+key saved and selected under **Manage API Keys**. Steps 3 and 7 send code to
+the model and use tokens; nothing else does.
+
+**A. Through the pipeline**
+
+1. `npm.cmd start` → **Run Operations** → browse to the codebase folder →
+   **Submit**.
+2. Press **Estimate Token Usage** and read the `consistency_review` line, then
+   press OK.
+3. Press **Full Codebase Analysis Pipeline** and wait for the last stage,
+   "Checking consistency...".
+4. On the Complete screen read both outcomes (pipeline and Consistency
+   Review) and any warning, then press **Open Consistency Review**.
+5. Check the header: Result "Whole project", and a Run line saying it is from
+   the most recent logged run of this codebase. Open a finding, compare its
+   claims and evidence with the files, and save a review with a note.
+6. **View Insights → AI Usage**: the latest `full_pipeline` run has a
+   `consistency_review` stage with the review's calls and tokens.
+
+**B. On its own**
+
+7. Back to **Run Operations** (same codebase) → **Consistency Review**. It
+   uses the outputs from step 3 and regenerates nothing.
+8. On completion read the title and message, press OK, then View Insights →
+   **Consistency Review**. The review saved in step 5 is still on its finding
+   if the same disagreement is found again.
+9. **AI Usage** lists the run as `check_consistency`.
+
+For an incomplete result, run step 7 on a codebase that has summaries but no
+business rules or unit tests yet.
 
 To look at the screen without a model or real outputs, use the isolated demo
 results in [test/consistency_review_ui](test/consistency_review_ui/README.md).
@@ -256,18 +362,20 @@ results in [test/consistency_review_ui](test/consistency_review_ui/README.md).
 ### Tests
 
 ```powershell
-.venv\Scripts\python.exe -m pytest test/other_tests/consistency_review_backend_test.py test/other_tests/consistency_review_demo_test.py test/other_tests/consistency_check_command_test.py
+.venv\Scripts\python.exe -m pytest test/other_tests -k consistency
 node --test test/other_tests/consistency_review_model.test.js
 ```
 
 The real-app walk-through (screenshots of every state) is described in
 [test/consistency_review_ui/README.md](test/consistency_review_ui/README.md).
 
-### Not yet connected
+### Packaged app
 
-- Part 6: running the check automatically after the full pipeline.
-- A packaged backend (`releases/main/main.exe`) built before this change does not
-  have the screen's backend commands; rebuild it (below) before packaging.
+A packaged backend (`releases/main/main.exe`) built before this feature lacks
+its backend commands and the pipeline's review stage. Rebuild it with the
+PyInstaller command below before `npm run dist`. `releases/main.spec` needs no
+change: the new modules are imported directly by `backend/commands.py`, so
+PyInstaller finds them.
 
 ## Packaging the backend using Pyinstaller
 
