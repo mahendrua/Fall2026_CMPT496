@@ -12,7 +12,9 @@ leaves a MODEL_REQUESTED file in <app_dir>. With CR_SHIM_MODELS=oracle, a
 consistency check gets an offline stand-in that answers from the tracked
 evaluation expectations (test/consistency_eval) for the codebase named in the
 prompt; each model created and each call is appended to MODEL_LOG.jsonl in
-<app_dir>, so a test can count them. Every other model request still raises.
+<app_dir>, so a test can count them, and each call reports 1,000 input and
+200 output tokens through the real usage callback. Every other model request
+still raises.
 
 An optional <app_dir>/SHIM_CONTROL.json, read on every call, can slow calls
 down ({"delay": seconds}), announce a provider wait for some codebases
@@ -103,7 +105,29 @@ class RoutingOracle:
                 "This Google API key has hit its daily limit or is out of credit. Try again later, check your "
                 "plan and billing, or select a different key."
             )
+        report_usage()
         return TolerantOracle(CASES_BY_NAME[name])._answer(messages)
+
+
+def report_usage(input_tokens=1000, output_tokens=200):
+    """
+    One call's token usage, through the same LangChain callback real models
+    trigger, so the run log, AI Usage and the token meter record it as usual.
+    """
+    import uuid
+    from langchain_core.messages import AIMessage
+    from langchain_core.outputs import ChatGeneration, LLMResult
+    import backend.token_usage as token_usage
+
+    handler = token_usage._usage_var.get()
+    if handler is None:
+        return
+    run_id = uuid.uuid4()
+    handler.on_chat_model_start({}, [], run_id=run_id)
+    message = AIMessage(content="", usage_metadata={
+        "input_tokens": input_tokens, "output_tokens": output_tokens, "total_tokens": input_tokens + output_tokens,
+    }, response_metadata={"model_name": "offline-oracle"})
+    handler.on_llm_end(LLMResult(generations=[[ChatGeneration(message=message)]]), run_id=run_id)
 
 
 def oracle_model(*args, **kwargs):

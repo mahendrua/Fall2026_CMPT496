@@ -29,9 +29,11 @@ States written:
     undetermined      cross_file_dependency: one comparison undetermined
     no_outputs        no_outputs: source code with no pipeline outputs
     missing_outputs   missing_outputs: a summary but no rule or test outputs, never checked
+    many_findings     many_findings: 30 findings, more than one page
 """
 
 import json
+import shutil
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -42,7 +44,8 @@ sys.path.insert(0, str(REPO))
 sys.path.insert(0, str(REPO / "test" / "consistency_eval"))
 
 from agent.consistency_checker import run_consistency_check  # noqa: E402
-from agent.consistency_store import set_review  # noqa: E402
+from agent.consistency_store import load_check_result, save_check_result, set_review  # noqa: E402
+from agent.structured_output.consistency_output import ConsistencyCheckResult, Finding  # noqa: E402
 from eval_cases import CASES_BY_NAME  # noqa: E402
 from eval_fakes import OracleLLM  # noqa: E402
 from eval_fixtures import build_case  # noqa: E402
@@ -115,6 +118,25 @@ def main(out_dir):
     build("collection_order_js")
     build("missing_outputs")
 
+    # More findings than one page holds: copies of ignored_parameter's two
+    # findings, each with its own discriminator (so its own ID).
+    many = out / "codebase" / "many_findings"
+    shutil.copytree(roots["ignored_parameter"], many)
+    for folder in ("file_summary_agent_output", "BR_agent_output", "UT_agent_output"):
+        shutil.copytree(app / "agent" / folder / "ignored_parameter", app / "agent" / folder / "many_findings")
+    roots["many_findings"] = many
+    base = load_check_result("ignored_parameter", app, scope="full")
+    findings = []
+    for n in range(30):
+        data = base.findings[n % 2].model_dump()
+        data.update(id="", codebase="many_findings", discriminator=f"copy {n:02d}", title=f"Finding {n + 1:02d}: {data['title']}")
+        findings.append(Finding.model_validate(data))
+    save_check_result(ConsistencyCheckResult(
+        codebase="many_findings", run_id="demo-run-1", status="completed",
+        started_at=base.started_at, finished_at=base.finished_at,
+        artifacts_checked=base.artifacts_checked, findings=findings, assessments=[], notes=list(base.notes),
+    ), app)
+
     # Source code with no pipeline outputs at all.
     bare = out / "codebase" / "no_outputs"
     (bare / "src").mkdir(parents=True, exist_ok=True)
@@ -163,6 +185,7 @@ def main(out_dir):
             unreadable="side_effects", older="same_file_helper", injection="exclusive_boundary_comments",
             missing_source="arithmetic_shared_mistake", no_check="collection_order_js",
             undetermined="cross_file_dependency", no_outputs="no_outputs", missing_outputs="missing_outputs",
+            many_findings="many_findings",
         ),
     )
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")

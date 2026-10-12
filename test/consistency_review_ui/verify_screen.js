@@ -549,6 +549,7 @@ async function operationsRun() {
     await operationsFeedback();
     await operationsEndToEnd();
     await pipelineRun();
+    await completeRegression();
 
     // Nothing was regenerated and no pipeline step ran.
     control({});
@@ -810,6 +811,93 @@ async function pipelineRun() {
         "repeated clicks and Enter start one pipeline with one review call",
         [(await pipelineResponses()).length - before, callsFor("misleading_name_accurate") - calls]);
     control({});
+}
+
+// --- Feature-wide regression: usage, paging, themes ------------------------------
+const lastRun = () => JSON.parse(fs.readFileSync(path.join(demo.app, "last_run_log.json"), "utf8"));
+
+async function completeRegression() {
+    // Usage of a pipeline run: the review is its own stage, counted once.
+    control({});
+    await chooseCodebase(cb("clean"));
+    const calls = callsFor("misleading_name_accurate");
+    await runPipeline();
+    await waitForOperation();
+    const made = callsFor("misleading_name_accurate") - calls;
+    let run = lastRun();
+    const stage = run.stages.find(s => s.stage === "consistency_review");
+    expect(run.command === "full_pipeline" && stage && stage.calls === made && stage.input_tokens === 1000 * made,
+        "the pipeline's review usage is recorded on its own stage", [run.command, stage && stage.calls, made]);
+    expect(run.totals.calls === made && run.stages.filter(s => s.stage !== "consistency_review").every(s => s.calls === 0),
+        "run totals equal the review stage: nothing counted twice", run.totals);
+    const meter = await js(`[...document.querySelectorAll('#tokenMeterStages .stage-row')].map(r => r.textContent)`);
+    expect(meter.some(row => /consistency_review/.test(row)) && !meter.some(row => /full_pipeline/.test(row)),
+        "the token meter shows the review stage, without a double-counting pipeline row", meter);
+    await js(`document.getElementById('loadingOkBtn').click()`);
+
+    // Usage of an independent check: its own logged run, shown in AI Usage.
+    await chooseCodebase(cb("clean"));
+    await runFromOperations();
+    await waitForOperation();
+    run = lastRun();
+    expect(run.command === "check_consistency" && run.totals.calls === 1 && run.codebase === "misleading_name_accurate",
+        "the independent check is logged as its own run", [run.command, run.totals.calls, run.codebase]);
+    await js(`(() => { document.getElementById('loadingOkBtn').click(); document.getElementById('analysisBackBtn').click();
+        document.getElementById('mainViewBtn').click(); document.getElementById('viewUsageBtn').click(); return true; })()`);
+    await until(`/check_consistency/.test(document.getElementById('viewDisplayOutputBox').textContent)`, "AI Usage view");
+    const usage = await js(`document.getElementById('viewDisplayOutputBox').textContent`);
+    expect(/check_consistency/.test(usage), "AI Usage shows the check's run");
+    await shot("22-ai-usage");
+
+    // More findings than one page.
+    await openScreen(cb("many_findings"));
+    let f = await facts();
+    expect(/Showing 25 of 30 \(30 in total\)/.test(f.all) && /Page 1 of 2/.test(f.all) && f.rows.length === 25, "30 findings are paged 25 at a time", f.rows.length);
+    await js(`[...document.querySelectorAll('.cr-pager .cr-button')].find(b => b.textContent === 'Next').click()`);
+    f = await facts();
+    expect(f.rows.length === 5 && /Page 2 of 2/.test(f.all) && f.rows[0].startsWith("Finding 26"), "the second page holds the rest", f.rows.slice(0, 2));
+    await js(`(() => { const s = document.querySelector('.cr-search'); s.value = 'Finding 30'; s.dispatchEvent(new Event('input')); return true; })()`);
+    f = await facts();
+    expect(f.rows.length === 1 && /Finding 30/.test(f.rows[0]), "search finds a finding on any page", f.rows);
+    await js(`(() => { const s = document.querySelector('.cr-search'); s.value = ''; s.dispatchEvent(new Event('input')); return true; })()`);
+    await shot("23-many-findings");
+
+    // Dark theme (set on the page only; the app's saved theme is not touched).
+    await js(`(() => { document.body.dataset.theme = 'dark'; return true; })()`);
+    await openScreen(cb("findings"));
+    await chooseScope("Selected files");
+    await js(`(() => { const row = document.querySelector('.cr-finding'); if (row && !document.querySelector('#viewDisplayOutputBox .cr-detail')) row.click(); return true; })()`);
+    const hasDetail = await js(`!!document.querySelector('#viewDisplayOutputBox .cr-detail')`);
+    expect(hasDetail, "dark theme: a finding is open", (await facts()).state);
+    if (hasDetail) await artifactsChecked();
+    await shot("24-dark-review");
+    const tabs = await js(`[...document.querySelectorAll('.cr-tab')].map(b => b.textContent)`);
+    expect(tabs.some(t => t.startsWith("Verdicts")), "dark theme: the Verdicts tab is shown", tabs);
+    await js(`(() => { const b = [...document.querySelectorAll('.cr-tab')].find(b => b.textContent.startsWith('Verdicts')); if (b) b.click(); return true; })()`);
+    await sleep(100);
+    await shot("25-dark-verdicts");
+    const contrast = await js(`(() => { try {
+        // [r, g, b, alpha] of a computed colour; translucent layers are blended over the theme's base colour.
+        const rgba = c => { const v = (c.match(/[0-9.]+/g) || []).map(Number); return [v[0] || 0, v[1] || 0, v[2] || 0, v.length > 3 ? v[3] : 1]; };
+        const over = (top, base) => [0, 1, 2].map(i => top[i] * top[3] + base[i] * (1 - top[3])).concat(1);
+        const lum = ([r, g, b]) => [r, g, b].map(v => { v /= 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; })
+            .reduce((a, v, i) => a + v * [0.2126, 0.7152, 0.0722][i], 0);
+        const cell = document.querySelector('.cr-tabbed td');
+        if (!cell) return 'no verdict cell: ' + ((document.querySelector('.cr-tabbed') || {}).textContent || 'no tabs').slice(0, 200);
+        const layers = [];
+        for (let n = cell; n; n = n.parentElement) {
+            const layer = rgba(getComputedStyle(n).backgroundColor);
+            if (layer[3] > 0) layers.push(layer);
+            if (layer[3] === 1) break;
+        }
+        let bg = rgba(getComputedStyle(document.body).getPropertyValue('--bg-primary').trim().replace(/^#(..)(..)(..)$/,
+            (m, r, g, b) => 'rgb(' + [r, g, b].map(h => parseInt(h, 16)).join(',') + ')'));
+        for (const layer of layers.reverse()) bg = over(layer, bg);
+        const [x, y] = [lum(over(rgba(getComputedStyle(cell).color), bg)), lum(bg)].sort((m, n) => n - m);
+        return (x + 0.05) / (y + 0.05);
+    } catch (error) { return 'contrast check failed: ' + error.message; } })()`);
+    expect(contrast >= 4.5, "dark theme text has readable contrast", contrast);
+    await js(`(() => { document.body.dataset.theme = 'light'; return true; })()`);
 }
 
 // --- Run --------------------------------------------------------------------

@@ -96,6 +96,14 @@ def test_current_content_is_changed_or_missing_where_the_demo_says(demo):
         assert out["state"] == expected
 
 
+def test_the_many_findings_state_has_distinct_findings_for_paging(demo):
+    loaded = load(demo, "many_findings", "full")
+    findings = loaded["result"]["findings"]
+    assert (loaded["result"]["status"], loaded["outcome"], len(findings)) == ("completed", "findings", 30)
+    assert len({f["id"] for f in findings}) == 30
+    assert findings[0]["title"].startswith("Finding 01") and findings[-1]["title"].startswith("Finding 30")
+
+
 def test_the_injection_state_carries_markup_as_plain_text(demo):
     loaded = load(demo, "injection")
     finding = loaded["result"]["findings"][0]
