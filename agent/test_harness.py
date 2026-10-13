@@ -26,12 +26,14 @@ apart by file prefix (UT_ / IT_).
 """
 
 import asyncio
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import tempfile
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -361,7 +363,37 @@ def make_cases(prefix, items, body_of, imports_of):
 # ---------------------------------------------------------------------------
 
 def project_dir_for(codebase_path, codebase_name):
-    return os.path.join(codebase_path, f"{codebase_name}.Tests")
+    source_path = Path(codebase_path).resolve()
+    path_hash = hashlib.sha256(os.fsencode(source_path)).hexdigest()[:16]
+    output_root = Path(tempfile.gettempdir()) / "checkpoint-generated-tests" / path_hash
+    return str(output_root / f"{codebase_name}.Tests")
+
+
+def artifacts_dir_for(test_dir):
+    """Keep SDK intermediates beside, not beneath, the generated source project."""
+    project_path = Path(test_dir).resolve()
+    return str(project_path.with_name(f"{project_path.name}.artifacts"))
+
+
+def target_project_for(codebase_path, codebase_name):
+    """Find the primary non-test project referenced by generated tests."""
+    source_path = Path(codebase_path).resolve()
+    projects = [
+        path.resolve()
+        for path in source_path.rglob("*.csproj")
+        if not any(part.casefold() in {"bin", "obj", ".git"} for part in path.parts)
+        and not path.stem.casefold().endswith(".tests")
+        and path.stem.casefold() not in {"tests", "test"}
+    ]
+
+    matching = [path for path in projects if path.stem.casefold() == codebase_name.casefold()]
+    candidates = matching or projects
+    if len(candidates) != 1:
+        raise ValueError(
+            f"Expected one target .csproj for '{codebase_name}', found "
+            f"{len(candidates)}."
+        )
+    return str(candidates[0])
 
 
 def namespace_for(codebase_name):
@@ -379,6 +411,7 @@ _NO_CENTRAL_PACKAGES = (
     "<Project>\n"
     "  <PropertyGroup>\n"
     "    <ManagePackageVersionsCentrally>false</ManagePackageVersionsCentrally>\n"
+    "    <DefaultItemExcludes>$(DefaultItemExcludes);**/artifacts/**</DefaultItemExcludes>\n"
     "  </PropertyGroup>\n"
     "</Project>\n"
 )
@@ -390,29 +423,50 @@ ISOLATION_FILES = {
 }
 
 
-def ensure_test_project(test_dir, codebase_name):
+def ensure_test_project(test_dir, codebase_path, codebase_name):
     """
-    Create the xUnit project that references every project in the codebase,
-    and keep it isolated from the codebase's own build settings.
+    Create the xUnit project outside the codebase and reference its primary
+    project explicitly, keeping the test project isolated from build settings.
     """
     if not Path(test_dir).is_dir():
         progress("Creating test project...")
+        subprocess.run(
+            ["dotnet", "new", "xunit", "-o", test_dir],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
 
-        try:
-            subprocess.run(
-                ["dotnet", "new", "xunit", "-o", test_dir],
-                capture_output=True,
-                text=True,
-            )
+    project_file = Path(test_dir) / f"{codebase_name}.Tests.csproj"
+    if not project_file.is_file():
+        raise FileNotFoundError(f"Generated test project was not created: {project_file}")
 
-            with open(f"{test_dir}/{codebase_name}.Tests.csproj", "r+", encoding="utf-8") as file:
-                lines = file.readlines()
-                lines.insert(-1, '<ItemGroup>\n<ProjectReference Include="..\\**\\*.csproj" Exclude="..\\**\\*.Tests.csproj" />\n</ItemGroup>\n\n')
-                file.seek(0)
-                file.writelines(lines)
+    target_project = target_project_for(codebase_path, codebase_name)
+    tree = ET.parse(project_file)
+    project = tree.getroot()
+    item_group = next(
+        (
+            group for group in project.findall("ItemGroup")
+            if group.findall("ProjectReference")
+        ),
+        None,
+    )
+    if item_group is None:
+        item_group = ET.SubElement(project, "ItemGroup")
 
-        except Exception as e:
-            progress(f"Error creating test project: {e}")
+    references = item_group.findall("ProjectReference")
+    target_is_referenced = False
+    for reference in references:
+        include = reference.get("Include", "")
+        if "*" in include:
+            item_group.remove(reference)
+        elif Path(include).resolve() == Path(target_project):
+            target_is_referenced = True
+
+    if not target_is_referenced:
+        ET.SubElement(item_group, "ProjectReference", {"Include": target_project})
+    ET.indent(tree, space="  ")
+    tree.write(project_file, encoding="utf-8", xml_declaration=True)
 
     # Written every time, so test projects made before this existed are
     # isolated too.
@@ -421,7 +475,7 @@ def ensure_test_project(test_dir, codebase_name):
             with open(os.path.join(test_dir, name), "w", encoding="utf-8") as file:
                 file.write(content)
 
-    mark_generated(test_dir)  # keep the crawlers out of our own tests
+    mark_generated(test_dir)
 
 
 def render_test(case, namespace):
@@ -482,8 +536,9 @@ def parse_build_output(output):
 
         match = BUILD_ERROR.match(line)
 
-        if match and GENERATED_FILE.match(Path(match["file"]).stem):
-            stem = Path(match["file"]).stem
+        error_path = match["file"].replace("\\", "/") if match else ""
+        if match and GENERATED_FILE.match(Path(error_path).stem):
+            stem = Path(error_path).stem
             text = f"line {match['line']}: {match['code']}: {match['msg']}"
             if text not in errors_by_file.setdefault(stem, []):
                 errors_by_file[stem].append(text)
@@ -500,7 +555,10 @@ def build(test_dir):
     """Returns (errors_by_file, other_errors)."""
     try:
         result = subprocess.run(
-            ["dotnet", "build", test_dir, "-nologo"],
+            [
+                "dotnet", "build", test_dir, "-nologo",
+                "--artifacts-path", artifacts_dir_for(test_dir),
+            ],
             capture_output=True,
             text=True,
             encoding="utf-8",
@@ -567,6 +625,7 @@ def run_tests(test_dir, namespace, prefix, results_dir, report_name):
             [
                 "dotnet", "test", test_dir,
                 "--no-build",
+                "--artifacts-path", artifacts_dir_for(test_dir),
                 "--filter", f"FullyQualifiedName~{namespace}.{prefix}_",
                 "--logger", f"html;LogFileName={report_name}",
                 "--logger", "console;verbosity=normal",
@@ -748,7 +807,12 @@ def check_tests(
     test_dir = project_dir_for(codebase_path, codebase_name)
     namespace = namespace_for(codebase_name)
 
-    ensure_test_project(test_dir, codebase_name)
+    try:
+        ensure_test_project(test_dir, codebase_path, codebase_name)
+    except Exception as error:
+        run.project_error = str(error)
+        progress(f"Could not prepare test project: {run.project_error}")
+        return run
 
     progress(f"Writing {len(cases)} {kind.lower()} tests, one file each...")
     write_tests(test_dir, namespace, prefix, cases)

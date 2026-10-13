@@ -23,8 +23,9 @@ let selectedRules = [];
 // Backend response buffer
 let backendOutputBuffer = "";
 
-//loadingscreen 
-let activeCommand = null;
+//loadingscreen
+const commandRequests = new window.CommandRequestTracker();
+let activeRequestId = null;
 let pipelineMode = false;
 
 let totalSteps = 1;
@@ -60,37 +61,152 @@ let hasAPI = false; // Flag to track if the API key has been set
 //start of the code to check if the API key has been set and determineif the API button should be active or not
 //activates the API button if the API key has not been set, otherwise it will be disabled -- also changes attributes within that page and enables the anaylsis button
 
-window.electronAPI.hasAPIKey()
-    .then((apiKeyExists) => {
-        hasAPI = apiKeyExists;
+// ============================================
+// API key manager
+// ============================================
 
-        if (hasAPI) {
+const PROVIDER_LABELS = {
+    google: "Google (Gemini)",
+    openai: "OpenAI",
+    anthropic: "Anthropic (Claude)",
+    mistral: "Mistral",
+    groq: "Groq",
+    deepseek: "DeepSeek",
+    xai: "xAI (Grok)",
+    openrouter: "OpenRouter"
+};
 
-            showApiKeyPresent();
+// Suggestions for the model box. Any model name can still be typed in.
+// Fill the empty ones from each provider's current docs; names change often.
+const PROVIDER_MODELS = {
+    google: ["gemini-3-flash-preview"],
+    openai: [],
+    anthropic: ["claude-sonnet-5-5", "claude-opus-5-5", "claude-haiku-4-5-20251001"],
+    mistral: [],
+    groq: [],
+    deepseek: [],
+    xai: [],
+    openrouter: []
+};
 
-            const analysisBtnEl = document.getElementById("analysisBtn");
-            if (analysisBtnEl) analysisBtnEl.classList.remove("unusable-btn");
+let cachedKeys = [];
+let pendingKey = null;
 
-            const apiKeyMsgEl = document.getElementById("apiKeyMsg");
-            if (apiKeyMsgEl) apiKeyMsgEl.classList.remove("hidden");
+function fillModelSuggestions(provider) {
+    const list = document.getElementById("modelSuggestions");
+    list.innerHTML = "";
+    (PROVIDER_MODELS[provider] || []).forEach(m => list.appendChild(new Option(m, m)));
+}
 
-            const replaceApiKeyBtnEl = document.getElementById("replaceApiKeyBtn");
-            if (replaceApiKeyBtnEl) replaceApiKeyBtnEl.classList.remove("hidden");
+function initProviderSelect() {
+    const sel = document.getElementById("providerSelect");
+    if (sel.options.length) return;
 
-            const keepApiKeyBtnEl = document.getElementById("keepApiKeyBtn");
-            if (keepApiKeyBtnEl) keepApiKeyBtnEl.classList.remove("hidden");
-
-            const submitApiKeyBtnEl = document.getElementById("submitApiKeyBtn");
-            if (submitApiKeyBtnEl) submitApiKeyBtnEl.classList.add("hidden");
-
-            const apiKeyInputEl = document.getElementById("apiKeyInput");
-            if (apiKeyInputEl) apiKeyInputEl.classList.add("hidden");
-
-            const apiBackBtnEl = document.getElementById("apiBackBtn");
-            if (apiBackBtnEl) apiBackBtnEl.classList.add("hidden");
-        }
-
+    Object.entries(PROVIDER_LABELS).forEach(([value, text]) => {
+        sel.add(new Option(text, value));
     });
+
+    sel.addEventListener("change", () => fillModelSuggestions(sel.value));
+    fillModelSuggestions(sel.value);
+}
+
+async function refreshApiKeyList() {
+    initProviderSelect();
+
+    const res = await window.electronAPI.listApiKeys();
+    cachedKeys = res?.keys || [];
+
+    const sel = document.getElementById("apiKeySelect");
+    const modelInput = document.getElementById("activeModelInput");
+    const deleteBtn = document.getElementById("deleteApiKeyBtn");
+
+    sel.innerHTML = "";
+
+    if (!cachedKeys.length) {
+        sel.add(new Option("No keys saved yet", ""));
+        sel.disabled = true;
+        modelInput.value = "";
+        modelInput.disabled = true;
+        deleteBtn.disabled = true;
+        hasAPI = false;
+        document.getElementById("analysisBtn").classList.add("unusable-btn");
+        return;
+    }
+
+    sel.disabled = false;
+    modelInput.disabled = false;
+    deleteBtn.disabled = false;
+
+    cachedKeys.forEach(k => {
+        const opt = new Option(
+            `${PROVIDER_LABELS[k.provider] || k.provider} - ${k.label} (${k.masked})`,
+            k.id
+        );
+        opt.selected = k.active;
+        sel.add(opt);
+    });
+
+    const active = cachedKeys.find(k => k.active) || cachedKeys[0];
+    modelInput.value = active.model;
+    hasAPI = true;
+    showApiKeyPresent();
+    document.getElementById("analysisBtn").classList.remove("unusable-btn");
+}
+
+document.getElementById("apiKeySelect").addEventListener("change", async (e) => {
+    if (!e.target.value) return;
+    await window.electronAPI.selectApiKey({ id: e.target.value });
+    await refreshApiKeyList();
+});
+
+document.getElementById("activeModelInput").addEventListener("change", async (e) => {
+    const id = document.getElementById("apiKeySelect").value;
+    if (!id) return;
+    await window.electronAPI.selectApiKey({ id, model: e.target.value });
+    await refreshApiKeyList();
+});
+
+document.getElementById("deleteApiKeyBtn").addEventListener("click", async () => {
+    const id = document.getElementById("apiKeySelect").value;
+    if (!id || !confirm("Delete this key?")) return;
+    await window.electronAPI.deleteApiKey({ id });
+    await refreshApiKeyList();
+});
+
+document.getElementById('apiBtn').addEventListener('click', async () => {
+    showPage('apiPage');
+    hideApiKeyError();
+    await refreshApiKeyList();
+});
+
+document.getElementById('submitApiKeyBtn').addEventListener('click', async () => {
+
+    const apiKey = document.getElementById('apiKeyInput').value.trim();
+    const model = document.getElementById('newModelInput').value.trim();
+
+    if (!apiKey) { showApiKeyError("Please enter an API key."); return; }
+    if (!model)  { showApiKeyError("Please enter a model name."); return; }
+
+    pendingKey = {
+        provider: document.getElementById('providerSelect').value,
+        label: document.getElementById('apiKeyLabel').value.trim() || "default",
+        model,
+        apiKey
+    };
+
+    hideApiKeyError();
+    setApiKeyPending(true);
+
+    // Resolves when the command is *sent*; the verdict arrives in
+    // onBackendResponse (the verify_api_key block you already pasted).
+    await runBackendCommand("verify_api_key", {
+        provider: pendingKey.provider,
+        model: pendingKey.model,
+        api_key: pendingKey.apiKey
+    });
+});
+
+refreshApiKeyList();
 
 // ============================================
 // Backend Communication Helpers
@@ -365,14 +481,38 @@ function updateStepProgressBar(percent){
 
 async function runBackendCommand(command,args={}){
 
+    const request = commandRequests.begin(command);
+    activeRequestId = request.requestId;
 
-    activeCommand = command;
+    try {
+        const acknowledgement = await window.electronAPI.executeCommand(
+            command,
+            args,
+            request.requestId
+        );
 
+        if (acknowledgement?.accepted === true && acknowledgement.request_id === request.requestId) {
+            commandRequests.accept(request.requestId);
+        } else {
+            handleBackendResponse({
+                ...acknowledgement,
+                request_id: request.requestId,
+                command,
+                success: false,
+                error: acknowledgement?.error || "The backend did not accept the command."
+            });
+        }
 
-    return await window.electronAPI.executeCommand(
-        command,
-        args
-    );
+        return acknowledgement;
+    } catch (error) {
+        handleBackendResponse({
+            request_id: request.requestId,
+            command,
+            success: false,
+            error: error.message || "Could not send the command to the backend."
+        });
+        return { request_id: request.requestId, success: false, error: error.message };
+    }
 
 }
 
@@ -1411,13 +1551,15 @@ async function loadValidatedRulesSelection() {
 
 //loading complete button
 document.getElementById("loadingCancelBtn").addEventListener("click", async () => {
-    if (!activeCommand) return;
+    const request = commandRequests.get(activeRequestId);
+    if (!request) return;
 
     const cancelButton = document.getElementById("loadingCancelBtn");
-    const cancelledCommand = activeCommand;
+    const cancelledRequestId = request.requestId;
+    const cancelledCommand = request.command;
     cancelButton.disabled = true;
 
-    const response = await window.electronAPI.cancelCommand();
+    const response = await window.electronAPI.cancelCommand(cancelledRequestId);
 
     if (!response?.success) {
         cancelButton.disabled = false;
@@ -1429,12 +1571,14 @@ document.getElementById("loadingCancelBtn").addEventListener("click", async () =
     errorsMade = true;
 
     await window.electronAPI.recordErrorLog({
+        request_id: cancelledRequestId,
         command: cancelledCommand,
         message: cancellationMessage,
         code: "CANCELLED"
     });
 
-    activeCommand = null;
+    commandRequests.fail(cancelledRequestId, cancellationMessage, { cancelled: true });
+    if (activeRequestId === cancelledRequestId) activeRequestId = null;
     hideLoading();
     showPage("homePage");
 });
@@ -1459,27 +1603,6 @@ document.getElementById('analysisBtn')
         } else {
             showPage('analysisPage');
         }
-
-    
-    });
-
-document.getElementById('apiBtn')
-    .addEventListener('click', () => {
-
-        
-
-        showPage('apiPage');
-
-        if (hasAPI) {
-            
-            overwriteApiUi();
-
-        } else {
-
-            newApiUi();
-
-        }
-
 
     
     });
@@ -2104,56 +2227,6 @@ document.getElementById('apiBackBtn')
 
         showPage('homePage');
     });
-
-document.getElementById('submitApiKeyBtn')
-    .addEventListener('click', async () => {
-
-        const apiKeyInputEl = document.getElementById('apiKeyInput');
-        const apiKey = apiKeyInputEl.value.trim();
-
-        // Nothing typed: saving would write a bare "GOOGLE_API_KEY=" and
-        // still report success, so the app would behave as though a key
-        // were set until the next launch read it back as missing. trim()
-        // so a box holding only spaces counts as empty too.
-        if (!apiKey) {
-            showApiKeyError("Please enter an API key.");
-            return;
-        }
-
-        hideApiKeyError();
-
-        // executeCommand resolves as soon as the command has been written
-        // to the backend's stdin -- its {success:true} means "sent", not
-        // "worked". The real verdict arrives later on the response stream,
-        // so everything that depends on it lives in onBackendResponse.
-        setApiKeyPending(true);
-
-        await runBackendCommand("set_api_key", { api_key: apiKey });
-
-    });
-
-document.getElementById('replaceApiKeyBtn')
-    .addEventListener('click', () => {
-
-        console.log("Replace API Key button clicked");
-
-        // newApiUi() reveals the Back button, and it is left revealed on
-        // purpose. Hiding it here stranded anyone who opened this page to
-        // change a key and then thought better of it -- the only way out
-        // was to enter a key that Google would accept.
-        newApiUi();
-
-    });
-    
-document.getElementById('keepApiKeyBtn')
-    .addEventListener('click', () => {
-
-        
-
-        showPage('homePage');
-
-    });
-
     
 
 //======================================================
@@ -2248,9 +2321,9 @@ document.getElementById("browseCodebaseBtn")
 // Backend Response Handler
 // ============================================
 
-window.electronAPI.onBackendResponse((response) => {
+window.electronAPI.onBackendResponse(async (response) => {
 
-    console.log("ACTIVE:", activeCommand);
+    console.log("ACTIVE REQUEST:", activeRequestId);
     console.log("RESPONSE:", response);
 
 
@@ -2258,50 +2331,72 @@ window.electronAPI.onBackendResponse((response) => {
         return;
     }
 
+    let activeCommand = null;
+    if (response.type !== "file-preview" && response.type !== "files") {
+        let correlated;
+
+        if (typeof response.request_id !== "string" || !response.request_id) {
+            const failures = commandRequests.failAll("Malformed backend response: missing request ID.");
+            correlated = failures.find(item => item.request.requestId === activeRequestId);
+        } else {
+            correlated = commandRequests.handle(response);
+        }
+
+        if (!correlated?.matched) return;
+        if (correlated.request.requestId !== activeRequestId) return;
+        if (correlated.terminal) {
+            activeCommand = correlated.request.command;
+            activeRequestId = null;
+            response = correlated.response;
+        } else if (response.accepted === true) {
+            return;
+        }
+    }
+
 
     // ----------------------------------------
-    // API key save / verification result
+    // API key verification result
     // ----------------------------------------
-    // Handled here rather than at the Submit button because that only ever
-    // sees the "command sent" acknowledgement. Taken before the generic
-    // error path below so a rejected key stays on the API page with an
-    // explanation instead of being dumped into the error box.
-    if (response.command === "set_api_key") {
+    // The Submit button only sees the "command sent" acknowledgement, so the
+    // real verdict is handled here, ahead of the generic error path. A
+    // rejected key stays on the API page with an explanation instead of
+    // being dumped into the error popup.
+    if (response.command === "verify_api_key") {
 
         setApiKeyPending(false);
         activeCommand = null;
 
         if (!response.success) {
-            showApiKeyError(
-                response.error || "Could not save the API key. Please try again."
-            );
+            showApiKeyError(response.error || "Could not verify the API key.");
+            pendingKey = null;
             return;
         }
 
-        hasAPI = true;
+        const check = response.result || {};
 
-        // Saved now, so there is no reason to keep it on screen.
-        document.getElementById('apiKeyInput').value = "";
-
-        showApiKeyPresent();
-        document.getElementById('analysisBtn').classList.remove('unusable-btn');
-
-        // Show what the check found -- which model answered and what it
-        // cost -- before leaving the page. Navigating straight home threw
-        // that away, so a verified key looked no different from no check
-        // at all.
-        const verdict = response.result?.message || "API key saved.";
-
-        if (response.result?.verified === false) {
-            showApiKeyError(verdict);
-        } else {
-            showApiKeySuccess(verdict);
+        if (check.status === "rejected") {
+            showApiKeyError(check.message);
+            pendingKey = null;
+            return;
         }
 
-        setTimeout(() => {
-            hideApiKeyError();
-            showPage('homePage');
-        }, 2500);
+        const saved = await window.electronAPI.saveApiKey({ ...pendingKey, makeActive: true });
+        pendingKey = null;
+
+        if (!saved?.success) {
+            showApiKeyError(saved?.error || "Could not save the key.");
+            return;
+        }
+
+        document.getElementById('apiKeyInput').value = "";
+        document.getElementById('apiKeyLabel').value = "";
+        await refreshApiKeyList();
+
+        if (check.status === "unverified") {
+            showApiKeyError(check.message);
+        } else {
+            showApiKeySuccess(check.message);
+        }
 
         return;
     }
@@ -2434,6 +2529,10 @@ window.electronAPI.onBackendResponse((response) => {
     // ----------------------------------------
     // Errors
     // ----------------------------------------
+    if (response.cancelled) {
+        return;
+    }
+
     if (!response.success) {
 
         errorsMade = true;
@@ -2713,7 +2812,7 @@ function setApiKeyPending(pending) {
     if (!btn) return;
 
     btn.disabled = pending;
-    btn.textContent = pending ? "Verifying..." : "Submit";
+    btn.textContent = pending ? "Verifying..." : "Verify & Save";
 
 }
 
@@ -2766,38 +2865,11 @@ function showApiKeyPresent() {
     // is the only route to the Replace / Keep page, so looking disabled
     // made a stale key appear unchangeable. Relabel instead of greying.
     apiBtnEl.classList.remove("unusable-btn");
-    apiBtnEl.textContent = "Change API Key";
+    apiBtnEl.textContent = "Manage API Keys";
 
 }
 
 
-function overwriteApiUi() {
-    hideApiKeyError();
-
-    document.getElementById('apiKeyMsg').classList.remove("hidden");
-    document.getElementById('apiKeyInput').classList.add("hidden");
-    document.getElementById('submitApiKeyBtn').classList.add("hidden");
-    document.getElementById('replaceApiKeyBtn').classList.remove("hidden");            
-    document.getElementById('keepApiKeyBtn').classList.remove("hidden");
-    document.getElementById('apiBackBtn').classList.add("hidden");
-}
-
-function newApiUi() {
-    document.getElementById('apiKeyMsg').classList.add("hidden");
-
-    // Start empty every time. Pages here are shown/hidden rather than
-    // reloaded, so whatever the last person typed would otherwise still
-    // be sitting in the box when someone opens it to change the key.
-    document.getElementById('apiKeyInput').value = "";
-
-    hideApiKeyError();
-
-    document.getElementById('apiKeyInput').classList.remove("hidden");
-    document.getElementById('submitApiKeyBtn').classList.remove("hidden");
-    document.getElementById('replaceApiKeyBtn').classList.add("hidden");
-    document.getElementById('keepApiKeyBtn').classList.add("hidden");
-    document.getElementById('apiBackBtn').classList.remove("hidden");
-}
 
 function renderJsonPreview(content) {
 

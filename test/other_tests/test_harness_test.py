@@ -5,15 +5,20 @@
 where one broken generated test stopped all 78 from running.
 """
 
+from pathlib import Path
+
 from agent.test_harness import (
     MAX_TEST_CHARS,
     TestCase,
     TestRun,
+    artifacts_dir_for,
     clean_test,
+    ensure_test_project,
     make_cases,
     normalize_imports,
     parse_build_output,
     parse_test_output,
+    project_dir_for,
     render_test,
     namespace_for,
 )
@@ -133,6 +138,88 @@ def test_namespace_is_a_valid_identifier():
     assert namespace_for("2026 project") == "_2026_project.Tests"
 
 
+def test_generated_project_is_external_and_references_the_primary_project(monkeypatch, tmp_path):
+    import xml.etree.ElementTree as ET
+    import agent.test_harness as harness
+
+    codebase = tmp_path / "ConsoleTables source"
+    target_project = codebase / "src" / "ConsoleTables" / "ConsoleTables.csproj"
+    sample_project = codebase / "src" / "ConsoleTables.Sample" / "ConsoleTables.Sample.csproj"
+    test_project = codebase / "src" / "ConsoleTables.Tests" / "ConsoleTables.Tests.csproj"
+    target_project.parent.mkdir(parents=True)
+    sample_project.parent.mkdir(parents=True)
+    test_project.parent.mkdir(parents=True)
+    target_project.write_text("<Project />", encoding="utf-8")
+    sample_project.write_text("<Project />", encoding="utf-8")
+    test_project.write_text("<Project />", encoding="utf-8")
+    original_files = {path.relative_to(codebase) for path in codebase.rglob("*") if path.is_file()}
+
+    temp_output = tmp_path / "system temp"
+    monkeypatch.setattr(harness.tempfile, "gettempdir", lambda: str(temp_output))
+
+    def create_xunit_project(command, **kwargs):
+        generated_dir = Path(command[command.index("-o") + 1])
+        generated_dir.mkdir(parents=True, exist_ok=True)
+        (generated_dir / "ConsoleTables.Tests.csproj").write_text(
+            '<Project Sdk="Microsoft.NET.Sdk">\n'
+            '  <ItemGroup>\n'
+            '    <PackageReference Include="xunit" Version="2.9.3" />\n'
+            '  </ItemGroup>\n'
+            '  <ItemGroup>\n'
+            '    <ProjectReference Include="..\\**\\*.csproj" Exclude="..\\**\\*.Tests.csproj" />\n'
+            '  </ItemGroup>\n'
+            '</Project>',
+            encoding="utf-8",
+        )
+
+    monkeypatch.setattr(harness.subprocess, "run", create_xunit_project)
+    output_dir = Path(project_dir_for(codebase, "ConsoleTables"))
+    ensure_test_project(str(output_dir), str(codebase), "ConsoleTables")
+
+    assert not output_dir.is_relative_to(codebase)
+    generated_project = ET.parse(output_dir / "ConsoleTables.Tests.csproj").getroot()
+    references = generated_project.findall(".//ProjectReference")
+    assert [reference.get("Include") for reference in references] == [str(target_project.resolve())]
+    assert generated_project.find(".//PackageReference[@Include='xunit']") is not None
+    isolation_props = ET.parse(output_dir / "Directory.Build.props").getroot()
+    excludes = isolation_props.findtext(".//DefaultItemExcludes")
+    assert "**/artifacts/**" in excludes
+    assert {path.relative_to(codebase) for path in codebase.rglob("*") if path.is_file()} == original_files
+    assert "system temp" in str(output_dir)
+
+
+def test_build_and_test_keep_artifacts_outside_the_project(monkeypatch, tmp_path):
+    import agent.test_harness as harness
+
+    test_dir = tmp_path / "ConsoleTables.Tests"
+    test_dir.mkdir()
+    artifacts_dir = artifacts_dir_for(test_dir)
+    assert not Path(artifacts_dir).is_relative_to(test_dir)
+
+    commands = []
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return Result()
+
+    monkeypatch.setattr(harness.subprocess, "run", run)
+
+    assert harness.build(str(test_dir)) == ({}, [])
+    harness.run_tests(
+        str(test_dir), "ConsoleTables.Tests", "UT", str(tmp_path / "reports"), "unit.html"
+    )
+
+    assert [command[command.index("--artifacts-path") + 1] for command in commands] == [
+        artifacts_dir,
+        artifacts_dir,
+    ]
+
+
 def test_build_errors_are_split_by_test_file():
     output = "\n".join([
         r"C:\x\stateless.Tests\UT_19.cs(20,5): error CS0200: Property 'State.StateName' cannot be assigned to -- it is read only [C:\x\stateless.Tests\stateless.Tests.csproj]",
@@ -201,7 +288,7 @@ def _scripted_check(monkeypatch, tmp_path, builds, cases, fix):
     monkeypatch.setattr(harness, "ensure_test_project", lambda *args: None)
     monkeypatch.setattr(harness, "build", lambda test_dir: (next(results), []))
     monkeypatch.setattr(harness, "run_tests", lambda *args: (len(cases), 0, 0, [], ""))
-    (tmp_path / "demo.Tests").mkdir()
+    Path(harness.project_dir_for(tmp_path, "demo")).mkdir(parents=True)
 
     return harness.check_tests("Unit", "UT", cases, [], str(tmp_path), "demo", str(tmp_path / "out"), fix=fix)
 

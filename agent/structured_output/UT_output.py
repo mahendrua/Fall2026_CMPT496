@@ -5,6 +5,7 @@
 """
 
 from pydantic import BaseModel, Field, ConfigDict
+from agent.structured_output.BR_output import RuleProvenance
 
 class Explanation(BaseModel):
     """
@@ -24,6 +25,7 @@ class ValidatedRule(BaseModel):
     source_directory: str = Field(..., description="The directory this rule pertains to.")
     source_file_paths: list[str] = Field(default_factory=list, description="File paths that were retrieved as evidence for this rule.")
     explanation: Explanation = Field(..., description="Evidence and reasoning supporting the rule's validity.")
+    provenance: list[RuleProvenance] = Field(default_factory=list, description="Origins of the rule with their source files, as written by the BR agent. Empty for older outputs.")
 
 class UnitTest(BaseModel):
     """

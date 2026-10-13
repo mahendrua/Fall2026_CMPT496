@@ -59,7 +59,7 @@ class CommandDispatcher:
             "generate_all_uml": self.commands.generate_all_uml,
 
             # API
-            "set_api_key": self.commands.set_api_key,
+            "verify_api_key": self.commands.verify_api_key,
             
             # Pipeline
             "full_pipeline": self.commands.full_pipeline,
@@ -127,7 +127,7 @@ class CommandDispatcher:
         })
         self._save_errors()
 
-    def dispatch(self, command: str, **kwargs):
+    def dispatch(self, command: str, request_id=None, **kwargs):
         """
         Execute a backend command.
 
@@ -146,7 +146,8 @@ class CommandDispatcher:
             return {
                 "success": False,
                 "error": error,
-                "command": command
+                "command": command,
+                **({"request_id": request_id} if request_id is not None else {})
             }
 
         # Tell Commands which codebase measured usage belongs to.
@@ -173,6 +174,8 @@ class CommandDispatcher:
                     result.get("error_code"),
                 )
 
+            if isinstance(result, dict) and request_id is not None:
+                result["request_id"] = request_id
             return result
 
         except Exception as e:
@@ -184,5 +187,6 @@ class CommandDispatcher:
             return {
                 "success": False,
                 "error": error,
-                "command": command
+                "command": command,
+                **({"request_id": request_id} if request_id is not None else {})
             }

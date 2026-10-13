@@ -12,20 +12,22 @@ contextBridge.exposeInMainWorld(
 
         executeCommand: (
             command,
-            args = {}
+            args = {},
+            requestId
         ) => {
 
             return ipcRenderer.invoke(
                 "execute-command",
                 {
                     command,
-                    args
+                    args,
+                    request_id: requestId
                 }
             );
 
         },
 
-    cancelCommand: () => ipcRenderer.invoke("cancel-command"),
+    cancelCommand: (requestId) => ipcRenderer.invoke("cancel-command", requestId),
 
         getErrorLog: () => ipcRenderer.invoke("get-error-log"),
 
@@ -65,6 +67,12 @@ contextBridge.exposeInMainWorld(
             );
 
         },
+
+        // --- multi-key manager ---
+        listApiKeys:  ()     => ipcRenderer.invoke("list-api-keys"),
+        saveApiKey:   (data) => ipcRenderer.invoke("save-api-key", data),
+        selectApiKey: (data) => ipcRenderer.invoke("select-api-key", data),
+        deleteApiKey: (data) => ipcRenderer.invoke("delete-api-key", data),
 
         getValidatedRules: (
             codebasePath
