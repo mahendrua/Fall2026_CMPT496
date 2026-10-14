@@ -24,6 +24,17 @@ RENDER_TIMEOUT_SECONDS = 180
 
 PLANTUML_KINDS = {"class": "class", "interface": "interface", "enum": "enum", "struct": "struct"}
 
+# Boxes list their attributes, methods and enum values when the project has
+# at most this many classes; bigger projects show names only (the panel beside
+# the diagram lists every member).
+MEMBERS_UP_TO_CLASSES = 40
+# Lines per box before the rest are summed up as "N more".
+MEMBERS_PER_CLASS = 20
+
+# Two classes get at most one of these links (besides inheritance): the strongest
+# the summaries name, as a UML diagram would draw it.
+STRENGTH = {"composition": 4, "aggregation": 3, "association": 2, "dependency": 1}
+
 
 def find_plantuml_jar(app_dir):
     """Same places the UML step looks (Commands.generate_uml)."""
@@ -38,17 +49,19 @@ def build_diagram(data, app_dir):
     The diagram for one run's report. Never raises.
 
     @return {"types": [...], "edges": [...], "puml": str, "svg": str or "",
-             "error": str or "", "skipped_relationships": int}
+             "error": str or "", "skipped_relationships": int, "members_shown": bool}
     """
     try:
         types, edges, skipped = project_types(data.get("files") or [])
         puml = to_plantuml(types, edges, data.get("codebase") or "project")
     except Exception as exc:
         return {"types": [], "edges": [], "puml": "", "svg": "",
-                "error": f"Could not build the diagram: {exc}", "skipped_relationships": 0}
+                "error": f"Could not build the diagram: {exc}", "skipped_relationships": 0,
+                "members_shown": False}
 
     result = {"types": types, "edges": edges, "puml": puml, "svg": "",
-              "error": "", "skipped_relationships": skipped}
+              "error": "", "skipped_relationships": skipped,
+              "members_shown": len(types) <= MEMBERS_UP_TO_CLASSES}
 
     if not types:
         result["error"] = "The file summaries list no classes, so there is nothing to draw."
@@ -127,7 +140,9 @@ def project_types(files):
     Partial classes (one class spread over several files in the same folder)
     become one entry. A relationship is kept
     only when both ends are types of this project; links to library types
-    (Exception, IEnumerable...) are counted, not drawn.
+    (Exception, IEnumerable...) are counted, not drawn. Of several links
+    between the same two classes, only the strongest is kept (see STRENGTH);
+    an unknown relationship type counts as an association.
     """
     types, by_key = [], {}
 
@@ -197,7 +212,9 @@ def project_types(files):
         for link in (item.get("relationships") or []) + (item.get("external_relationships") or []):
             if not isinstance(link, dict):
                 continue
-            kind = "inheritance" if link.get("relationship_type") == "inheritance" else "association"
+            kind = link.get("relationship_type")
+            if kind != "inheritance" and kind not in STRENGTH:
+                kind = "association"
             add(resolve(link.get("source"), folder), resolve(link.get("target"), folder), kind)
 
     # inherits_from is filled even when the AI left the relationship out.
@@ -207,6 +224,15 @@ def project_types(files):
             if target is not None:
                 add(node, target, "inheritance")
 
+    strongest = {}
+    for edge in edges:
+        if edge["kind"] in STRENGTH:
+            pair = (edge["source"], edge["target"])
+            if pair not in strongest or STRENGTH[edge["kind"]] > STRENGTH[strongest[pair]["kind"]]:
+                strongest[pair] = edge
+    edges = [edge for edge in edges
+             if edge["kind"] not in STRENGTH or strongest[(edge["source"], edge["target"])] is edge]
+
     return types, edges, skipped
 
 
@@ -214,7 +240,15 @@ def project_types(files):
 # PlantUML
 # ---------------------------------------------------------
 
-ARROWS = {"inheritance": "--|>", "implements": "..|>", "association": "-->"}
+# Standard UML notation; the diamond sits at the source (the whole).
+ARROWS = {
+    "inheritance": "--|>",
+    "implements": "..|>",
+    "composition": "*--",
+    "aggregation": "o--",
+    "association": "-->",
+    "dependency": "..>",
+}
 
 
 def _quote(text):
@@ -222,12 +256,71 @@ def _quote(text):
     return re.sub(r"[\"\[\]\r\n\t]", " ", str(text)).strip()
 
 
-def to_plantuml(types, edges, codebase_name, left_to_right=False, engine=None):
+VISIBILITY = {"public": "+", "private": "-", "protected": "#"}
+# Public members first when a box is cut short.
+VISIBILITY_ORDER = {"public": 0, "protected": 1, None: 2, "private": 3}
+
+
+def _member_text(text):
+    """Text safe on a line inside a class body: no braces, links or line breaks,
+    and no "!" or "@" at the start, where PlantUML would read a command."""
+    text = re.sub(r"[{}\r\n\t]|\[\[|\]\]", " ", str(text or ""))
+    return re.sub(r"\s+", " ", text).strip().lstrip("!@ ")
+
+
+def _uml_member(member, text):
+    """'+name : Type' or '{static} -name(Type x) : Result'."""
+    prefix = "{static} " if member.get("is_static") else ""
+    return prefix + VISIBILITY.get(member.get("visibility"), "") + text
+
+
+def member_lines(node):
+    """
+    The lines inside one class's box: enum values, or attributes then methods
+    in UML form (+ public, - private, # protected). A box longer than
+    MEMBERS_PER_CLASS keeps its public members first and sums up the rest.
+    """
+    items = []  # (rank, line); a lower rank is kept first when the box is cut short
+
+    if node["kind"] == "enum":
+        items = [(0, _member_text(value)) for value in node["enum_values"]]
+    else:
+        for prop in node["properties"]:
+            name = _member_text(prop.get("name"))
+            if name:
+                text = name + (f" : {_member_text(prop['type'])}" if prop.get("type") else "")
+                items.append((VISIBILITY_ORDER.get(prop.get("visibility"), 2), _uml_member(prop, text)))
+        for method in node["methods"]:
+            name = _member_text(method.get("name"))
+            if name:
+                params = ", ".join(_member_text(param) for param in method.get("parameters") or [])
+                text = f"{name}({params})"
+                if method.get("return_type") and not method.get("is_constructor"):
+                    text += f" : {_member_text(method['return_type'])}"
+                items.append((VISIBILITY_ORDER.get(method.get("visibility"), 2), _uml_member(method, text)))
+
+    items = [(rank, line) for rank, line in items if line]
+    if len(items) <= MEMBERS_PER_CLASS:
+        return [line for _, line in items]
+
+    keep = sorted(sorted(range(len(items)), key=lambda i: items[i][0])[:MEMBERS_PER_CLASS - 1])
+    return [items[i][1] for i in keep] + [f".. {len(items) - len(keep)} more .."]
+
+
+def to_plantuml(types, edges, codebase_name, left_to_right=False, engine=None, members=None):
+    """
+    @param members Whether boxes list their members; by default, when the
+           project has at most MEMBERS_UP_TO_CLASSES classes.
+    """
+    if members is None:
+        members = len(types) <= MEMBERS_UP_TO_CLASSES
+
     lines = [
         "@startuml",
         "set separator none",
-        "hide members",
-        "hide empty methods",
+        "hide empty members" if members else "hide members",
+        # +, - and # as text, as in UML, instead of PlantUML's coloured icons.
+        "skinparam classAttributeIconSize 0",
         "skinparam shadowing false",
         "skinparam packageStyle rectangle",
         "skinparam defaultFontName Arial",
@@ -257,7 +350,14 @@ def to_plantuml(types, edges, codebase_name, left_to_right=False, engine=None):
         lines.append(f'package "{_quote(label)}" as P{index} {{')
         for node in folders[folder]:
             kind = PLANTUML_KINDS[node["kind"]]
-            lines.append(f'  {kind} "{_quote(node["name"])}" as {node["id"]} [[#type-{node["id"]}]]')
+            head = f'  {kind} "{_quote(node["name"])}" as {node["id"]} [[#type-{node["id"]}]]'
+            body = member_lines(node) if members else []
+            if body:
+                lines.append(head + " {")
+                lines.extend(f"    {line}" for line in body)
+                lines.append("  }")
+            else:
+                lines.append(head)
         lines.append("}")
 
     for edge in edges:

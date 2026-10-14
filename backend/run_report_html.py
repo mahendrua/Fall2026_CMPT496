@@ -911,8 +911,10 @@ button.more:hover { text-decoration: underline; }
 
     var out = DIAGRAM.edges.filter(function (e) { return e.source === id; });
     var inc = DIAGRAM.edges.filter(function (e) { return e.target === id; });
-    var KIND = { inheritance: "Inherits from", implements: "Implements", association: "Uses" };
-    var BACK = { inheritance: "Inherited by", implements: "Implemented by", association: "Used by" };
+    var KIND = { inheritance: "Inherits from", implements: "Implements", composition: "Owns", aggregation: "Holds",
+                 association: "Refers to", dependency: "Uses" };
+    var BACK = { inheritance: "Inherited by", implements: "Implemented by", composition: "Owned by", aggregation: "Held by",
+                 association: "Referred to by", dependency: "Used by" };
 
     add(panel, [
       el("h3", null, t.name),
@@ -921,7 +923,7 @@ button.more:hover { text-decoration: underline; }
       el("h4", null, t.files.length === 1 ? "File" : "Files"),
       el("ul", null, t.files.map(function (f) { return el("li", null, el("a", { href: hashFor("file", f), class: "mono" }, f)); }))
     ]);
-    ["inheritance", "implements", "association"].forEach(function (kind) {
+    Object.keys(KIND).forEach(function (kind) {
       var a = out.filter(function (e) { return e.kind === kind; }), b = inc.filter(function (e) { return e.kind === kind; });
       if (a.length) add(panel, [el("h4", null, KIND[kind]), el("ul", null, a.map(function (e) { return el("li", null, typeLink(e.target)); }))]);
       if (b.length) add(panel, [el("h4", null, BACK[kind]), el("ul", null, b.map(function (e) { return el("li", null, typeLink(e.source)); }))]);
@@ -969,7 +971,10 @@ button.more:hover { text-decoration: underline; }
     }
     add(panel, [el("h3", null, "Whole-project class diagram"),
       el("p", null, "Every class Checkpoint found, grouped by folder. Click a class to see what it does, its file and what it is linked to."),
-      el("p", { class: "muted" }, "Scroll to zoom, drag to move. Arrows with a hollow triangle mean “inherits from”; plain arrows mean “uses”.")]);
+      el("p", { class: "muted" }, "Scroll to zoom, drag to move. Standard UML arrows: a hollow triangle means “inherits from” (dashed: “implements”); " +
+        "a filled diamond means “owns”; a hollow diamond means “holds”; a solid arrow means “refers to”; a dashed arrow means “uses”." +
+        (DIAGRAM.members_shown ? " In each box, + is public, - private and # protected."
+                               : " This project has many classes, so the boxes show names only; click one to see its attributes and methods."))]);
 
     // Name each class in its tooltip instead of the link text.
     Array.prototype.forEach.call(canvas.querySelectorAll('a[href^="#type-"]'), function (a) {

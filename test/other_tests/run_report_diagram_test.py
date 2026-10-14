@@ -79,6 +79,83 @@ def test_link_prefers_the_class_in_the_same_folder():
     assert {"source": id_of[("tools", "Report")], "target": id_of[("tools", "Customer")], "kind": "association"} in edges
 
 
+def test_each_uml_link_kind_gets_its_standard_arrow():
+    files = [file("shop/cart.py", [{"name": n, "kind": "class"} for n in ("Cart", "Engine", "Item", "Logger", "Price")],
+                  relationships=[link("Cart", "Engine", "composition"), link("Cart", "Item", "aggregation"),
+                                 link("Cart", "Logger", "association"), link("Cart", "Price", "dependency")])]
+    types, edges, _ = project_types(files)
+    puml = to_plantuml(types, edges, "demo")
+    id_of = {t["name"]: t["id"] for t in types}
+
+    assert f'{id_of["Cart"]} *-- {id_of["Engine"]}' in puml
+    assert f'{id_of["Cart"]} o-- {id_of["Item"]}' in puml
+    assert f'{id_of["Cart"]} --> {id_of["Logger"]}' in puml
+    assert f'{id_of["Cart"]} ..> {id_of["Price"]}' in puml
+
+
+def test_only_the_strongest_link_between_two_classes_is_kept():
+    files = [file("shop/cart.py", [{"name": "Cart", "kind": "class", "inherits_from": ["Base"]},
+                                   {"name": "Base", "kind": "class"}],
+                  relationships=[link("Cart", "Base", "dependency"), link("Cart", "Base", "composition"),
+                                 link("Cart", "Base", "association"), link("Cart", "Base", "made-up")])]
+    types, edges, _ = project_types(files)
+
+    assert sorted(e["kind"] for e in edges) == ["composition", "inheritance"]
+
+
+TABLE = {
+    "name": "ConsoleTable", "kind": "class",
+    "properties": [{"name": "Rows", "type": "IList<object[]>", "visibility": "public"},
+                   {"name": "_widths", "type": "int[]", "visibility": "private"}],
+    "methods": [{"name": "ConsoleTable", "visibility": "public", "is_constructor": True, "parameters": ["string[] columns"],
+                 "return_type": "ConsoleTable"},
+                {"name": "From", "visibility": "public", "is_static": True, "parameters": ["IEnumerable<T> values"],
+                 "return_type": "ConsoleTable"},
+                {"name": "Pad", "visibility": "protected", "parameters": [], "return_type": "string"}],
+}
+
+
+def test_boxes_list_members_in_uml_form():
+    files = [file("src/table.cs", [TABLE, {"name": "Format", "kind": "enum", "enum_values": ["Default", "MarkDown"]}])]
+    types, edges, _ = project_types(files)
+    puml = to_plantuml(types, edges, "demo")
+
+    assert "hide members" not in puml and "skinparam classAttributeIconSize 0" in puml
+    assert 'class "ConsoleTable" as T1 [[#type-T1]] {' in puml
+    for line in ("+Rows : IList<object[]>", "-_widths : int[]", "+ConsoleTable(string[] columns)\n",
+                 "{static} +From(IEnumerable<T> values) : ConsoleTable", "#Pad() : string"):
+        assert f"    {line}" in puml
+    assert 'enum "Format" as T2 [[#type-T2]] {\n    Default\n    MarkDown\n  }' in puml
+
+
+def test_a_long_box_keeps_public_members_and_sums_up_the_rest():
+    cap = diagram.MEMBERS_PER_CLASS
+    methods = [{"name": f"p{i}", "visibility": "private"} for i in range(cap)] + \
+              [{"name": f"P{i}", "visibility": "public"} for i in range(cap - 2)]
+    lines = diagram.member_lines(project_types([file("a.py", [{"name": "Big", "kind": "class", "methods": methods}])])[0][0])
+
+    assert len(lines) == cap
+    assert lines[-1] == f".. {cap - 1} more .."
+    assert sum(line.startswith("+") for line in lines) == cap - 2
+
+
+def test_member_text_cannot_break_out_of_the_box():
+    hostile = {"name": "X", "kind": "class",
+               "properties": [{"name": "!include evil", "type": "T}\n@enduml", "visibility": None},
+                              {"name": "a", "type": "[[http://x]]"}, {"name": "  "}]}
+    lines = diagram.member_lines(project_types([file("a.py", [hostile])])[0][0])
+
+    assert lines == ["include evil : T @enduml", "a : http://x"]
+
+
+def test_big_projects_show_names_only():
+    many = [file(f"m{i}.py", [dict(TABLE, name=f"C{i}")]) for i in range(diagram.MEMBERS_UP_TO_CLASSES + 1)]
+    types, edges, _ = project_types(many)
+    puml = to_plantuml(types, edges, "demo")
+
+    assert "hide members" in puml and "+Rows" not in puml
+
+
 def test_plantuml_text_is_safe_and_grouped_by_folder():
     files = [file("src/x.ts", [{"name": 'Weird"Name]]\n!include evil', "kind": "class"}, {"name": "Box<T>", "kind": "struct"}])]
     types, edges, _ = project_types(files)
