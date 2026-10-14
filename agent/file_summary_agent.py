@@ -325,21 +325,26 @@ For each type:
 Constructor parameters must appear in the structured method entry exactly as in the PlantUML signature. Every method and constructor must include its full parameter list in the `parameters` field.
 
 ### Relationship extraction
-Two relationship types are supported: inheritance and association.
+Five relationship types are supported, from the UML class diagram standard. The source is the type that has, holds or uses; the target is the other type.
+- inheritance: the source extends a base class or implements an interface (the target).
+- composition: the source stores the target in a field or property AND creates or owns it (made in the source's constructor or field initializer, or a value-type member), so the part does not outlive the source.
+- aggregation: the source stores a collection of targets in a field or property, and those objects are created elsewhere and passed in or added (a whole made of shared parts).
+- association: the source stores a single reference to the target in a field or property that it did not create (for example a service passed into the constructor).
+- dependency: the source does NOT store the target, but uses it as a method parameter, return type, local variable, creates it inside a method, or calls its static members.
 
-Association rules:
-- Only create an association when a type stores another type as a field or property.
-- Do NOT create associations for local variables, parameters, return types, method calls, object creation inside methods, assertions, or temporary usage.
-- In test files, only create associations if the test class stores a member of that type.
+Choosing a type:
+- Create at most one relationship per source/target pair besides inheritance. Use the strongest that applies: composition, then aggregation, then association, then dependency.
+- If it is unclear whether a stored object is owned or shared, use association.
+- In test files, use dependency for the classes under test unless the test class stores them in a field.
 
 Relationship placement:
 - Both types in this file: place in `relationships`.
 - Target type outside this file: place in `external_relationships`.
 - No valid relationships: return empty lists.
 
-Association filtering:
-- Prefer associations to named application/project types.
-- Do not create associations to generic containers, primitives, framework utilities, or enum types.
+Relationship filtering:
+- Prefer relationships to named application/project types.
+- Do not create relationships (other than inheritance) to generic containers, primitives, framework or library utilities, exceptions, or enum types.
 
 ### PlantUML rules
 For each type, the PlantUML must match the structured fields exactly.
@@ -350,9 +355,7 @@ For each type, the PlantUML must match the structured fields exactly.
 - Static members: place `{{static}}` before the visibility symbol
   Correct: `{{static}} +Name : Type`
   Incorrect: `+{{static}} Name : Type`
-- Inheritance: `<|--`
-- Association: `--`
-- Do not use `o--` or `*--`
+- Relationships, written source first: inheritance `Child --|> Parent` (`Class ..|> Interface` for an interface), composition `Whole *-- Part`, aggregation `Whole o-- Part`, association `Source --> Target`, dependency `Source ..> Target`
 
 ### File-level relationship diagram
 Generate `relationship_plantuml` as a standalone diagram with `@startuml`/`@enduml`.
