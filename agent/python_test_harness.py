@@ -5,36 +5,88 @@ Creates isolated pytest files outside the selected student codebase.
 """
 
 import ast
-import re
 import hashlib
+import json
 import os
-import tempfile
-import sys
+import re
 import subprocess
+import sys
+import tempfile
 import xml.etree.ElementTree as ET
-from pathlib import Path
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 PYTEST_TIMEOUT_SECONDS = 60
 
 @dataclass
 class PythonTestRun:
-    """
-    The result of running generated pytest tests.
-    """
+    """The result of validating and running generated pytest tests."""
+
+    kind: str = "Unit"
+    generated: int = 0
+    kept: list["PythonTestCase"] = field(default_factory=list)
+    dropped: list["PythonTestCase"] = field(default_factory=list)
     passed: int = 0
     failed: int = 0
     skipped: int = 0
     errors: int = 0
-    failed_tests: list[str] | None = None
+    failed_tests: list[str] = field(default_factory=list)
     report_path: str = ""
     output: str = ""
     project_error: str = ""
 
-    def __post_init__(self):
-        if self.failed_tests is None:
-            self.failed_tests = []
+    def summary(self):
+        return {
+            "generated": self.generated,
+            "kept": len(self.kept),
+            "dropped": [
+                {"name": case.name, "reason": case.reason}
+                for case in self.dropped
+            ],
+            "passed": self.passed,
+            "failed": self.failed,
+            "skipped": self.skipped,
+            "errors": self.errors,
+            "failed_tests": self.failed_tests,
+            "pytest_report": self.report_path,
+            "project_error": self.project_error,
+        }
+
+    def message(self):
+        if self.project_error:
+            return (
+                f"{self.kind} tests were written but pytest could not run them: "
+                f"{self.project_error}"
+            )
+
+        if not self.generated:
+            return f"No {self.kind.lower()} tests were generated."
+
+        message = (
+            f"{self.kind} tests: {len(self.kept)} of "
+            f"{self.generated} accepted."
+        )
+
+        if self.kept:
+            message += (
+                f" {self.passed} passed, {self.failed} failed, "
+                f"{self.errors} errored."
+            )
+
+        if self.dropped:
+            message += f" {len(self.dropped)} rejected before execution."
+
+        return message
+
+    def needs_attention(self):
+        return bool(
+            self.project_error
+            or self.dropped
+            or self.failed
+            or self.errors
+            or not self.kept
+        )
 
 @dataclass
 class PythonTestCase:
@@ -45,7 +97,7 @@ class PythonTestCase:
     imports: list[str]
     body: str
     source: Any = None
-    errors: list[str] | None = None
+    errors: list[str] = field(default_factory=list)
     reason: str = ""
 
 MAX_TEST_CHARS = 20_000
@@ -294,4 +346,77 @@ def run_tests(
         failed_tests=failed_tests,
         report_path=str(report_path),
         output=output,
+    )
+
+def check_tests(
+    kind: str,
+    prefix: str,
+    cases: list[PythonTestCase],
+    rejected: list[PythonTestCase],
+    codebase_path: str,
+    codebase_name: str,
+    results_dir: str,
+) -> PythonTestRun:
+    """
+    Write validated pytest tests, run them, and return a Checkpoint-style
+    result object.
+    """
+    run = PythonTestRun(
+        kind=kind,
+        generated=len(cases) + len(rejected),
+        dropped=list(rejected),
+    )
+
+    test_dir = test_dir_for(codebase_path, codebase_name)
+    write_tests(test_dir, prefix, cases)
+
+    execution = run_tests(
+        test_dir=test_dir,
+        codebase_path=codebase_path,
+        results_dir=results_dir,
+    )
+
+    run.kept = list(cases)
+    run.passed = execution.passed
+    run.failed = execution.failed
+    run.skipped = execution.skipped
+    run.errors = execution.errors
+    run.failed_tests = execution.failed_tests
+    run.report_path = execution.report_path
+    run.output = execution.output
+    run.project_error = execution.project_error
+
+    return run
+
+
+def write_results(run: PythonTestRun, output_dir: str, to_json) -> None:
+    """Write Python test outcomes in the same JSON-style structure as C#."""
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    (output_path / "validated_tests.json").write_text(
+        json.dumps([to_json(case) for case in run.kept], indent=2),
+        encoding="utf-8",
+    )
+
+    (output_path / "discarded_tests.json").write_text(
+        json.dumps(
+            [
+                {**to_json(case), "reason": case.reason}
+                for case in run.dropped
+            ],
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+
+    (output_path / "test_report.json").write_text(
+        json.dumps(
+            {
+                **run.summary(),
+                "message": run.message(),
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
     )
