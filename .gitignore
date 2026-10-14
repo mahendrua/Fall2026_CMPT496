@@ -35,6 +35,8 @@ last_run_log.json
 last_run_log.json.tmp
 # A copy of every run's log, named by codebase and time
 run_logs/
+# The readable report for each codebase's latest run (US-049)
+run_reports/
 # Backend errors, kept for the Insights "Errors" view across restarts
 error_log.json
 error_log.json.tmp

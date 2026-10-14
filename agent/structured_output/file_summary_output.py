@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, ConfigDict
 Visibility = Literal["public", "private", "protected"]
 ParamDirection = Literal["in", "out", "inout"]
 TypeKind = Literal["class", "enum", "interface", "struct"]
-RelationshipType = Literal["inheritance", "association"]
+RelationshipType = Literal["inheritance", "composition", "aggregation", "association", "dependency"]
 
 
 class ParameterSummary(BaseModel):
@@ -70,7 +70,7 @@ class RelationshipSummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
     source: str = Field(...,description="The source type in the relationship.")
     target: str = Field(...,description="The target type in the relationship.")
-    relationship_type: RelationshipType = Field(...,description="The UML relationship type: inheritance or association.")
+    relationship_type: RelationshipType = Field(...,description="The UML relationship type: inheritance, composition, aggregation, association, or dependency.")
 
 class TypeSummary(BaseModel):
     """
