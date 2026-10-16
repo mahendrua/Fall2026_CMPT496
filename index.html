@@ -40,7 +40,6 @@
                     <span>Open operations</span><span aria-hidden="true">&#8594;</span>
                 </button>
             </article>
-
             <article class="home-action-card home-insights-card">
                 <div class="home-card-icon" aria-hidden="true">02</div>
                 <div class="home-card-copy">
@@ -61,21 +60,26 @@
     </div>
 
 
-    <!-- API PAGE -->
+   <!-- API PAGE -->
     <div id="apiPage" class="page hidden">
 
-        <h1>Upload API Key</h1>
+        <h1>API Keys</h1>
 
-        <h3 id="apiKeyMsg" class="hidden"> An API key is already connected would you like to replace it?</h3>
-        <button class="btn-primary hidden" id="replaceApiKeyBtn">Replace API Key</button>
-        <button class="btn-primary hidden" id="keepApiKeyBtn">Keep Current API Key</button>
+        <h2>Active key</h2>
+        <select class="input-glass" id="apiKeySelect"></select>
+        <input class="input-glass" id="activeModelInput" list="modelSuggestions" placeholder="Model for this key" autocomplete="off" />
+        <button class="btn-secondary" id="deleteApiKeyBtn">Delete Selected Key</button>
 
+        <h2>Add a key</h2>
+        <select class="input-glass" id="providerSelect"></select>
+        <input class="input-glass" id="apiKeyLabel" type="text" placeholder="Label (e.g. work, personal)" autocomplete="off" />
+        <input class="input-glass" id="newModelInput" list="modelSuggestions" placeholder="Model name" autocomplete="off" />
         <input class="input-glass" id="apiKeyInput" type="password" placeholder="Enter API Key" autocomplete="off" />
-        <h3 id="apiKeyErrorMsg" class="api-key-error hidden"></h3>
-        <button class="btn-primary" id="submitApiKeyBtn">Submit</button>
-        <button class="btn-primary back-btn" id="apiBackBtn">Back</button>
+        <datalist id="modelSuggestions"></datalist>
 
-        
+        <h3 id="apiKeyErrorMsg" class="api-key-error hidden"></h3>
+        <button class="btn-primary" id="submitApiKeyBtn">Verify &amp; Save</button>
+        <button class="btn-primary back-btn" id="apiBackBtn">Back</button>
 
     </div>
 
@@ -222,6 +226,7 @@
                     <button class="btn-primary" id="viewDisplayBusinessRulesBtn">Business Rules</button>
                     <button class="btn-primary" id="viewUnitTestsBtn">Unit Tests</button>
                     <button class="btn-primary" id="viewUsageBtn">AI Usage</button>
+                    <button class="btn-primary" id="viewRunReportBtn">Run Report</button>
 
                     <button class="btn-primary" id="viewDisplayFilesBtn">Files</button>
                 </div>
@@ -753,6 +758,7 @@
             <pre id="estimateOutput" class="hidden"></pre>
 
             <button id="loadingCancelBtn" class="btn-cancel">Cancel</button>
+            <button id="loadingReportBtn" class="btn-primary hidden">Open Report</button>
             <button id="loadingOkBtn" class="btn-primary hidden">OK</button>
         </div>
     </div>
@@ -766,6 +772,7 @@
         </div>
     </div>
 
+    <script src="command_requests.js"></script>
     <script src="renderer.js"></script>
 
 </body>
