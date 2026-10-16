@@ -1238,13 +1238,18 @@ h2{
 }
 
 .error-popup-box {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
   width: min(460px, 100%);
+  max-height: calc(100vh - 2rem);
+  overflow-y: auto;
   padding: 1.75rem;
   border: 1px solid rgba(220, 38, 38, 0.35);
   border-radius: var(--radius);
   background: var(--bg-secondary);
   box-shadow: 0 18px 50px rgba(15, 23, 42, 0.28);
-  text-align: center;
+  text-align: left;
 }
 
 .error-popup-box h2 {
@@ -1257,6 +1262,11 @@ h2{
   color: var(--text-primary);
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+#errorPopupCloseBtn {
+  align-self: center;
+  width: min(100%, 360px);
 }
 
 .btn-cancel {
@@ -1305,15 +1315,17 @@ h2{
 
   align-items: center;      /* Centers horizontally */
 
-  justify-content: center;
+  justify-content: flex-start;
 
   text-align: center;
 
   gap: 1rem;
 
-  width: 700px;
+  width: min(700px, calc(100vw - 2rem));
 
-  max-width: 90vw;
+  max-height: calc(100vh - 2rem);
+
+  overflow-y: auto;
 
 }
 
@@ -3603,11 +3615,14 @@ h2{
 
     max-height: 45vh;
 
+    width: 100%;
+    max-width: 100%;
+
     overflow-y: auto;
 
 
 
-    margin: 12px 0;
+    margin: 12px auto;
 
     padding: 14px;
 
@@ -3615,7 +3630,8 @@ h2{
 
     text-align: left;
 
-    white-space: pre;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
 
     overflow-x: auto;
 
@@ -4079,7 +4095,7 @@ h2{
 /* Main menu only */
 #homePage {
   align-items: stretch;
-  justify-content: center;
+  justify-content: flex-start;
   gap: 1.5rem;
   width: min(100%, 1120px);
   min-height: 100vh;
@@ -4402,6 +4418,7 @@ summary:focus-visible {
   border-color: #2a3947;
   background: #0b111b;
   color: #edf2f7;
+  white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
 
@@ -4478,9 +4495,24 @@ summary:focus-visible {
 }
 
 #viewDisplayOutputBox {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(100%, 1100px);
+  max-width: 100%;
+  margin-inline: auto;
   border-color: #263341;
   background: #0e1722;
   color: #edf2f7;
+  overflow: auto;
+}
+
+#viewDisplayOutputBox > * {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: 100%;
+  margin-inline: auto;
+  text-align: left;
 }
 
 .json-body {
@@ -4569,8 +4601,9 @@ summary:focus-visible {
   #viewDisplayOutputBox {
     height: auto;
     min-height: 42vh;
-    max-height: 70vh;
+    max-height: none;
     padding: 1rem;
+    overflow: visible;
   }
 
   .page:not(#homePage) h1 {
@@ -4611,9 +4644,14 @@ body {
   overflow-y: auto;
 }
 
-.page:not(#mainViewPage) {
+.page:not(#mainViewPage):not(#homePage):not(#analysisPage):not(#codebasePipelinePage) {
+  align-self: center;
+  justify-content: flex-start;
+  width: min(100%, 760px);
+  max-width: 760px;
+  margin-inline: auto;
+  padding: clamp(1.25rem, 4vw, 2rem);
   min-width: 0;
-  max-width: 100%;
   overflow: visible;
 }
 
@@ -4730,10 +4768,6 @@ summary:focus-visible {
   min-height: 0;
 }
 
-#viewDisplayOutputBox {
-  overflow: auto;
-}
-
 .btn-inverted {
   border-color: #435266;
   background: var(--button-slate);
@@ -4835,5 +4869,75 @@ summary:focus-visible {
     width: calc(100% - 1.25rem);
     padding-top: 2rem;
   }
+}
+
+.release-readiness {
+  display: grid;
+  gap: 0.65rem;
+  min-width: 0;
+  padding: 1rem 1.1rem;
+  border: 1px solid #435266;
+  border-left: 4px solid #818cf8;
+  border-radius: 10px;
+  background: #111a26;
+  color: #edf2f7;
+  overflow-wrap: anywhere;
+}
+
+.release-readiness-title,
+.release-readiness-actions-title {
+  margin: 0;
+  color: #c4b5fd;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.release-readiness-status,
+.release-readiness-explanation {
+  margin: 0;
+  color: #d7e0e9;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.release-readiness-status strong {
+  color: #e9ddff;
+}
+
+.release-readiness ul {
+  display: grid;
+  gap: 0.35rem;
+  margin: 0;
+  padding-left: 1.25rem;
+  color: #d7e0e9;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.release-readiness-ready-to-review {
+  border-left-color: #4ade80;
+  background: #12231c;
+}
+
+.release-readiness-ready-to-review .release-readiness-status strong {
+  color: #86efac;
+}
+
+.release-readiness-needs-attention {
+  border-left-color: #fbbf24;
+  background: #2a2415;
+}
+
+.release-readiness-needs-attention .release-readiness-status strong {
+  color: #fde68a;
+}
+
+.release-readiness-blocked {
+  border-left-color: #f87171;
+  background: #2a1b20;
+}
+
+.release-readiness-blocked .release-readiness-status strong {
+  color: #fca5a5;
 }
 

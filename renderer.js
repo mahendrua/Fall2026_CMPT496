@@ -637,7 +637,48 @@ function recordedTestCount(value) {
     return Number.isInteger(value) && value >= 0 ? value : null;
 }
 
-function renderTestResultsEmpty(codebaseName, message) {
+function appendReleaseReadiness(container, status, actions) {
+    const readiness = document.createElement("section");
+    readiness.className = `release-readiness release-readiness-${status.toLowerCase().replace(/\s+/g, "-")}`;
+    readiness.setAttribute("role", "status");
+    readiness.setAttribute("aria-live", "polite");
+
+    const heading = document.createElement("h3");
+    heading.className = "release-readiness-title";
+    heading.textContent = "Release Readiness";
+
+    const statusLine = document.createElement("p");
+    statusLine.className = "release-readiness-status";
+    const statusLabel = document.createElement("span");
+    statusLabel.textContent = "Status: ";
+    const statusValue = document.createElement("strong");
+    statusValue.textContent = status;
+    statusLine.append(statusLabel, statusValue);
+
+    const explanation = document.createElement("p");
+    explanation.className = "release-readiness-explanation";
+    explanation.textContent = status === "Ready to review"
+        ? "No recorded failed or discarded tests were found in the matching reports. Human review is still required; this is not release approval."
+        : status === "Needs attention"
+            ? "The matching reports contain recorded failed or discarded tests. Review them before deciding what to do next."
+            : "The recorded run data is incomplete or unavailable, so readiness cannot be determined.";
+
+    const actionsHeading = document.createElement("h4");
+    actionsHeading.className = "release-readiness-actions-title";
+    actionsHeading.textContent = "Next actions";
+
+    const actionList = document.createElement("ul");
+    actions.forEach(action => {
+        const item = document.createElement("li");
+        item.textContent = action;
+        actionList.appendChild(item);
+    });
+
+    readiness.append(heading, statusLine, explanation, actionsHeading, actionList);
+    container.appendChild(readiness);
+}
+
+function renderTestResultsEmpty(codebaseName, message, actions = null, runLog = null) {
     const output = document.getElementById("viewDisplayOutputBox");
     if (!output) return;
 
@@ -649,12 +690,106 @@ function renderTestResultsEmpty(codebaseName, message) {
     title.className = "test-results-title";
     title.textContent = `Test Results${codebaseName ? `: ${codebaseName}` : ""}`;
 
+    dashboard.appendChild(title);
+
+    if (runLog?.run_id) {
+        const runLabel = document.createElement("p");
+        runLabel.className = "test-results-run-id";
+        runLabel.textContent = `Run ${runLog.run_id}`;
+        dashboard.appendChild(runLabel);
+    }
+
+    if (actions) {
+        appendReleaseReadiness(dashboard, "Blocked", actions);
+    }
+
     const empty = document.createElement("p");
     empty.className = "test-results-empty";
     empty.textContent = message;
 
-    dashboard.append(title, empty);
+    dashboard.appendChild(empty);
     output.appendChild(dashboard);
+}
+
+function releaseReadiness(runLog, results) {
+    const actions = [];
+    let blocked = false;
+    if (runLog.status !== "success") {
+        const action = runLog.status === "running"
+            ? "The latest run is still running and has not completed."
+            : runLog.status === "failed"
+                ? "The latest run did not complete successfully."
+                : "The latest run completion status is unavailable.";
+        actions.push(action);
+        blocked = true;
+    }
+
+    const completeReports = results.length === 2 && results.every(result => result.report);
+    if (!completeReports) blocked = true;
+
+    results.forEach(({ kind, report }) => {
+        if (!report) {
+            actions.push(`No matching ${kind.toLowerCase()} test report is available for this run.`);
+            return;
+        }
+
+        if (recordedTestCount(report.failed) === null) {
+            actions.push(`Failed test count is unavailable in the ${kind} report.`);
+            blocked = true;
+        }
+        if (!Array.isArray(report.dropped)) {
+            actions.push(`Discarded test details are unavailable in the ${kind} report.`);
+            blocked = true;
+        }
+        if (report.project_error) {
+            actions.push(`Resolve the recorded ${kind.toLowerCase()} test project error.`);
+            blocked = true;
+        }
+    });
+
+    const hasRecordedIssues = results.some(({ report }) => report && (
+        recordedTestCount(report.failed) > 0 ||
+        (Array.isArray(report.dropped) && report.dropped.length > 0)
+    ));
+
+    results.forEach(({ kind, report }) => {
+        if (!report) return;
+
+        const failedCount = recordedTestCount(report.failed);
+        const droppedCount = Array.isArray(report.dropped) ? report.dropped.length : null;
+
+        if (failedCount > 0) {
+            actions.push(`Investigate ${failedCount} failed ${kind.toLowerCase()} ${failedCount === 1 ? "test" : "tests"}.`);
+            if (!Array.isArray(report.failed_tests) || report.failed_tests.length === 0) {
+                actions.push(`Failed test names are unavailable in the ${kind} report.`);
+            }
+        }
+
+        if (droppedCount > 0) {
+            actions.push(`Review ${droppedCount} discarded ${kind.toLowerCase()} ${droppedCount === 1 ? "test" : "tests"}.`);
+        }
+
+        if (recordedTestCount(report.skipped) > 0) {
+            actions.push(`Review ${report.skipped} skipped ${kind.toLowerCase()} ${report.skipped === 1 ? "test" : "tests"}.`);
+        }
+
+        const passedCount = recordedTestCount(report.passed);
+        if (passedCount === null) {
+            actions.push(`Passed test count is unavailable in the ${kind} report.`);
+        }
+        if (passedCount !== 0) {
+            actions.push(`Passed test names are unavailable in the ${kind} report.`);
+        }
+    });
+
+    if (!blocked && !hasRecordedIssues) {
+        actions.unshift("Review the matching reports and decide whether the changes are ready for release.");
+    }
+
+    return {
+        status: blocked ? "Blocked" : hasRecordedIssues ? "Needs attention" : "Ready to review",
+        actions,
+    };
 }
 
 function renderTestResultsDashboard(codebaseName, runLog, results) {
@@ -673,6 +808,9 @@ function renderTestResultsDashboard(codebaseName, runLog, results) {
     runLabel.className = "test-results-run-id";
     runLabel.textContent = `Run ${runLog.run_id}`;
     dashboard.append(title, runLabel);
+
+    const readiness = releaseReadiness(runLog, results);
+    appendReleaseReadiness(dashboard, readiness.status, readiness.actions);
 
     results.forEach(({ kind, report, error }) => {
         const section = document.createElement("section");
@@ -778,8 +916,22 @@ async function loadTestResultsDashboard(codebasePath, codebaseName) {
     if (!current()) return;
 
     const runLog = runResult.data;
-    if (!runLog?.run_id || runLog.status === "running" || runLog.codebase !== codebaseName) {
-        renderTestResultsEmpty(codebaseName, "No test results are available for the current run.");
+    if (!runLog?.run_id) {
+        renderTestResultsEmpty(
+            codebaseName,
+            "Test result cards are unavailable without a recorded run identity.",
+            [runResult.error ? "Latest run information is unavailable." : "No latest run is recorded for this codebase."]
+        );
+        return;
+    }
+
+    if (runLog.codebase !== codebaseName) {
+        renderTestResultsEmpty(
+            codebaseName,
+            "Test result cards are unavailable because the latest run does not match this codebase.",
+            ["The latest recorded run is for a different codebase."],
+            runLog
+        );
         return;
     }
 
@@ -804,11 +956,6 @@ async function loadTestResultsDashboard(codebasePath, codebaseName) {
     }
 
     if (!current()) return;
-    if (!results.some(result => result.report)) {
-        renderTestResultsEmpty(codebaseName, "No test results were recorded for the current run and codebase.");
-        return;
-    }
-
     renderTestResultsDashboard(codebaseName, runLog, results);
 }
 
