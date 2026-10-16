@@ -50,7 +50,7 @@ class UTVAgent:
         """
         progress("Intializing unit test validation agent...", 5)
         if model is None:
-            self.llm = make_llm()
+            self.llm = make_llm(agent="validate_unit_tests")
         else:
             self.llm = model
         self.graph = self.build_graph()

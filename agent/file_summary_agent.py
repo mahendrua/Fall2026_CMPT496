@@ -59,7 +59,7 @@ class FileSummaryAgent:
             self.structured_llm = self.llm.with_structured_output(FileSummaryOutput)
             self.graph = self.build_graph()
         else:
-            self.llm = make_llm()
+            self.llm = make_llm(agent="file_summary")
             self.structured_llm = self.llm.with_structured_output(FileSummaryOutput)
             self.graph = self.build_graph()
 

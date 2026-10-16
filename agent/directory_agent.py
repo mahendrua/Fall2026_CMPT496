@@ -44,7 +44,7 @@ class DirectoryAgent:
         """
         progress("Initializing directory agent...", 5)
         if model is None:
-            self.llm = make_llm()
+            self.llm = make_llm(agent="directory")
         else:
             self.llm = model
         self.graph = self.build_graph()

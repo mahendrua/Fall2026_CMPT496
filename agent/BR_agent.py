@@ -54,7 +54,7 @@ class BRAgent:
         """
         progress("Initializing business rule agent...", 0)
         if model is None:
-            self.llm = make_llm()
+            self.llm = make_llm(agent="business_rules")
         else:
             self.llm = model
         self.graph = self.build_graph()

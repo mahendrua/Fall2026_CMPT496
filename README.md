@@ -19,8 +19,7 @@ This is all completed using LangGraph, with an LLM acting as the generator of ou
 
 ## Notes
 - This tool is currently able to parse codebases written in C# or Javascript for the vector store component. For the unit test component only C# is supported. Other languages are not supported
-- The system defaults to using Gemini 3 Flash, given a valid API key in a .env file. This file is generated automatically
-- The system is mostly set up to support the use of other models. Additional steps required: Either the agents should be instantiated and run manually, by passing in the desired model, or main.py should be modified slightly to do so
+- Add provider API keys in **Manage API Keys**. Each agent can use its own saved key and model, or fall back to the active key. Key assignments are stored in the generated `.env` file.
 - When running the tool, a filepath to the target codebase is needed. Use absolute paths
 - It is recommended to store the target codebase in a directory in the root of the project called "targetCodebases", as this directory is already included in the .gitignore. The target codebase can be located anywhere though
 

@@ -90,6 +90,7 @@ const PROVIDER_MODELS = {
 };
 
 let cachedKeys = [];
+let cachedAgentAssignments = {};
 let pendingKey = null;
 
 function fillModelSuggestions(provider) {
@@ -115,10 +116,25 @@ async function refreshApiKeyList() {
 
     const res = await window.electronAPI.listApiKeys();
     cachedKeys = res?.keys || [];
+    cachedAgentAssignments = res?.assignments || {};
 
     const sel = document.getElementById("apiKeySelect");
     const modelInput = document.getElementById("activeModelInput");
     const deleteBtn = document.getElementById("deleteApiKeyBtn");
+
+    document.querySelectorAll(".agent-key-select").forEach(agentSelect => {
+        const agent = agentSelect.dataset.agent;
+        agentSelect.innerHTML = "";
+        agentSelect.add(new Option("Use active key", ""));
+        cachedKeys.forEach(k => {
+            agentSelect.add(new Option(
+                `${PROVIDER_LABELS[k.provider] || k.provider} - ${k.label} (${k.masked})`,
+                k.id
+            ));
+        });
+        agentSelect.value = cachedAgentAssignments[agent] || "";
+        agentSelect.disabled = !cachedKeys.length;
+    });
 
     sel.innerHTML = "";
 
@@ -171,6 +187,21 @@ document.getElementById("deleteApiKeyBtn").addEventListener("click", async () =>
     if (!id || !confirm("Delete this key?")) return;
     await window.electronAPI.deleteApiKey({ id });
     await refreshApiKeyList();
+});
+
+document.querySelectorAll(".agent-key-select").forEach(agentSelect => {
+    agentSelect.addEventListener("change", async () => {
+        const result = await window.electronAPI.setAgentApiKey({
+            agent: agentSelect.dataset.agent,
+            id: agentSelect.value
+        });
+        if (!result?.success) {
+            showApiKeyError(result?.error || "Could not update the agent key.");
+            await refreshApiKeyList();
+            return;
+        }
+        cachedAgentAssignments[agentSelect.dataset.agent] = agentSelect.value;
+    });
 });
 
 document.getElementById('apiBtn').addEventListener('click', async () => {

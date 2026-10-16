@@ -3,9 +3,9 @@ agent/llm.py
 
 The one place the agents get their chat model from.
 
-make_llm() reads the key the user selected in "Manage API Keys" (the
-ACTIVE_LLM_* values main.js writes to .env) and returns the matching
-LangChain chat model for that provider. Every model it returns waits and
+make_llm() reads the key assigned to the agent, or the active key when no
+agent-specific key is configured, and returns the matching LangChain chat
+model for that provider. Every model it returns waits and
 retries instead of failing the run:
 
     429 rate limit   per-minute: wait as long as the provider asks
@@ -103,16 +103,28 @@ class LLMConfig:
     api_key: str
 
 
-def get_active_config() -> LLMConfig:
+def get_active_config(agent=None) -> LLMConfig:
     """
-    Read the selected key fresh from .env on every call, so changing the key
-    or model in the UI takes effect without restarting the backend.
+    Read the key selected for this agent, or the active key when it has no
+    assignment, fresh from .env on every call.
     """
     env = dotenv_values(ENV_PATH)
 
-    key = (env.get("ACTIVE_LLM_API_KEY") or "").strip()
-    provider = (env.get("ACTIVE_LLM_PROVIDER") or "").strip().lower()
-    model = (env.get("ACTIVE_LLM_MODEL") or "").strip()
+    assigned_id = (env.get(f"AGENT_LLM_KEY__{agent}") or "").strip() if agent else ""
+    if assigned_id:
+        key = (env.get(f"APIKEY__{assigned_id}") or "").strip()
+        if not key:
+            raise ValueError(
+                f"The API key assigned to '{agent}' is missing. "
+                "Choose a saved key in Manage API Keys."
+            )
+
+        provider = assigned_id.split("__", 1)[0].lower()
+        model = (env.get(f"APIMODEL__{assigned_id}") or "").strip()
+    else:
+        key = (env.get("ACTIVE_LLM_API_KEY") or "").strip()
+        provider = (env.get("ACTIVE_LLM_PROVIDER") or "").strip().lower()
+        model = (env.get("ACTIVE_LLM_MODEL") or "").strip()
 
     if not key:
         # An old .env that main.js has not migrated yet.
@@ -368,14 +380,14 @@ def build_chat_model(config: LLMConfig, max_output_tokens=None, retry=True):
     return model_class(model=config.model, api_key=config.api_key, **kwargs)
 
 
-def make_llm(max_output_tokens=None):
+def make_llm(max_output_tokens=None, agent=None):
     """
-    The chat model every agent uses unless a test passes its own.
+    Build a chat model for an agent, using the active key when unassigned.
 
     max_output_tokens caps one answer (thinking included on models that
     think). Left unset, each provider uses its own default.
     """
-    return build_chat_model(get_active_config(), max_output_tokens)
+    return build_chat_model(get_active_config(agent), max_output_tokens)
 
 
 # ---------------------------------------------------------

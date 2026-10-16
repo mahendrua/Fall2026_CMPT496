@@ -18,9 +18,18 @@ let backendOutputDir = __dirname;
 // ----------------------------------------------------
 // Each saved key is one line  APIKEY__<PROVIDER>__<label>=<key>
 // with its model in           APIMODEL__<PROVIDER>__<label>=<model>
-// The selected one is mirrored into ACTIVE_LLM_* for the Python backend.
+// The selected one is mirrored into ACTIVE_LLM_*; optional agent assignments
+// store a key ID in AGENT_LLM_KEY__<agent> for the Python backend.
 
 const PROVIDERS = ["google", "openai", "anthropic", "mistral", "groq", "deepseek", "xai", "openrouter"];
+const AGENT_KEY_SLOTS = [
+    "file_summary",
+    "directory",
+    "business_rules",
+    "unit_tests",
+    "validate_unit_tests",
+    "integration_tests"
+];
 
 function getEnvPath() {
     const backendDir = app.isPackaged
@@ -493,7 +502,13 @@ function formatBusinessRules(json) {
 ipcMain.handle("list-api-keys", () => {
     const env = readEnv();
     if (migrateLegacyKey(env)) writeEnv(env);
-    return { success: true, keys: listKeys(env) };
+    const assignments = Object.fromEntries(
+        AGENT_KEY_SLOTS.map(agent => [
+            agent,
+            env[`AGENT_LLM_KEY__${agent}`] || ""
+        ])
+    );
+    return { success: true, keys: listKeys(env), assignments };
 });
 
 ipcMain.handle("save-api-key", (event, { provider, label, apiKey, model, makeActive = true }) => {
@@ -539,10 +554,39 @@ ipcMain.handle("select-api-key", (event, { id, model }) => {
     return { success: true };
 });
 
+ipcMain.handle("set-agent-api-key", (event, { agent, id }) => {
+    if (!AGENT_KEY_SLOTS.includes(agent)) {
+        return { success: false, error: "Unknown agent." };
+    }
+
+    const env = readEnv();
+    const assignmentName = `AGENT_LLM_KEY__${agent}`;
+    id = String(id || "");
+
+    if (id && !env[`APIKEY__${id}`]) {
+        return { success: false, error: "Key not found." };
+    }
+
+    if (id) env[assignmentName] = id;
+    else delete env[assignmentName];
+
+    try {
+        writeEnv(env);
+    } catch (error) {
+        return { success: false, error: `Could not write .env: ${error.message}` };
+    }
+
+    return { success: true };
+});
+
 ipcMain.handle("delete-api-key", (event, { id }) => {
     const env = readEnv();
     delete env[`APIKEY__${id}`];
     delete env[`APIMODEL__${id}`];
+    for (const agent of AGENT_KEY_SLOTS) {
+        const assignmentName = `AGENT_LLM_KEY__${agent}`;
+        if (env[assignmentName] === id) delete env[assignmentName];
+    }
 
     if (env.ACTIVE_LLM_KEY === id) {
         const next = listKeys(env)[0];

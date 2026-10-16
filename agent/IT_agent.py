@@ -52,7 +52,10 @@ class ITAgent:
         """
         progress("Intializing integration test agent...", 5)
         if model is None:
-            self.llm = make_llm(max_output_tokens=MAX_TEST_OUTPUT_TOKENS)
+            self.llm = make_llm(
+                max_output_tokens=MAX_TEST_OUTPUT_TOKENS,
+                agent="integration_tests",
+            )
         else:
             self.llm = model
         self.graph = self.build_graph()

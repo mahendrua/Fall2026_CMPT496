@@ -33,6 +33,21 @@
         <input class="input-glass" id="activeModelInput" list="modelSuggestions" placeholder="Model for this key" autocomplete="off" />
         <button class="btn-secondary" id="deleteApiKeyBtn">Delete Selected Key</button>
 
+        <h2>Agent key assignments</h2>
+        <p>Choose a saved key for each agent, or use the active key as the default.</p>
+        <label for="agentKey-file_summary">File summary</label>
+        <select class="input-glass agent-key-select" id="agentKey-file_summary" data-agent="file_summary"></select>
+        <label for="agentKey-directory">Directory summaries</label>
+        <select class="input-glass agent-key-select" id="agentKey-directory" data-agent="directory"></select>
+        <label for="agentKey-business_rules">Business rule validation</label>
+        <select class="input-glass agent-key-select" id="agentKey-business_rules" data-agent="business_rules"></select>
+        <label for="agentKey-unit_tests">Unit test generation</label>
+        <select class="input-glass agent-key-select" id="agentKey-unit_tests" data-agent="unit_tests"></select>
+        <label for="agentKey-validate_unit_tests">Unit test validation</label>
+        <select class="input-glass agent-key-select" id="agentKey-validate_unit_tests" data-agent="validate_unit_tests"></select>
+        <label for="agentKey-integration_tests">Integration test generation</label>
+        <select class="input-glass agent-key-select" id="agentKey-integration_tests" data-agent="integration_tests"></select>
+
         <h2>Add a key</h2>
         <select class="input-glass" id="providerSelect"></select>
         <input class="input-glass" id="apiKeyLabel" type="text" placeholder="Label (e.g. work, personal)" autocomplete="off" />
