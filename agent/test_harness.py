@@ -42,6 +42,7 @@ from agent.crawl_config import mark_generated
 from agent.llm import DailyLimitError, RateLimitTimeoutError
 from agent.structured_output.UTV_output import TestRepair
 from backend.progress_logging import progress
+from backend.token_usage import current_run_id
 
 
 # A healthy generated test is 300-4,000 characters (Stateless: median 1,143,
@@ -122,6 +123,8 @@ class TestRun:
     __test__ = False  # not a pytest test class
 
     kind: str                 # "Unit" or "Integration"
+    codebase_path: str | None = None
+    run_id: str | None = None
     generated: int = 0
     kept: list[TestCase] = field(default_factory=list)
     dropped: list[TestCase] = field(default_factory=list)
@@ -140,6 +143,8 @@ class TestRun:
     def summary(self):
         return {
             "generated": self.generated,
+            "codebase_path": self.codebase_path,
+            "run_id": self.run_id,
             "kept": len(self.kept),
             "repaired": [case.name for case in self.repaired],
             "dropped": [
@@ -801,7 +806,12 @@ def check_tests(
     @param loop The agent's event loop, which its model was already used on.
     @return TestRun
     """
-    run = TestRun(kind=kind, generated=len(cases) + len(rejected))
+    run = TestRun(
+        kind=kind,
+        codebase_path=str(Path(codebase_path).resolve()),
+        run_id=current_run_id(),
+        generated=len(cases) + len(rejected),
+    )
     run.dropped.extend(rejected)
 
     test_dir = project_dir_for(codebase_path, codebase_name)

@@ -15,6 +15,9 @@ let errorsMade = false;
 
 // Currently selected codebase
 let selectedCodebasePath = "";
+let testResultsDashboardVersion = 0;
+let activeTestResultsDashboard = null;
+const pendingTestResultsPaths = new Set();
 
 
 // Selections
@@ -365,6 +368,7 @@ function updateStepProgressBar(percent){
 
 async function runBackendCommand(command,args={}){
 
+    invalidateTestResultsDashboard();
 
     activeCommand = command;
 
@@ -391,6 +395,8 @@ async function runPreviewCommand(
     action,
     args = {}
 ){
+
+    invalidateTestResultsDashboard();
 
     console.log(
         "Preview:",
@@ -526,6 +532,284 @@ function getSelectedCodebaseName() {
     if (!selectedCodebasePath) return null;
     const parts = selectedCodebasePath.split(/[\\/]/).filter(Boolean);
     return parts.length ? parts[parts.length - 1] : null;
+}
+
+function updateCodebaseSummary() {
+    const codebaseName = getSelectedCodebaseName();
+
+    document.querySelectorAll(".codebase-summary").forEach(summary => {
+        const emptyMessage = summary.querySelector(".codebase-summary-empty");
+        const details = summary.querySelector(".codebase-summary-details");
+
+        if (!codebaseName) {
+            emptyMessage.classList.remove("hidden");
+            details.classList.add("hidden");
+            return;
+        }
+
+        emptyMessage.classList.add("hidden");
+        details.classList.remove("hidden");
+        summary.querySelector("[data-summary-name]").textContent = codebaseName;
+        summary.querySelector("[data-summary-language]").textContent = "Not detected";
+        const pathElement = summary.querySelector("[data-summary-path]");
+        pathElement.textContent = selectedCodebasePath;
+        pathElement.title = selectedCodebasePath;
+    });
+}
+
+function invalidateTestResultsDashboard() {
+    testResultsDashboardVersion += 1;
+    activeTestResultsDashboard = null;
+}
+
+function normalizeReportPath(value) {
+    return String(value || "").replace(/\\/g, "/").replace(/\/+$/g, "").toLowerCase();
+}
+
+async function readTestResultsJson(filePath, load) {
+    const normalizedPath = normalizeReportPath(filePath);
+    pendingTestResultsPaths.add(normalizedPath);
+    load.pendingPath = normalizedPath;
+
+    try {
+        const response = await window.electronAPI.previewCommand("open_file", { path: filePath });
+        if (!response?.success) {
+            return { data: null, error: response?.error || "Report unavailable." };
+        }
+
+        const content = response.preview?.content;
+        const data = typeof content === "string" ? JSON.parse(content) : content;
+        if (!data || typeof data !== "object" || Array.isArray(data)) {
+            return { data: null, error: "Report has an unsupported format." };
+        }
+
+        return { data, error: "" };
+    } catch (error) {
+        return { data: null, error: error.message || "Report unavailable." };
+    } finally {
+        pendingTestResultsPaths.delete(normalizedPath);
+        if (load.pendingPath === normalizedPath) load.pendingPath = null;
+    }
+}
+
+function appendTestResultDetail(section, title, items, emptyMessage) {
+    const details = document.createElement("details");
+    details.className = "test-results-details";
+
+    const summary = document.createElement("summary");
+    summary.textContent = title;
+    details.appendChild(summary);
+
+    if (!items.length) {
+        const message = document.createElement("p");
+        message.textContent = emptyMessage;
+        details.appendChild(message);
+    } else {
+        const list = document.createElement("ul");
+        items.forEach(item => {
+            const entry = document.createElement("li");
+            entry.textContent = item;
+            list.appendChild(entry);
+        });
+        details.appendChild(list);
+    }
+
+    section.appendChild(details);
+}
+
+function appendTestResultCard(container, title, value) {
+    const card = document.createElement("div");
+    card.className = "test-result-card";
+
+    const label = document.createElement("span");
+    label.className = "test-result-card-label";
+    label.textContent = title;
+
+    const count = document.createElement("strong");
+    count.className = "test-result-card-value";
+    count.textContent = value === null ? "Unavailable" : value.toLocaleString();
+
+    card.append(label, count);
+    container.appendChild(card);
+}
+
+function recordedTestCount(value) {
+    return Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function renderTestResultsEmpty(codebaseName, message) {
+    const output = document.getElementById("viewDisplayOutputBox");
+    if (!output) return;
+
+    output.replaceChildren();
+    const dashboard = document.createElement("section");
+    dashboard.className = "test-results-dashboard";
+
+    const title = document.createElement("h2");
+    title.className = "test-results-title";
+    title.textContent = `Test Results${codebaseName ? `: ${codebaseName}` : ""}`;
+
+    const empty = document.createElement("p");
+    empty.className = "test-results-empty";
+    empty.textContent = message;
+
+    dashboard.append(title, empty);
+    output.appendChild(dashboard);
+}
+
+function renderTestResultsDashboard(codebaseName, runLog, results) {
+    const output = document.getElementById("viewDisplayOutputBox");
+    if (!output) return;
+
+    output.replaceChildren();
+    const dashboard = document.createElement("section");
+    dashboard.className = "test-results-dashboard";
+
+    const title = document.createElement("h2");
+    title.className = "test-results-title";
+    title.textContent = `Test Results: ${codebaseName}`;
+
+    const runLabel = document.createElement("p");
+    runLabel.className = "test-results-run-id";
+    runLabel.textContent = `Run ${runLog.run_id}`;
+    dashboard.append(title, runLabel);
+
+    results.forEach(({ kind, report, error }) => {
+        const section = document.createElement("section");
+        section.className = "test-results-kind";
+
+        const heading = document.createElement("h3");
+        heading.textContent = `${kind} Tests`;
+        section.appendChild(heading);
+
+        if (!report) {
+            const unavailable = document.createElement("p");
+            unavailable.className = "test-results-unavailable";
+            unavailable.textContent = error || "No report was recorded for this run.";
+            section.appendChild(unavailable);
+            dashboard.appendChild(section);
+            return;
+        }
+
+        const dropped = Array.isArray(report.dropped) ? report.dropped : null;
+        const cards = document.createElement("div");
+        cards.className = "test-result-cards";
+        appendTestResultCard(cards, "Passed", recordedTestCount(report.passed));
+        appendTestResultCard(cards, "Failed", recordedTestCount(report.failed));
+        appendTestResultCard(cards, "Discarded", dropped ? dropped.length : null);
+        section.appendChild(cards);
+
+        const passedCount = recordedTestCount(report.passed);
+        appendTestResultDetail(
+            section,
+            "Passed test names",
+            [],
+            passedCount === 0
+                ? "No tests passed in this run."
+                : "Passed test names were not recorded; compiled tests are not counted as passed."
+        );
+
+        const failedNames = Array.isArray(report.failed_tests)
+            ? report.failed_tests.filter(name => typeof name === "string")
+            : [];
+        appendTestResultDetail(
+            section,
+            "Failed tests",
+            failedNames,
+            recordedTestCount(report.failed) === null
+                ? "Failed test names are unavailable."
+                : report.failed > 0
+                    ? "Failed test names were not recorded."
+                    : "No failed test names were recorded."
+        );
+
+        const droppedItems = dropped
+            ? dropped.map(item => {
+                const name = typeof item?.name === "string" ? item.name : "Unnamed test";
+                const reason = typeof item?.reason === "string" ? item.reason : "Discard reason unavailable.";
+                return `${name}: ${reason}`;
+            })
+            : [];
+        appendTestResultDetail(
+            section,
+            "Discarded tests and reasons",
+            droppedItems,
+            dropped ? "No tests were discarded." : "Discarded test details were not recorded."
+        );
+
+        if (failedNames.length > 0) {
+            const failureNote = document.createElement("p");
+            failureNote.className = "test-results-note";
+            failureNote.textContent = report.html_report
+                ? `Failure messages are in the recorded HTML report: ${report.html_report}`
+                : "Failure messages were not recorded in this JSON report.";
+            section.appendChild(failureNote);
+        }
+
+        if (report.project_error) {
+            const projectError = document.createElement("p");
+            projectError.className = "test-results-error";
+            projectError.textContent = `Test project error: ${report.project_error}`;
+            section.appendChild(projectError);
+        }
+
+        dashboard.appendChild(section);
+    });
+
+    output.appendChild(dashboard);
+}
+
+async function loadTestResultsDashboard(codebasePath, codebaseName) {
+    const load = {
+        version: ++testResultsDashboardVersion,
+        codebasePath,
+        pendingPath: null,
+    };
+    activeTestResultsDashboard = load;
+    renderTestResultsEmpty(codebaseName, "Loading the latest recorded test results...");
+
+    const current = () => (
+        activeTestResultsDashboard === load &&
+        selectedCodebasePath === codebasePath &&
+        testResultsDashboardVersion === load.version
+    );
+
+    const runResult = await readTestResultsJson("last_run_log.json", load);
+    if (!current()) return;
+
+    const runLog = runResult.data;
+    if (!runLog?.run_id || runLog.status === "running" || runLog.codebase !== codebaseName) {
+        renderTestResultsEmpty(codebaseName, "No test results are available for the current run.");
+        return;
+    }
+
+    const reportSources = [
+        { kind: "Unit", path: `agent/UT_agent_output/${codebaseName}/test_report.json` },
+        { kind: "Integration", path: `agent/IT_agent_output/${codebaseName}/test_report.json` },
+    ];
+    const results = [];
+
+    for (const source of reportSources) {
+        const loaded = await readTestResultsJson(source.path, load);
+        if (!current()) return;
+
+        const report = loaded.data;
+        const isCurrentRun = report?.run_id === runLog.run_id &&
+            normalizeReportPath(report.codebase_path) === normalizeReportPath(codebasePath);
+        results.push({
+            kind: source.kind,
+            report: isCurrentRun ? report : null,
+            error: loaded.error || "No results were recorded for this run.",
+        });
+    }
+
+    if (!current()) return;
+    if (!results.some(result => result.report)) {
+        renderTestResultsEmpty(codebaseName, "No test results were recorded for the current run and codebase.");
+        return;
+    }
+
+    renderTestResultsDashboard(codebaseName, runLog, results);
 }
 
 function enterInsightFolder(targetPath) {
@@ -1289,6 +1573,10 @@ function renderTextPreview(text) {
 
 function showPage(pageId) {
 
+    if (pageId !== "mainViewPage") {
+        invalidateTestResultsDashboard();
+    }
+
     document.querySelectorAll('.page').forEach(page => {
         page.classList.add('hidden');
     });
@@ -1297,6 +1585,8 @@ function showPage(pageId) {
 }
 
 function showButtons(buttonId) {
+
+    invalidateTestResultsDashboard();
 
     document.querySelectorAll('.viewBtnContainer').forEach(buttonContainer => {
         if (buttonContainer.id !== "mainViewBtns") {
@@ -1643,6 +1933,7 @@ document.getElementById("viewUnitTestsBtn")
             renderTextPreview("Select a codebase first from the pipeline page.");
             return;
         }
+        const codebasePath = selectedCodebasePath;
 
         try{
             const rootPath = `agent/UT_agent_output/${codebaseName}`;
@@ -1661,6 +1952,8 @@ document.getElementById("viewUnitTestsBtn")
                 path: rootPath
             });
         }
+
+        loadTestResultsDashboard(codebasePath, codebaseName);
 
     });
 
@@ -2162,7 +2455,10 @@ document.getElementById('keepApiKeyBtn')
 document.getElementById('codebaseBackBtn')
     .addEventListener('click', () => {
 
-        
+        invalidateTestResultsDashboard();
+        selectedCodebasePath = "";
+        document.getElementById("codebasePath").value = "";
+        updateCodebaseSummary();
 
         showPage('homePage');
     });
@@ -2210,18 +2506,14 @@ document.getElementById("faqBtn")
 document.getElementById('submitPathBtn')
 .addEventListener('click', () => {
 
-
-    
-
-
-    showPage('analysisPage');
-
-
+    invalidateTestResultsDashboard();
     selectedCodebasePath =
         document.getElementById(
             'codebasePath'
         ).value;
 
+    updateCodebaseSummary();
+    showPage('analysisPage');
 
 });
 
@@ -2234,9 +2526,11 @@ document.getElementById("browseCodebaseBtn")
     if (!path)
         return;
 
+    invalidateTestResultsDashboard();
     document.getElementById("codebasePath").value = path;
 
     selectedCodebasePath = path;
+    updateCodebaseSummary();
 });
 
 
@@ -2255,6 +2549,14 @@ window.electronAPI.onBackendResponse((response) => {
 
 
     if (!response) {
+        return;
+    }
+
+    const previewName = String(response.path || "").replace(/\\/g, "/").split("/").pop().toLowerCase();
+    if (response.type === "file-preview" && ["last_run_log.json", "test_report.json"].includes(previewName)) {
+        return;
+    }
+    if (response.success === false && pendingTestResultsPaths.size > 0) {
         return;
     }
 

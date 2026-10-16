@@ -280,6 +280,30 @@ def test_project_error_message_says_nothing_ran():
     assert "none ran" in run.message()
 
 
+def test_written_test_report_records_codebase_and_active_run(monkeypatch, tmp_path):
+    import json
+    import agent.test_harness as harness
+
+    codebase = tmp_path / "source"
+    codebase.mkdir()
+    test_dir = tmp_path / "generated-tests"
+    test_dir.mkdir()
+    output_dir = tmp_path / "results"
+    monkeypatch.setattr(harness, "project_dir_for", lambda *args: str(test_dir))
+    monkeypatch.setattr(harness, "ensure_test_project", lambda *args: None)
+    monkeypatch.setattr(harness, "build", lambda *args: ({}, []))
+    monkeypatch.setattr(harness, "current_run_id", lambda: "run-123")
+
+    run = harness.check_tests(
+        "Unit", "UT", [], [], str(codebase), "source", str(output_dir)
+    )
+    harness.write_results(run, str(output_dir), lambda case: {})
+
+    report = json.loads((output_dir / "test_report.json").read_text(encoding="utf-8"))
+    assert report["codebase_path"] == str(codebase.resolve())
+    assert report["run_id"] == "run-123"
+
+
 def _scripted_check(monkeypatch, tmp_path, builds, cases, fix):
     """Run check_tests() with dotnet replaced by a scripted list of builds."""
     import agent.test_harness as harness

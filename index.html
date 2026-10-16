@@ -10,16 +10,54 @@
 
     <!-- HOME PAGE -->
     <div id="homePage" class="page active">
+        <header class="home-header">
+            <div class="home-brand-mark" aria-hidden="true">C</div>
+            <div>
+                <p class="home-eyebrow">CODEBASE WORKSPACE</p>
+                <h1>Checkpoint</h1>
+                <p class="home-intro">Choose where you want to go.</p>
+            </div>
+        </header>
 
-        <h1>Checkpoint</h1>
-        <h2>Codebase Analysis System</h2>
+        <section class="codebase-summary home-codebase-summary" id="homeCodebaseSummary" aria-live="polite" aria-label="Selected codebase">
+            <h2 class="codebase-summary-title">Selected codebase</h2>
+            <p class="codebase-summary-empty">No codebase selected</p>
+            <dl class="codebase-summary-details hidden">
+                <div><dt>Project</dt><dd data-summary-name></dd></div>
+                <div><dt>Language</dt><dd data-summary-language>Not detected</dd></div>
+                <div class="codebase-summary-path-row"><dt>Path</dt><dd data-summary-path></dd></div>
+            </dl>
+        </section>
 
-        <button class="btn-primary unusable-btn" id="analysisBtn">Run Operations</button>
-        <button class="btn-primary" id="mainViewBtn">View Insights</button>
-        <button class="btn-primary" id="apiBtn">Upload API Key</button>
-        <button class="btn-primary" id="faqAndSupportBtn">FAQ & Support</button>
-        <button class="btn-primary back-btn" id="exitBtn">Exit</button>
+        <main class="home-destinations" aria-label="Main actions">
+            <article class="home-action-card home-operations-card">
+                <div class="home-card-icon" aria-hidden="true">01</div>
+                <div class="home-card-copy">
+                    <h2>Run Operations</h2>
+                    <p>Analyze the selected codebase and run available processing steps.</p>
+                </div>
+                <button class="btn-primary unusable-btn home-action-button" id="analysisBtn" type="button">
+                    <span>Open operations</span><span aria-hidden="true">&#8594;</span>
+                </button>
+            </article>
 
+            <article class="home-action-card home-insights-card">
+                <div class="home-card-icon" aria-hidden="true">02</div>
+                <div class="home-card-copy">
+                    <h2>View Insights</h2>
+                    <p>Review generated summaries, business rules, test results, and run information.</p>
+                </div>
+                <button class="btn-primary home-action-button" id="mainViewBtn" type="button">
+                    <span>Open insights</span><span aria-hidden="true">&#8594;</span>
+                </button>
+            </article>
+        </main>
+
+        <nav class="home-utility-actions" aria-label="Other actions">
+            <button class="btn-primary" id="apiBtn" type="button">Upload API Key</button>
+            <button class="btn-primary" id="faqAndSupportBtn" type="button">FAQ &amp; Support</button>
+            <button class="btn-primary back-btn" id="exitBtn" type="button">Exit</button>
+        </nav>
     </div>
 
 
@@ -47,6 +85,16 @@
         <h1>Operations</h1>
 
         <div id="analysisOptions">
+
+            <section class="codebase-summary" aria-live="polite">
+                <h2 class="codebase-summary-title">Selected codebase</h2>
+                <p class="codebase-summary-empty">No codebase selected</p>
+                <dl class="codebase-summary-details hidden">
+                    <div><dt>Project</dt><dd data-summary-name></dd></div>
+                    <div><dt>Language</dt><dd data-summary-language>Not detected</dd></div>
+                    <div class="codebase-summary-path-row"><dt>Path</dt><dd data-summary-path></dd></div>
+                </dl>
+            </section>
 
             <div id="pipelineOptions">
                
@@ -80,6 +128,15 @@
             <input class="input-glass" id="codebasePath" type="text" readonly/>
             <button id="browseCodebaseBtn" class="btn-primary">📂</button>
         </div>
+        <section class="codebase-summary" aria-live="polite">
+            <h2 class="codebase-summary-title">Selected codebase</h2>
+            <p class="codebase-summary-empty">No codebase selected</p>
+            <dl class="codebase-summary-details hidden">
+                <div><dt>Project</dt><dd data-summary-name></dd></div>
+                <div><dt>Language</dt><dd data-summary-language>Not detected</dd></div>
+                <div class="codebase-summary-path-row"><dt>Path</dt><dd data-summary-path></dd></div>
+            </dl>
+        </section>
         <button class="btn-primary" id="submitPathBtn">Submit</button>
         <button class="btn-primary back-btn" id="codebaseBackBtn">Back</button>
 

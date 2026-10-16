@@ -215,6 +215,12 @@ _run_var: ContextVar = ContextVar("checkpoint_run_log", default=None)
 _stage_var: ContextVar = ContextVar("checkpoint_run_stage", default=None)
 
 
+def current_run_id():
+    """Return the ID of the command run currently recording usage, if any."""
+    run = _run_var.get()
+    return run.run_id if run is not None else None
+
+
 @contextmanager
 def record_usage(stage: str = "unknown", live: bool = False):
     """
