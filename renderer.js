@@ -313,6 +313,7 @@ function showLoading(title, message, options = {}) {
     //hide ok button
     document.getElementById("loadingOkBtn").classList.add("hidden");
     document.getElementById("loadingOpenReviewBtn").classList.add("hidden");
+    showReportButton(null);
     document.getElementById("loadingCancelBtn").classList.remove("hidden");
     document.getElementById("loadingCancelBtn").disabled = false;
 
@@ -401,6 +402,24 @@ function showLoadingWarning(text) {
 
     warning.textContent = text || "";
     warning.classList.toggle("hidden", !text);
+
+}
+
+
+// The run report (US-049) of the full run that just finished. The Complete
+// screen's "Open Report" button opens it in its own window.
+let runReportPath = null;
+
+function showReportButton(reportPath) {
+
+    runReportPath = reportPath || null;
+
+    const button =
+        document.getElementById("loadingReportBtn");
+
+    if (!button) return;
+
+    button.classList.toggle("hidden", !runReportPath);
 
 }
 
@@ -1697,6 +1716,18 @@ document.getElementById("loadingOkBtn").addEventListener("click", () => {
 
 });
 
+document.getElementById("loadingReportBtn").addEventListener("click", async () => {
+
+    if (!runReportPath) return;
+
+    const response = await window.electronAPI.openReport(runReportPath);
+
+    if (!response?.success) {
+        showErrorPopup(response?.error || "Could not open the run report.");
+    }
+
+});
+
 // MENU BUTTONS
 document.getElementById('analysisBtn')
     .addEventListener('click', () => {
@@ -1805,6 +1836,27 @@ document.getElementById("viewUsageBtn")
     showButtons("viewUsageBtns");
 
     await runBackendCommand("get_run_usage");
+
+});
+
+// The run report (US-049) in its own window: the selected codebase's, or the
+// most recent one when no codebase has been selected yet this session.
+document.getElementById("viewRunReportBtn")
+.addEventListener("click", async () => {
+
+    // This message takes the output box (see showButtons).
+    if (window.ConsistencyReviewScreen) {
+        window.ConsistencyReviewScreen.hide();
+    }
+
+    const codebaseName = getSelectedCodebaseName();
+    const response = await window.electronAPI.openLatestReport(codebaseName);
+
+    renderTextPreview(
+        response?.success
+            ? `Opened the run report for ${response.codebase} in its own window.`
+            : (response?.error || "Could not open the run report.")
+    );
 
 });
 
@@ -2826,6 +2878,7 @@ window.electronAPI.onBackendResponse(async (response) => {
         finishLoading(`${response.result.message || "Full pipeline completed"}. ${review.text}`);
         showLoadingWarning(response.result.warning);
         offerReview(reviewTarget ? reviewTarget.codebasePath : selectedCodebasePath, review.checkId);
+        showReportButton(response.result.run_report);
 
         activeCommand = null;
 
@@ -2877,6 +2930,7 @@ window.electronAPI.onBackendResponse(async (response) => {
             );
 
             showLoadingWarning(response.result?.warning);
+            showReportButton(response.result?.run_report);
 
             activeCommand = null;
         }
