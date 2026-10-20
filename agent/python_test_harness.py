@@ -14,6 +14,7 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -51,6 +52,8 @@ class PythonTestRun:
             "failed_tests": self.failed_tests,
             "pytest_report": self.report_path,
             "project_error": self.project_error,
+            "harness": "pytest",
+            "validated_at": datetime.now(timezone.utc).isoformat(),
         }
 
     def message(self):
@@ -369,6 +372,9 @@ def check_tests(
 
     test_dir = test_dir_for(codebase_path, codebase_name)
     write_tests(test_dir, prefix, cases)
+
+    if not cases:
+        return run
 
     execution = run_tests(
         test_dir=test_dir,

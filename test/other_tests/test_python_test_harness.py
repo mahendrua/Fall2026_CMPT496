@@ -2,6 +2,7 @@ from pathlib import Path
 
 from agent.python_test_harness import (
     PythonTestCase,
+    check_tests,
     run_tests,
     write_tests,
     clean_test,
@@ -50,6 +51,9 @@ def test_generated_python_test_runs_and_passes(tmp_path):
     assert result.failed == 0
     assert result.errors == 0
     assert Path(result.report_path).is_file()
+    summary = result.summary()
+    assert summary["harness"] == "pytest"
+    assert summary["validated_at"]
 
 
 def test_failing_generated_python_test_is_reported(tmp_path):
@@ -109,3 +113,27 @@ def test_clean_test_rejects_non_pytest_function():
 
     assert body is None
     assert "test_*" in reason
+
+def test_all_rejected_tests_are_not_sent_to_pytest(tmp_path):
+    rejected_test = PythonTestCase(
+        name="UT_1",
+        imports=[],
+        body="",
+        reason="invalid Python test syntax",
+    )
+
+    run = check_tests(
+        kind="Unit",
+        prefix="UT",
+        cases=[],
+        rejected=[rejected_test],
+        codebase_path=str(tmp_path),
+        codebase_name="empty_lab",
+        results_dir=str(tmp_path / "results"),
+    )
+
+    assert run.generated == 1
+    assert run.kept == []
+    assert run.dropped == [rejected_test]
+    assert run.project_error == ""
+    assert run.report_path == ""

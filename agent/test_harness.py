@@ -35,6 +35,7 @@ import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -153,6 +154,8 @@ class TestRun:
             "removed_stale_files": self.removed_stale,
             "project_error": self.project_error,
             "html_report": self.report_path,
+            "harness": "xunit",
+            "validated_at": datetime.now(timezone.utc).isoformat(),
         }
 
     def message(self):

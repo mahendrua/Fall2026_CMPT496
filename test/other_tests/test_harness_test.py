@@ -323,6 +323,13 @@ def test_test_still_broken_after_its_tries_is_dropped(monkeypatch, tmp_path):
     assert run.dropped[0].reason.startswith("still does not compile after 2 AI repair(s)")
 
 
+def test_run_summary_identifies_xunit_harness():
+    summary = TestRun(kind="Unit").summary()
+    assert summary["harness"] == "xunit"
+    assert summary["validated_at"]
+    assert summary["html_report"] == ""
+
+
 def test_xunit_extension_attributes_count_as_tests():
     # CliWrap's generated tests use [SkippableFact(Timeout = 15000)]; they
     # should reach the compiler (and the AI repair), not be thrown out here.
