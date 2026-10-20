@@ -1,12 +1,9 @@
 """
 @file UTV_agent.py
 @brief Defines the UTVAgent, a LangGraph-based agent for validating generated unit tests from business rules.
-@details Implements a validator-writer workflow that re-checks tests already saved in unit_tests.json:
-- Writes each candidate xUnit test to its own file in the codebase's test project
-- Builds them; a test that does not compile gets its own compiler errors and matching code from the
-  codebase back to the AI for repair, and is dropped if it still fails (agent/test_harness.py)
-- Runs the tests that compile and writes an html report
-- Writes validated tests, discarded tests (with the reason) and a summary to JSON
+@details Implements a validator-writer workflow that re-checks tests already saved in unit_tests.json.
+Python tests are executed with agent/python_test_harness.py (pytest, no LLM).
+C# tests use agent/test_harness.py (xUnit, optional AI repair), matching UTAgent.runner_node.
 
 The same checks run automatically at the end of unit test generation (UTAgent.runner_node).
 This agent is for re-checking afterwards, e.g. from the "validate only" button.
@@ -17,7 +14,18 @@ from agent.states.UTV_agent_state import UTVGraphState
 from agent.structured_output.UTV_output import UnitTest
 from langgraph.graph import StateGraph, START, END
 from agent.llm import make_llm
-from agent.test_harness import check_tests, make_cases, make_fixer, write_results
+from agent.test_harness import (
+    check_tests as check_csharp_tests,
+    make_cases as make_csharp_cases,
+    make_fixer,
+    write_results as write_csharp_results,
+)
+from agent.python_test_harness import (
+    check_tests as check_python_tests,
+    make_cases as make_python_cases,
+    write_results as write_python_results,
+)
+from agent.testing_language import detect_unit_test_language
 import os
 import sys
 import asyncio
@@ -37,22 +45,20 @@ class UTVAgent:
 
     @details
     The UTVAgent constructs and executes a LangGraph workflow that:
-    - Writes candidate xUnit tests into the selected codebase test project, one file per test
-    - Builds them, has the AI repair the ones that do not compile, and drops what it cannot fix
-    - Runs the rest with `dotnet test`
-    - Writes validated and discarded test metadata to JSON output files
+    - Detects whether saved tests are Python or C#
+    - For Python: writes pytest files, runs them, and records JSON results
+    - For C#: writes xUnit tests, repairs compile failures, and runs `dotnet test`
     """
 
     def __init__(self, model=None):
         """
-        @brief Initializes the UTVAgent with a specified language model.
-        @param model An optional language model to use. If not provided, defaults to gemini-3-flash-preview.
+        @brief Initializes the UTVAgent.
+        @param model An optional language model used only for C# compile repair.
+            Python validation never constructs an LLM.
         """
         progress("Intializing unit test validation agent...", 5)
-        if model is None:
-            self.llm = make_llm()
-        else:
-            self.llm = model
+        self._injected_model = model
+        self.llm = None
         self.graph = self.build_graph()
 
     def build_graph(self) -> StateGraph:
@@ -77,63 +83,77 @@ class UTVAgent:
         builder.add_edge("writer", END)
         return builder.compile()
 
-    def run(self, input_tests: list[UnitTest], codebase_name: str, codebase_path: str):
+    def run(self, input_tests: list[UnitTest], codebase_name: str, codebase_path: str, output_dir=None):
         """
         @brief Executes the UTVAgent workflow.
         @param input_tests List of UnitTest candidates, as saved in unit_tests.json.
         @param codebase_name Name of the target codebase, used to look up the correct ChromaDB collection.
         @param codebase_path Filesystem path of the target codebase.
+        @param output_dir Optional override for UT_agent_output (tests).
         @return Final state of the graph after execution.
         """
         progress(
             "Running unit test validation pipeline...",
             5
         )
-        if getattr(sys, 'frozen', False):
-            base_dir = Path(sys.executable).parent
-        else:
-            base_dir = Path(__file__).parent.parent
 
-        db_dir = (base_dir / "vectorStores").resolve()
+        # Language errors must happen before any harness JSON is written.
+        target_language = detect_unit_test_language(input_tests)
+        progress(f"Selected {target_language} unit-test validation.", 8)
 
-        # Code context only improves repairs; a codebase without a code
-        # database (e.g. one in a language the parser does not support) is
-        # still validated, just with less help for the AI.
-        try:
-            embedding_fn = SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
-            client = chromadb.PersistentClient(path=str(db_dir))
-            code_collection = client.get_collection(
-                name=collection_name(codebase_name, "code"),
-                embedding_function=embedding_fn
-            )
-            progress("Loaded code database.", 10)
-        except Exception as e:
-            code_collection = None
-            progress(f"No code database for {codebase_name}; repairing without code context. ({e})", 10)
+        code_collection = None
+        if target_language == "csharp":
+            if self._injected_model is None:
+                self.llm = make_llm()
+            else:
+                self.llm = self._injected_model
+
+            if getattr(sys, 'frozen', False):
+                base_dir = Path(sys.executable).parent
+            else:
+                base_dir = Path(__file__).parent.parent
+
+            db_dir = (base_dir / "vectorStores").resolve()
+
+            # Code context only improves C# repairs; a codebase without a code
+            # database is still validated, just with less help for the AI.
+            try:
+                embedding_fn = SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+                client = chromadb.PersistentClient(path=str(db_dir))
+                code_collection = client.get_collection(
+                    name=collection_name(codebase_name, "code"),
+                    embedding_function=embedding_fn
+                )
+                progress("Loaded code database.", 10)
+            except Exception as e:
+                code_collection = None
+                progress(f"No code database for {codebase_name}; repairing without code context. ({e})", 10)
 
         initial_state = {
+            "target_language": target_language,
             "current_tests": input_tests,
             "test_run": None,
             "code_collection": code_collection,
             "codebase_name": codebase_name,
             "codebase_path": codebase_path,
-            "output_directory": "./agent/UT_agent_output",
+            "output_directory": output_dir or "./agent/UT_agent_output",
         }
 
-        self._loop = asyncio.new_event_loop()
+        self._loop = asyncio.new_event_loop() if target_language == "csharp" else None
         try:
             return self.graph.invoke(initial_state)
         finally:
-            self._loop.close()
-            self._loop = None
+            if self._loop is not None:
+                self._loop.close()
+                self._loop = None
 
     def validator_node(self, state: UTVGraphState) -> UTVGraphState:
         """
-        @brief Writes, builds, repairs and runs the candidate tests.
+        @brief Writes and runs the candidate tests with the language-specific harness.
 
-        @details See agent/test_harness.py. Only tests that do not compile are sent to the AI,
-        each with its own compiler errors; tests that compile but fail an assertion are kept
-        and reported, since the failure may be a real bug in the codebase.
+        @details Python uses agent/python_test_harness.py (same branch as
+        UTAgent.runner_node). C# uses agent/test_harness.py, including AI repair
+        for tests that do not compile.
 
         @param state Current workflow state containing current_tests.
         @return Updated state with test_run.
@@ -146,42 +166,63 @@ class UTVAgent:
         codebase_path = state["codebase_path"]
         base_output_dir = state.get("output_directory", "./agent/UT_agent_output")
         codebase_subdir = os.path.join(base_output_dir, codebase_name)
-        code_collection = state.get("code_collection")
+        test_items = [
+            (test.id, test)
+            for test in state["current_tests"]
+        ]
 
-        cases, rejected = make_cases(
-            "UT",
-            [(test.id, test) for test in state["current_tests"]],
-            body_of=lambda test: test.unit_test,
-            imports_of=lambda test: test.imports,
-        )
-
-        def context_for(case):
-            if code_collection is None or not code_collection.count():
-                return ""
-            test = case.source
-            query_text = f"{test.rule} {' '.join(case.errors[:3])}"
-            results = code_collection.query(
-                query_texts=[query_text],
-                n_results=min(REPAIR_CODEBASE_K, code_collection.count())
+        if state["target_language"] == "python":
+            cases, rejected = make_python_cases(
+                "UT",
+                test_items,
+                body_of=lambda test: test.unit_test,
+                imports_of=lambda test: test.imports,
             )
-            docs = results.get("documents", [[]])[0]
-            metas = results.get("metadatas", [[]])[0]
-            return "\n\n".join(
-                self._format_code_result(doc, meta, test.source_directory)
-                for doc, meta in zip(docs, metas)
+            test_run = check_python_tests(
+                "Unit",
+                "UT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_subdir,
+            )
+        else:
+            code_collection = state.get("code_collection")
+            cases, rejected = make_csharp_cases(
+                "UT",
+                test_items,
+                body_of=lambda test: test.unit_test,
+                imports_of=lambda test: test.imports,
             )
 
-        test_run = check_tests(
-            "Unit",
-            "UT",
-            cases,
-            rejected,
-            codebase_path,
-            codebase_name,
-            codebase_subdir,
-            fix=make_fixer(self.llm, context_for),
-            loop=self._loop,
-        )
+            def context_for(case):
+                if code_collection is None or not code_collection.count():
+                    return ""
+                test = case.source
+                query_text = f"{test.rule} {' '.join(case.errors[:3])}"
+                results = code_collection.query(
+                    query_texts=[query_text],
+                    n_results=min(REPAIR_CODEBASE_K, code_collection.count())
+                )
+                docs = results.get("documents", [[]])[0]
+                metas = results.get("metadatas", [[]])[0]
+                return "\n\n".join(
+                    self._format_code_result(doc, meta, test.source_directory)
+                    for doc, meta in zip(docs, metas)
+                )
+
+            test_run = check_csharp_tests(
+                "Unit",
+                "UT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_subdir,
+                fix=make_fixer(self.llm, context_for),
+                loop=self._loop,
+            )
 
         return {"test_run": test_run}
 
@@ -191,8 +232,8 @@ class UTVAgent:
 
         @details
         Writes validated_tests.json, discarded_tests.json and test_report.json under
-        {output_directory}/{codebase_name}/, next to unit_test_report.html.
-        Runs exactly once at the end of the graph.
+        {output_directory}/{codebase_name}/. Does not rewrite unit_tests.json or
+        unit_tests.txt. Runs exactly once after the harness returns.
 
         @param state Current workflow state containing test_run.
         @return Empty dict (terminal node).
@@ -206,12 +247,16 @@ class UTVAgent:
         base_output_dir = state.get("output_directory", "./agent/UT_agent_output")
         codebase_subdir = os.path.join(base_output_dir, codebase_name)
         test_run = state["test_run"]
-
-        write_results(
-            test_run,
-            codebase_subdir,
-            lambda case: dict(case.source.model_dump(), imports=case.imports, unit_test=case.body),
+        to_json = lambda case: dict(
+            case.source.model_dump(),
+            imports=case.imports,
+            unit_test=case.body,
         )
+
+        if state["target_language"] == "python":
+            write_python_results(test_run, codebase_subdir, to_json)
+        else:
+            write_csharp_results(test_run, codebase_subdir, to_json)
 
         progress(test_run.message(), 100, True)
         return {}
@@ -287,7 +332,7 @@ class UTVAgent:
         """
         @brief Formats a retrieved summary entry and its metadata for context.
         @param doc The retrieved summary text.
-        @param meta Metadata associated with the summary node.
+        @param meta Metadata associated with the snippet.
         @param source_directory The source directory of the current rule.
         @return A formatted string representing the summary context entry.
         """

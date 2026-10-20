@@ -568,7 +568,7 @@ class Commands:
 
             if not test_path.exists():
                 raise FileNotFoundError(
-                    f"Validated rules not found: {test_path}"
+                    f"Generated unit tests not found: {test_path}"
                 )
 
 
