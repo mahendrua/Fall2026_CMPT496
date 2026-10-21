@@ -9,7 +9,10 @@ logger = logging.getLogger(__name__)
 from agent.states.file_summary_agent_state import FileGraphState
 from langgraph.graph import StateGraph, START, END
 from agent.structured_output.file_summary_output import FileSummaryOutput
-from agent.file_summary_grounding import validate_file_summary_against_source
+from agent.file_summary_grounding import (
+    filter_business_rules_against_source,
+    validate_file_summary_against_source,
+)
 from agent.llm import make_llm
 from langchain_core.messages import AIMessage
 import os
@@ -443,6 +446,7 @@ Code:
         if isinstance(out, FileSummaryOutput):
             out.path = file_path
             out = validate_file_summary_against_source(out, file_path, contents)
+            out = filter_business_rules_against_source(out, file_path, contents)
 
             for rule in out.business_rules:
                 rule.source_file = file_path
