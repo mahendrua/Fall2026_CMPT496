@@ -16,7 +16,6 @@ sys.stdout.reconfigure(
 import os
 import subprocess
 from xml.parsers.expat import errors
-import chromadb
 import json
 import time
 import requests

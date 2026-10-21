@@ -1,11 +1,12 @@
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
 from agent.UTV_agent import UTVAgent
 from agent.structured_output.UTV_output import UnitTest
 from agent.test_harness import TestRun
-from backend.commands import Commands
 
 
 def python_unit_test(**overrides):
@@ -128,8 +129,8 @@ def test_csharp_validation_uses_xunit_harness(tmp_path, monkeypatch):
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("use injected model")),
     )
     monkeypatch.setattr(
-        "agent.UTV_agent.SentenceTransformerEmbeddingFunction",
-        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("no chroma in this test")),
+        "agent.UTV_agent._open_code_collection",
+        lambda *args, **kwargs: None,
     )
 
     output_root = tmp_path / "UT_agent_output"
@@ -185,7 +186,27 @@ def test_empty_test_list_does_not_write_reports(tmp_path, monkeypatch):
     assert not (output_root / "empty_lab" / "test_report.json").exists()
 
 
+def test_importing_utv_agent_does_not_import_chromadb():
+    repo_root = Path(__file__).resolve().parents[2]
+    script = (
+        "import sys\n"
+        "import agent.UTV_agent\n"
+        "chroma = [name for name in sys.modules if name == 'chromadb' or name.startswith('chromadb.')]\n"
+        "assert not chroma, chroma\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 def test_missing_unit_tests_file_names_unit_tests_not_rules(tmp_path):
+    from backend.commands import Commands
+
     missing = tmp_path / "no-such-unit-tests.json"
     result = Commands().validate_unit_tests(
         str(tmp_path / "missing_lab"),

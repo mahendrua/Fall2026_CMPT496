@@ -29,14 +29,39 @@ from agent.testing_language import detect_unit_test_language
 import os
 import sys
 import asyncio
-import chromadb
-from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from pathlib import Path
 from backend.progress_logging import progress
 from utils.chroma_utils import collection_name
 
 # Code chunks retrieved per broken test for the repair prompt.
 REPAIR_CODEBASE_K = 15
+
+
+def _open_code_collection(codebase_name: str, db_dir: Path):
+    """
+    Open the C# repair code collection. Imports ChromaDB only when C# validation runs.
+
+    ImportError still propagates, matching the previous module-level import. Missing
+    or unreadable vector stores return None so validation continues without RAG.
+    """
+    import chromadb
+    from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+
+    try:
+        embedding_fn = SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
+        client = chromadb.PersistentClient(path=str(db_dir))
+        collection = client.get_collection(
+            name=collection_name(codebase_name, "code"),
+            embedding_function=embedding_fn,
+        )
+        progress("Loaded code database.", 10)
+        return collection
+    except Exception as e:
+        progress(
+            f"No code database for {codebase_name}; repairing without code context. ({e})",
+            10,
+        )
+        return None
 
 
 class UTVAgent:
@@ -117,17 +142,7 @@ class UTVAgent:
 
             # Code context only improves C# repairs; a codebase without a code
             # database is still validated, just with less help for the AI.
-            try:
-                embedding_fn = SentenceTransformerEmbeddingFunction(model_name="all-MiniLM-L6-v2")
-                client = chromadb.PersistentClient(path=str(db_dir))
-                code_collection = client.get_collection(
-                    name=collection_name(codebase_name, "code"),
-                    embedding_function=embedding_fn
-                )
-                progress("Loaded code database.", 10)
-            except Exception as e:
-                code_collection = None
-                progress(f"No code database for {codebase_name}; repairing without code context. ({e})", 10)
+            code_collection = _open_code_collection(codebase_name, db_dir)
 
         initial_state = {
             "target_language": target_language,
