@@ -137,3 +137,20 @@ def test_failed_run_gets_no_report(finished_run, monkeypatch):
 
     assert cmd.full_pipeline(str(tmp_path))["success"] is False
     assert calls == []
+
+
+# ---------- test strength (mutation testing) ----------
+
+def test_mutation_results_travel_with_the_page():
+    mutation = {"status": "finished", "overall": {"score": 60.0, "scored": 5}, "rules": [], "tests_used": [],
+                "tests_left_out": [], "by_file": {}, "message": "</script><b>"}
+    page = render(minimal_data(mutation=mutation), {})
+
+    assert embedded_data(page)["mutation"] == mutation  # "</script>" in the data cannot end the block
+
+
+def test_page_without_mutation_results_says_not_measured():
+    page = render(minimal_data(mutation=None), {})
+
+    assert embedded_data(page)["mutation"] is None
+    assert "Not measured" in page and "mutation testing has not been run" in page

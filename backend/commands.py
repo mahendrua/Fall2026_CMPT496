@@ -7,6 +7,7 @@ Each public method represents a command that can be dispatched from
 dispatcher.py and called by the frontend.
 """
 
+import contextlib
 import logging
 import sys
 sys.stdout.reconfigure(
@@ -92,6 +93,7 @@ def test_run_result(test_run, **extra):
     return result
 
 from backend.run_report import write_run_report
+from backend.mutation_testing import run as run_mutation_testing, TIME_LIMIT_MINUTES
 from backend.token_estimate import estimate_pipeline
 from backend.token_usage import (
     record_usage,
@@ -693,6 +695,70 @@ class Commands:
             task,
             individualStep=individualStep,
         )
+
+    # -----------------------------------------------------
+    # Mutation Testing
+    # -----------------------------------------------------
+
+    def run_mutation_tests(
+        self,
+        codebase: str,
+        time_limit_minutes: float = None,
+        individualStep=True
+    ):
+        """
+        Measure how many small code changes the generated unit tests catch
+        (Stryker.NET), per rule. See backend/mutation_testing.py.
+
+        Not part of full_pipeline: it takes minutes and needs Stryker.NET
+        installed. Makes no AI calls. When it could not measure (Stryker
+        missing, no passing tests, out of time) the step still succeeds and
+        says why in a warning, like the test steps.
+        """
+
+        codebase_path = Path(codebase)
+
+        def task():
+
+            progress("Running mutation testing...")
+
+            report = run_mutation_testing(
+                codebase_path,
+                self.app_dir,
+                time_limit_minutes=time_limit_minutes or TIME_LIMIT_MINUTES,
+            )
+
+            result = {
+                "message": report["message"],
+                "status": report["status"],
+                "mutation_report": report.get("report_path"),
+            }
+
+            if report["status"] != "finished":
+                result["warning"] = report["message"]
+
+            return result
+
+        result = self._run_command(
+            "run_mutation_tests",
+            task,
+            individualStep=individualStep,
+        )
+
+        # Rebuild the run report so it shows the new numbers. Like after the
+        # full pipeline, a report problem only adds a warning.
+        if result["success"]:
+            report = write_run_report(codebase_path, self.app_dir)
+            summary = result["result"]
+
+            if report["path"]:
+                summary["run_report"] = report["path"]
+            else:
+                note = f"The run report could not be updated: {report['error']}"
+                summary["warning"] = "\n\n".join(filter(None, [summary.get("warning"), note]))
+
+        return result
+
     # -----------------------------------------------------
     # UML Commands
     # -----------------------------------------------------
@@ -733,8 +799,13 @@ class Commands:
             ]
 
 
+            # uml_json_to_pdf prints "PDF written to: ..." for its own
+            # terminal use. The app reads stdout as one JSON message per
+            # line and rejects anything else ("Malformed response from
+            # Python backend"), so send its prints to stderr instead.
             try:
-                skipped = uml_build_report(uml_parse_args())
+                with contextlib.redirect_stdout(sys.stderr):
+                    skipped = uml_build_report(uml_parse_args())
 
             finally:
                 sys.argv = old_argv

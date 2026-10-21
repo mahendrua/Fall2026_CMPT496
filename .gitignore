@@ -12,6 +12,7 @@ agent/BR_agent_output/
 agent/UT_agent_output/
 agent/UTV_agent_output/
 agent/IT_agent_output/
+agent/MT_output/
 
 .env
 .vscode/

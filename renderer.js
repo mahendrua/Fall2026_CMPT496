@@ -2220,6 +2220,26 @@ document.getElementById('runIntegrationTestGenerationOnlyBtn')
         );
     });
 
+// Mutation testing: how many small code changes the passing unit tests
+// catch. Takes about a minute on ConsoleTables; the Open Report button shows
+// when it finishes, since the backend rebuilds the run report.
+document.getElementById('runMutationTestingOnlyBtn')
+    .addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        showLoading(
+            "Test Strength (Mutation Testing)",
+            "Preparing..."
+        );
+
+        runBackendCommand(
+            "run_mutation_tests",
+            {
+                codebase:selectedCodebasePath
+            }
+        );
+    });
+
 // FILLER FOR WHEN VALIDATION GETS ADDED ONTO THIS BRANCH, FOR NOW IT WILL NOT DO ANYTHING WHEN CLICKED
 
 // document.getElementById('allUnitTestsBtn')

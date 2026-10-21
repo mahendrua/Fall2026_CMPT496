@@ -54,6 +54,9 @@ class CommandDispatcher:
             "validate_unit_tests": self.commands.validate_unit_tests,
             "generate_integration_tests": self.commands.generate_integration_tests,
 
+            # Mutation testing (not part of the full pipeline: it takes minutes)
+            "run_mutation_tests": self.commands.run_mutation_tests,
+
             # UML
             "generate_uml": self.commands.generate_uml,
             "generate_all_uml": self.commands.generate_all_uml,
