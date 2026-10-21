@@ -4,9 +4,13 @@ Deterministic Python declaration checks for LLM file summaries.
 Filters invented types, class-body methods, and module-level functions
 using Tree-sitter. Does not rewrite summary text, PlantUML, relationships,
 dependencies, properties, or business-rule prose.
+
+Directory-level (G2) rules are filtered against live Python sources under the
+directory being summarized. Chroma summary paths are not treated as provenance.
 """
 from __future__ import annotations
 
+import os
 import tokenize
 from dataclasses import dataclass, field
 from io import BytesIO
@@ -15,6 +19,8 @@ from pathlib import Path
 import tree_sitter_language_pack as tslp
 from tree_sitter import Node, Parser
 
+from agent.crawl_config import ACCEPTABLE_EXTENSIONS, prune
+from agent.structured_output.directory_output import BusinessRulesOutput
 from agent.structured_output.file_summary_output import FileSummaryOutput
 from backend.progress_logging import progress
 
@@ -464,3 +470,175 @@ def filter_business_rules_against_source(
             f"{Path(file_path).name}: {'; '.join(dropped)}"
         )
     return summary
+
+
+_MIXED_LANGUAGE_EXTENSIONS = frozenset(ACCEPTABLE_EXTENSIONS) - {".py", ".md"}
+
+
+@dataclass
+class _DirectoryPythonScope:
+    python_only: bool = False
+    coverage_uncertain: bool = False
+    file_declarations: list[PythonDeclarations] = field(default_factory=list)
+
+
+def _collect_directory_python_scope(directory_abs_path: str) -> _DirectoryPythonScope:
+    """
+    Walk live source files under a directory.
+
+    Coverage is uncertain when the walk or a Python read/parse fails. Mixed
+    language means a non-Python code file was found in the same scope.
+    """
+    root = Path(directory_abs_path)
+    if not root.is_dir():
+        return _DirectoryPythonScope(coverage_uncertain=True)
+
+    python_paths: list[Path] = []
+    mixed_language = False
+    try:
+        for dirpath, dirnames, filenames in os.walk(root):
+            prune(dirpath, dirnames)
+            for name in filenames:
+                suffix = Path(name).suffix.lower()
+                full = Path(dirpath) / name
+                if suffix in _MIXED_LANGUAGE_EXTENSIONS:
+                    mixed_language = True
+                elif suffix == ".py":
+                    python_paths.append(full)
+    except Exception as exc:
+        progress(
+            f"Skipped G2 business-rule grounding for {root.name}: "
+            f"directory scan failed ({exc})"
+        )
+        return _DirectoryPythonScope(coverage_uncertain=True)
+
+    if mixed_language or not python_paths:
+        return _DirectoryPythonScope(python_only=False)
+
+    file_declarations: list[PythonDeclarations] = []
+    for path in python_paths:
+        try:
+            source_text = path.read_text(encoding="utf-8")
+            declarations = collect_python_declarations(source_text)
+        except Exception as exc:
+            progress(
+                f"Skipped G2 business-rule grounding for {root.name}: "
+                f"{path.name} could not be read or parsed ({exc})"
+            )
+            return _DirectoryPythonScope(python_only=True, coverage_uncertain=True)
+        if declarations.parse_error:
+            progress(
+                f"Skipped G2 business-rule grounding for {root.name}: "
+                f"{path.name} has syntax errors"
+            )
+            return _DirectoryPythonScope(python_only=True, coverage_uncertain=True)
+        file_declarations.append(declarations)
+
+    return _DirectoryPythonScope(
+        python_only=True,
+        file_declarations=file_declarations,
+    )
+
+
+def _directory_rule_is_contradicted(
+    rule_text: str,
+    file_declarations: list[PythonDeclarations],
+) -> bool:
+    """
+    True when a call-like owner.method( is missing from every matching class.
+
+    Each file's declarations stay separate so same-named classes are not merged.
+    Unknown or module-prefixed owners that do not match a local class are kept.
+    """
+    for owner, method in explicit_method_calls(rule_text):
+        matches: list[tuple[PythonDeclarations, str]] = []
+        for declarations in file_declarations:
+            for qualname in _matching_class_owners(owner, declarations):
+                matches.append((declarations, qualname))
+        if not matches:
+            continue
+        all_closed_and_missing = True
+        for declarations, qualname in matches:
+            if declarations.parse_error or qualname in declarations.open_classes:
+                all_closed_and_missing = False
+                break
+            declared = declarations.classes.get(qualname, set())
+            extra = declarations.extra_members.get(qualname, set())
+            if method in declared or method in extra:
+                all_closed_and_missing = False
+                break
+        if all_closed_and_missing:
+            return True
+    return False
+
+
+def _filter_rule_texts(
+    rules: list[str],
+    file_declarations: list[PythonDeclarations],
+    directory_name: str,
+    field_name: str,
+) -> list[str]:
+    kept: list[str] = []
+    dropped: list[str] = []
+    for text in rules:
+        try:
+            contradicted = _directory_rule_is_contradicted(text, file_declarations)
+        except Exception as exc:
+            progress(
+                f"Skipped G2 business-rule grounding for {directory_name}: "
+                f"{field_name} analysis failed ({exc})"
+            )
+            kept.append(text)
+            continue
+        if contradicted:
+            dropped.append(_truncate_rule(text))
+        else:
+            kept.append(text)
+    if dropped:
+        progress(
+            "Dropped ungrounded G2 business rules in "
+            f"{directory_name}: {'; '.join(dropped)}"
+        )
+    return kept
+
+
+def filter_directory_business_rules_against_source(
+    output: BusinessRulesOutput,
+    directory_abs_path: str,
+    codebase_root: str,
+) -> BusinessRulesOutput:
+    """
+    Drop G2 rules that call a local Python class method that is not declared.
+
+    Python-only directories with complete, parseable coverage are filtered.
+    Mixed-language scopes, missing Python files, syntax errors, unreadable
+    files, and walk failures leave the rules unchanged. Non-call-like prose
+    and unknown owners are kept.
+    """
+    del codebase_root
+    try:
+        scope = _collect_directory_python_scope(directory_abs_path)
+    except Exception as exc:
+        progress(
+            f"Skipped G2 business-rule grounding for "
+            f"{Path(directory_abs_path).name}: scan failed ({exc})"
+        )
+        return output
+
+    if not scope.python_only or scope.coverage_uncertain or not scope.file_declarations:
+        return output
+
+    directory_name = output.directory_name or Path(directory_abs_path).name
+    output.observed_rules = _filter_rule_texts(
+        output.observed_rules,
+        scope.file_declarations,
+        directory_name,
+        "observed_rules",
+    )
+    output.inferred_rules = _filter_rule_texts(
+        output.inferred_rules,
+        scope.file_declarations,
+        directory_name,
+        "inferred_rules",
+    )
+    return output
