@@ -294,10 +294,27 @@ class FileSummaryAgent:
         )
         return {}
 
+def _source_text_is_blank(contents: str) -> bool:
+    """
+    True when the decoded file has no source after a leading UTF-8 BOM
+    and surrounding whitespace. str.strip() does not remove U+FEFF.
+    """
+    return not contents.removeprefix("\ufeff").strip()
+
+
+def _empty_file_summary(file_path: str) -> FileSummaryOutput:
+    return FileSummaryOutput(
+        path=file_path,
+        summary="Empty source file.",
+    )
+
+
 async def _summarize_one(structured_llm, file_path: str):
     progress(f'Summarizing: {file_path}')
     try:
         contents = Path(file_path).read_text(encoding="utf-8", errors="replace")
+        if _source_text_is_blank(contents):
+            return file_path, _empty_file_summary(file_path), None
         messages = [
             (
                 "system",
@@ -423,6 +440,8 @@ Code:
         ]
         out = await structured_llm.ainvoke(messages)
         if isinstance(out, FileSummaryOutput):
+            out.path = file_path
+
             for rule in out.business_rules:
                 rule.source_file = file_path
         return file_path, out, None
