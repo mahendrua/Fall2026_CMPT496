@@ -85,6 +85,13 @@ class PythonTestRun:
 
         if self.dropped:
             message += f" {len(self.dropped)} rejected before execution."
+            details = "; ".join(
+                f"{case.name}: {case.reason}"
+                for case in self.dropped
+                if case.reason
+            )
+            if details:
+                message += f" {details}"
 
         return message
 
@@ -301,8 +308,14 @@ def resolved_python_source_files(
     return files
 
 
-_NO_SCRIPT_TARGET_REASON = (
-    "script tests require a resolved source file; no trustworthy target path was provided"
+_NO_ATTRIBUTED_SCRIPT_TARGET_REASON = (
+    "this rule has no verified file-level test target; language was identified, "
+    "but no source file was attributed, so Checkpoint did not execute the "
+    "generated test (no trustworthy target path was provided)"
+)
+_UNRESOLVED_NAMED_SCRIPT_TARGET_REASON = (
+    "script tests require a resolved source file; the attributed path was "
+    "missing, outside the selected project, or not a Python file"
 )
 
 
@@ -334,13 +347,14 @@ def effective_python_test_mode(item, codebase_path: str | None = None) -> str:
 
 def script_missing_target_reason(item, codebase_path: str | None = None) -> str:
     paths = _item_source_paths(item)
+    attributed = [path for path in paths if str(path or "").strip()]
+    if not attributed:
+        return _NO_ATTRIBUTED_SCRIPT_TARGET_REASON
     if codebase_path:
         if resolved_python_source_files(paths, codebase_path):
             return ""
-        return _NO_SCRIPT_TARGET_REASON
-    if any(str(path or "").strip() for path in paths):
-        return ""
-    return _NO_SCRIPT_TARGET_REASON
+        return _UNRESOLVED_NAMED_SCRIPT_TARGET_REASON
+    return ""
 
 
 def _is_allowed_script_import(node: ast.AST) -> bool:

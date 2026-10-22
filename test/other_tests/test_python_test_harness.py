@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from agent.python_test_harness import (
     PythonTestCase,
@@ -137,3 +138,47 @@ def test_all_rejected_tests_are_not_sent_to_pytest(tmp_path):
     assert run.dropped == [rejected_test]
     assert run.project_error == ""
     assert run.report_path == ""
+    assert run.needs_attention() is True
+    assert "rejected before execution" in run.message()
+    assert "invalid Python test syntax" in run.message()
+
+
+def test_source_less_script_rejection_is_not_reported_as_success(tmp_path, monkeypatch):
+    generated = SimpleNamespace(
+        id=7,
+        unit_test="def test_unattributed():\n    assert True\n",
+        imports=["import subprocess", "import sys"],
+        source_file_paths=[],
+        test_mode="script",
+    )
+    monkeypatch.setattr(
+        "agent.python_test_harness.test_dir_for",
+        lambda codebase_path, codebase_name: str(tmp_path / "generated_tests"),
+    )
+    monkeypatch.setattr(
+        "agent.python_test_harness.run_tests",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("pytest must not run")),
+    )
+    cases, rejected = make_cases(
+        "UT",
+        [(generated.id, generated)],
+        body_of=lambda item: item.unit_test,
+        imports_of=lambda item: item.imports,
+        codebase_path=str(tmp_path),
+    )
+    run = check_tests(
+        "Unit",
+        "UT",
+        cases,
+        rejected,
+        str(tmp_path),
+        "empty_lab",
+        str(tmp_path / "results"),
+    )
+    assert cases == []
+    assert rejected[0].name == "UT_7"
+    assert "no verified file-level test target" in rejected[0].reason
+    assert run.kept == []
+    assert run.needs_attention() is True
+    assert "UT_7" in run.message()
+    assert "did not execute" in run.message()
