@@ -118,6 +118,13 @@ class UTAgent:
             "Running unit test generation pipeline...",
             10
         )
+
+        target_language = detect_test_language(
+            [rule.source_file_paths for rule in validated_rules],
+            codebase_path=codebase_path,
+        )
+        progress(f"Selected {target_language} unit-test workflow.", 25)
+
         if getattr(sys, 'frozen', False):
             base_dir = Path(sys.executable).parent
         else:
@@ -142,11 +149,6 @@ class UTAgent:
             "Loaded code and summary databases.",
             20
         )
-
-        target_language = detect_test_language(
-            [rule.source_file_paths for rule in validated_rules]
-        )
-        progress(f"Selected {target_language} unit-test workflow.", 25)
 
         initial_state = {
             "target_language": target_language,

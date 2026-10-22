@@ -2,15 +2,29 @@
 Language-selection helpers for generated test workflows.
 """
 
+import os
 import re
 from pathlib import Path
 
+from agent.crawl_config import prune
 
-def detect_test_language(source_file_groups: list[list[str]]) -> str:
+_LANGUAGE_SUFFIXES = {".py": "python", ".cs": "csharp"}
+# Bounded suffix inspection only. Academic labs are small; exceeding this
+# without a unique language is treated as undecidable rather than guessed.
+PROJECT_LANGUAGE_SCAN_LIMIT = 2000
+_EXTRA_IGNORED_DIRS = frozenset({"venv"})
+
+
+def detect_test_language(
+    source_file_groups: list[list[str]],
+    codebase_path: str | None = None,
+) -> str:
     """
     Determine the single supported language represented by selected rules.
 
     Each item in source_file_groups is one rule's source_file_paths list.
+    When those paths carry no language evidence, codebase_path may supply a
+    trusted project-level .py/.cs scan. Rule-path evidence always wins.
     """
     suffixes = {
         Path(source_path).suffix.lower()
@@ -25,15 +39,92 @@ def detect_test_language(source_file_groups: list[list[str]]) -> str:
     if suffixes == {".cs"}:
         return "csharp"
 
-    if not suffixes:
+    if suffixes:
         raise ValueError(
-            "Cannot determine a test language because the selected rules "
-            "do not identify source files."
+            "Unit-test generation currently supports one language at a time. "
+            f"Found source types: {', '.join(sorted(suffixes))}."
         )
 
+    if codebase_path:
+        return _project_source_language(codebase_path)
+
     raise ValueError(
-        "Unit-test generation currently supports one language at a time. "
-        f"Found source types: {', '.join(sorted(suffixes))}."
+        "Cannot determine a test language because the selected rules "
+        "do not identify source files."
+    )
+
+
+def _is_inside_project(path: Path, project_root: Path) -> bool:
+    try:
+        path.resolve().relative_to(project_root)
+    except (ValueError, OSError):
+        return False
+    return True
+
+
+def _project_source_language(codebase_path: str) -> str:
+    """
+    Infer python or csharp from .py/.cs filenames under a trusted lab.
+
+    Does not read file contents. Uses crawl_config.prune so ignored and
+    Checkpoint-generated folders are skipped. os.walk does not follow
+    directory symlinks. Source-file symlinks that resolve outside the
+    project are ignored.
+    """
+    root = Path(codebase_path)
+    if not root.exists() or not root.is_dir():
+        raise ValueError(
+            "Cannot determine a test language because the project directory "
+            f"is missing or invalid: {codebase_path}"
+        )
+
+    project_root = root.resolve()
+    found: set[str] = set()
+    visited = 0
+
+    for dirpath, dirs, filenames in os.walk(project_root, followlinks=False):
+        prune(dirpath, dirs)
+        dirs[:] = [
+            name
+            for name in dirs
+            if name not in _EXTRA_IGNORED_DIRS
+            and not (Path(dirpath) / name).is_symlink()
+        ]
+        visited += 1
+        if visited > PROJECT_LANGUAGE_SCAN_LIMIT:
+            raise ValueError(
+                "Cannot determine a test language because the project scan "
+                "exceeded its file budget before a unique language was proven."
+            )
+
+        for name in filenames:
+            visited += 1
+            if visited > PROJECT_LANGUAGE_SCAN_LIMIT:
+                raise ValueError(
+                    "Cannot determine a test language because the project scan "
+                    "exceeded its file budget before a unique language was proven."
+                )
+            suffix = Path(name).suffix.lower()
+            language = _LANGUAGE_SUFFIXES.get(suffix)
+            if language is None:
+                continue
+            candidate = Path(dirpath) / name
+            if candidate.is_symlink() and not _is_inside_project(candidate, project_root):
+                continue
+            found.add(language)
+            if len(found) > 1:
+                raise ValueError(
+                    "Cannot determine a test language because the project "
+                    "contains both Python and C# source files."
+                )
+
+    if found == {"python"}:
+        return "python"
+    if found == {"csharp"}:
+        return "csharp"
+    raise ValueError(
+        "Cannot determine a test language because the project contains no "
+        "Python or C# source files."
     )
 
 
