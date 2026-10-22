@@ -113,6 +113,12 @@ class PythonTestCase:
 MAX_TEST_CHARS = 20_000
 SCRIPT_TIMEOUT_SECONDS = 5
 CHECKPOINT_CODEBASE_PATH = "CHECKPOINT_CODEBASE_PATH"
+PYTHON_CODE_CONTEXT_CHARS = 16_000
+PYTHON_SUMMARY_CONTEXT_CHARS = 6_000
+CONTEXT_OMISSION_MARKER = (
+    "[OMITTED: retrieved document exceeded remaining context budget]"
+)
+NO_CONTEXT_PROVIDED = "NO CONTEXT PROVIDED"
 _SCRIPT_IMPORT_MODULES = frozenset({"subprocess", "sys", "os", "pathlib", "pytest"})
 _PYTHON_SKIP_TYPES = frozenset({
     "import_statement",
@@ -476,6 +482,182 @@ def clean_test(
     return body, cleaned_imports, ""
 
 
+def bound_python_prompt_documents(
+    documents: list[str] | None,
+    budget: int,
+    omission_marker: str = CONTEXT_OMISSION_MARKER,
+) -> str:
+    """
+    Include complete retrieved documents until a character budget is reached.
+
+    Oversized documents are skipped with a marker instead of being truncated.
+    Later smaller documents are still considered. The joined result, including
+    markers, never exceeds budget when budget is at least as large as the
+    marker. An empty input yields NO CONTEXT PROVIDED (not budgeted).
+    """
+    if not documents:
+        return NO_CONTEXT_PROVIDED
+
+    included: list[str] = []
+    used = 0
+    for document in documents:
+        text = document if isinstance(document, str) else str(document)
+        separator = "\n\n" if included else ""
+        candidate_size = len(separator) + len(text)
+        if used + candidate_size <= budget:
+            included.append(text)
+            used += candidate_size
+            continue
+
+        marker_separator = "\n\n" if included else ""
+        marker_size = len(marker_separator) + len(omission_marker)
+        if used + marker_size <= budget:
+            included.append(omission_marker)
+            used += marker_size
+
+    if not included:
+        if len(omission_marker) <= budget:
+            return omission_marker
+        return NO_CONTEXT_PROVIDED
+    return "\n\n".join(included)
+
+
+def generation_context_texts(
+    target_language: str,
+    code_context: list[str] | None,
+    summary_context: list[str] | None,
+) -> tuple[str, str]:
+    """Join retrieved context. Python applies character budgets; C# does not."""
+    code_context = list(code_context or [])
+    summary_context = list(summary_context or [])
+    if target_language == "python":
+        return (
+            bound_python_prompt_documents(code_context, PYTHON_CODE_CONTEXT_CHARS),
+            bound_python_prompt_documents(summary_context, PYTHON_SUMMARY_CONTEXT_CHARS),
+        )
+    return (
+        "\n\n".join(code_context) if code_context else NO_CONTEXT_PROVIDED,
+        "\n\n".join(summary_context) if summary_context else NO_CONTEXT_PROVIDED,
+    )
+
+
+def python_unit_test_size_reason(test) -> str:
+    body = (getattr(test, "unit_test", None) or "").strip()
+    if len(body) <= MAX_TEST_CHARS:
+        return ""
+    test_id = getattr(test, "id", "unknown")
+    return (
+        f"rule {test_id}: unit_test exceeds {MAX_TEST_CHARS} characters "
+        f"({len(body)} characters); the test was not truncated"
+    )
+
+
+def split_python_unit_tests_for_persistence(tests) -> tuple[list, list[dict]]:
+    """Keep executable Python tests; report oversized records without truncated bodies."""
+    persistable = []
+    oversized = []
+    for test in tests or []:
+        reason = python_unit_test_size_reason(test)
+        if not reason:
+            persistable.append(test)
+            continue
+        oversized.append(
+            {
+                "id": getattr(test, "id", None),
+                "rule": getattr(test, "rule", ""),
+                "source_directory": getattr(test, "source_directory", ""),
+                "source_file_paths": list(getattr(test, "source_file_paths", None) or []),
+                "test_mode": getattr(test, "test_mode", "function"),
+                "character_count": len((getattr(test, "unit_test", None) or "").strip()),
+                "reason": reason,
+            }
+        )
+    return persistable, oversized
+
+
+def persist_python_generated_tests(output_dir: str | Path, tests) -> tuple[list, list[dict]]:
+    """
+    Write executable Python unit tests and always refresh the dropped sidecar.
+
+    unit_tests.json contains only accepted tests (possibly an empty list).
+    dropped_generated_tests.json is overwritten every call, including [].
+    """
+    persistable, oversized = split_python_unit_tests_for_persistence(tests)
+    folder = Path(output_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+
+    def dump(value):
+        if hasattr(value, "model_dump"):
+            return value.model_dump()
+        return dict(value)
+
+    (folder / "unit_tests.json").write_text(
+        json.dumps([dump(test) for test in persistable], indent=2),
+        encoding="utf-8",
+    )
+    (folder / "dropped_generated_tests.json").write_text(
+        json.dumps(oversized, indent=2),
+        encoding="utf-8",
+    )
+    return persistable, oversized
+
+
+def normalize_python_test_body(body: str) -> str:
+    """Stable pytest-body comparison: line endings and trailing line space only."""
+    unified = (body or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    return "\n".join(line.rstrip() for line in unified.split("\n"))
+
+
+def _python_case_source_context(case: PythonTestCase) -> tuple:
+    item = case.source if case.source is not None else case
+    paths = tuple(
+        sorted(
+            str(path).strip()
+            for path in getattr(item, "source_file_paths", None) or []
+            if str(path).strip()
+        )
+    )
+    directory = str(getattr(item, "source_directory", "") or "")
+    return (case.test_mode or "function", directory, paths)
+
+
+def _python_case_id(case: PythonTestCase) -> str:
+    item = case.source if case.source is not None else case
+    item_id = getattr(item, "id", None)
+    if item_id is None:
+        return case.name
+    return str(item_id)
+
+
+def _drop_duplicate_python_cases(
+    cases: list[PythonTestCase],
+) -> tuple[list[PythonTestCase], list[PythonTestCase]]:
+    """
+    Keep the first accepted pytest body per mode and source context.
+
+    Safety validation must already have passed. Distinct source paths,
+    directories, or test_mode values are not merged.
+    """
+    kept = []
+    duplicates = []
+    first_id_by_key = {}
+    for case in cases:
+        key = (normalize_python_test_body(case.body), *_python_case_source_context(case))
+        previous_id = first_id_by_key.get(key)
+        if previous_id is None:
+            first_id_by_key[key] = _python_case_id(case)
+            kept.append(case)
+            continue
+        current_id = _python_case_id(case)
+        case.reason = (
+            f"rule {current_id}: duplicate of rule {previous_id}; "
+            "identical pytest body in the same test_mode and source context"
+        )
+        case.body = ""
+        duplicates.append(case)
+    return kept, duplicates
+
+
 def _validate_python_item(item, body: str, imports: list[str], codebase_path: str | None):
     test_mode = effective_python_test_mode(item, codebase_path)
     cleaned_body, cleaned_imports, reason = clean_test(
@@ -530,6 +712,8 @@ def make_cases(prefix: str, items, body_of, imports_of, codebase_path: str | Non
         else:
             cases.append(case)
 
+    cases, duplicates = _drop_duplicate_python_cases(cases)
+    rejected.extend(duplicates)
     return cases, rejected
 
 def test_dir_for(codebase_path: str, codebase_name: str) -> str:
@@ -727,6 +911,9 @@ def check_tests(
             dropped.append(case)
         else:
             safe_cases.append(case)
+
+    safe_cases, duplicates = _drop_duplicate_python_cases(safe_cases)
+    dropped.extend(duplicates)
 
     run = PythonTestRun(
         kind=kind,

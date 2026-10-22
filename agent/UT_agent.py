@@ -31,6 +31,8 @@ from agent.test_harness import (
 )
 from agent.python_test_harness import (
     check_tests as check_python_tests,
+    generation_context_texts,
+    persist_python_generated_tests,
     trusted_python_test_mode,
     trusted_script_source_paths,
     make_cases as make_python_cases,
@@ -368,8 +370,8 @@ class UTAgent:
         under {output_directory}/{codebase_name}/. Creates directories if needed.
         Runs exactly once at the end of the graph.
 
-        @param state Current workflow state containing validated_rules.
-        @return Empty dict (terminal node).
+        @param state Current workflow state containing generated unit tests.
+        @return Python runs replace unit_tests with accepted tests only; C# returns {}.
         """
         progress(
             "Writing generated unit tests...",
@@ -381,13 +383,28 @@ class UTAgent:
         codebase_subdir = os.path.join(base_output_dir, codebase_name)
         os.makedirs(codebase_subdir, exist_ok=True)
         unit_tests = state.get("unit_tests", [])
-        if unit_tests:
+        persistable = unit_tests
+        if state.get("target_language") == "python":
+            persistable, oversized = persist_python_generated_tests(
+                codebase_subdir,
+                unit_tests,
+            )
+            dropped_path = os.path.join(codebase_subdir, "dropped_generated_tests.json")
+            if oversized:
+                progress(
+                    f"Rejected {len(oversized)} oversized Python tests before "
+                    f"unit_tests.json ({dropped_path})."
+                )
+            else:
+                progress(f"Wrote empty oversized-test report to {dropped_path}.")
+        if persistable:
             unit_tests_path_json = os.path.join(codebase_subdir, "unit_tests.json")
             unit_tests_path_txt = os.path.join(codebase_subdir, "unit_tests.txt")
-            with open(unit_tests_path_json, "w", encoding="utf-8") as f:
-                json.dump([u.model_dump() for u in unit_tests], f, indent=2)
+            if state.get("target_language") != "python":
+                with open(unit_tests_path_json, "w", encoding="utf-8") as f:
+                    json.dump([u.model_dump() for u in persistable], f, indent=2)
             with open(unit_tests_path_txt, "w", encoding="utf-8") as file:
-                for test in unit_tests:
+                for test in persistable:
                     # Write imports first (if any), then the unit test method
                     if getattr(test, "imports", None):
                         try:
@@ -395,7 +412,9 @@ class UTAgent:
                         except Exception:
                             pass
                     file.write(test.unit_test + "\n\n")
-            progress(f"Wrote {len(unit_tests)} unit tests to {unit_tests_path_json} and {unit_tests_path_txt}", 98)
+            progress(f"Wrote {len(persistable)} unit tests to {unit_tests_path_json} and {unit_tests_path_txt}", 98)
+        if state.get("target_language") == "python":
+            return {"unit_tests": persistable}
         return {}
 
     def runner_node(self, state: UTGraphState) -> UTGraphState:
@@ -588,8 +607,11 @@ async def _generate_single_test(
     codebase_path: str | None = None,
 ) -> tuple:
     try:
-        code_text = "\n\n".join(code_context) if code_context else "NO CONTEXT PROVIDED"
-        summary_text = "\n\n".join(summary_context) if summary_context else "NO CONTEXT PROVIDED"
+        code_text, summary_text = generation_context_texts(
+            target_language,
+            code_context,
+            summary_context,
+        )
 
         framework_instructions = unit_test_generation_instructions(
             target_language,
