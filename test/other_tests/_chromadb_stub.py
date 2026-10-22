@@ -8,6 +8,11 @@ def install():
     existing = sys.modules.get("chromadb")
     if existing is not None and getattr(existing, "_checkpoint_offline_stub", False):
         return
+    if existing is not None:
+        raise RuntimeError(
+            "A real chromadb module is already imported; the offline stub "
+            "will not replace it."
+        )
 
     chromadb = ModuleType("chromadb")
     chromadb._checkpoint_offline_stub = True
