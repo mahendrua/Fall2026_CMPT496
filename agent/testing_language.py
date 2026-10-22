@@ -151,8 +151,33 @@ def detect_unit_test_language(tests) -> str:
     )
 
 
-def unit_test_generation_instructions(target_language: str) -> str:
+def unit_test_generation_instructions(target_language: str, test_mode: str = "function") -> str:
     """Return language-specific instructions for test generation."""
+
+    if target_language == "python" and test_mode == "script":
+        return """
+PYTHON / PYTEST SCRIPT REQUIREMENTS:
+- Generate exactly one complete, undecorated, synchronous top-level pytest
+  function named `test_*`. Put it only in `unit_test`.
+- Do not wrap it in a class. Do not use async def.
+- The `imports` array may contain only: import subprocess, import sys,
+  import os, from pathlib import Path. No other imports.
+- Do not import student modules, packages, or files from the lab.
+  Pytest collection must not execute student code.
+- Resolve the script with Path(os.environ["CHECKPOINT_CODEBASE_PATH"]) and a
+  codebase-relative path from the supplied source files. Do not hard-code
+  machine-specific absolute paths.
+- Inside the test function only, run the script with subprocess.run using
+  sys.executable and an argv list. Never use shell=True.
+- Pass deterministic stdin via input=, capture stdout and stderr, and set
+  timeout=5. cwd may be a temporary directory or the script's parent folder
+  for sibling data files; that is not a security sandbox.
+- Assert on returncode and on stdout/stderr text that the business rule and
+  source actually support. Do not invent numeric or printed results.
+- If the rule does not specify observable output, assert only that the
+  process exits 0.
+- Do not use C# syntax, xUnit, or pytest plugins.
+"""
 
     if target_language == "python":
         return """

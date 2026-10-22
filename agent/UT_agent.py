@@ -31,6 +31,8 @@ from agent.test_harness import (
 )
 from agent.python_test_harness import (
     check_tests as check_python_tests,
+    trusted_python_test_mode,
+    trusted_script_source_paths,
     make_cases as make_python_cases,
     write_results as write_python_results,
 )
@@ -303,7 +305,21 @@ class UTAgent:
             async def guarded(rule: ValidatedRule):
                 async with sem:
                     ctx = rule_contexts.get(str(rule.id), {"code_context": [], "summary_context": []})
-                    return await _generate_single_test(structured_llm, rule, ctx["code_context"], ctx["summary_context"], target_language)
+                    test_mode = "function"
+                    if target_language == "python":
+                        test_mode = trusted_python_test_mode(
+                            rule.source_file_paths,
+                            state.get("codebase_path"),
+                        )
+                    return await _generate_single_test(
+                        structured_llm,
+                        rule,
+                        ctx["code_context"],
+                        ctx["summary_context"],
+                        target_language,
+                        test_mode,
+                        state.get("codebase_path"),
+                    )
             return await asyncio.gather(*(guarded(r) for r in validated_rules))
 
         results = self._loop.run_until_complete(run_batch())
@@ -321,7 +337,21 @@ class UTAgent:
                 logger.error(f"Unit test generation error for rule {rule.id}: {err}")
                 continue
             test_imports.update(output.imports)
-            unit_tests.append(UnitTest(imports=output.imports, unit_test=output.unit_test, id=rule.id, rule=rule.rule, source_directory = rule.source_directory, source_file_paths = rule.source_file_paths))
+            test_mode = "function"
+            if target_language == "python":
+                test_mode = trusted_python_test_mode(
+                    rule.source_file_paths,
+                    state.get("codebase_path"),
+                )
+            unit_tests.append(UnitTest(
+                imports=output.imports,
+                unit_test=output.unit_test,
+                id=rule.id,
+                rule=rule.rule,
+                source_directory=rule.source_directory,
+                source_file_paths=rule.source_file_paths,
+                test_mode=test_mode,
+            ))
 
         progress(
             f"Validated {len(unit_tests)} generated unit tests.",
@@ -401,6 +431,7 @@ class UTAgent:
                 test_items,
                 body_of=lambda test: test.unit_test,
                 imports_of=lambda test: test.imports,
+                codebase_path=codebase_path,
             )
 
             test_run = check_python_tests(
@@ -552,13 +583,24 @@ async def _generate_single_test(
     rule: ValidatedRule,
     code_context: list[str],
     summary_context: list[str],
-    target_language: str
+    target_language: str,
+    test_mode: str = "function",
+    codebase_path: str | None = None,
 ) -> tuple:
     try:
         code_text = "\n\n".join(code_context) if code_context else "NO CONTEXT PROVIDED"
         summary_text = "\n\n".join(summary_context) if summary_context else "NO CONTEXT PROVIDED"
 
-        framework_instructions = unit_test_generation_instructions(target_language)
+        framework_instructions = unit_test_generation_instructions(
+            target_language,
+            test_mode=test_mode,
+        )
+        relative_sources = []
+        if target_language == "python" and test_mode == "script":
+            relative_sources = trusted_script_source_paths(
+                rule.source_file_paths,
+                codebase_path,
+            )
 
         system_message = (
             "You are a Senior Software Architect and expert Automated Test Engineer. "
@@ -570,6 +612,12 @@ async def _generate_single_test(
 
             #### TARGET LANGUAGE
             {target_language}
+
+            #### TEST MODE
+            {test_mode}
+
+            #### TRUSTED SOURCE PATHS (codebase-relative when known)
+            {", ".join(relative_sources) if relative_sources else "(none; do not invent a script path)"}
 
             #### FRAMEWORK-SPECIFIC RULES
             {framework_instructions}
