@@ -81,6 +81,7 @@ def collect(codebase_name, app_dir, codebase_path=None, run_log_path=None):
     rules = _read_rules(agent_dir / "BR_agent_output" / codebase_name, paths, notes, since)
     unit = _read_unit_tests(agent_dir / "UT_agent_output" / codebase_name, paths, notes, since)
     integration = _read_integration_tests(agent_dir / "IT_agent_output" / codebase_name, notes, since)
+    mutation = _read_mutation(agent_dir / "MT_output" / codebase_name, notes, since)
 
     _link_files_to_folders(files, folders)
     _link_tests_to_rules(rules, unit["tests"] + integration["tests"])
@@ -108,6 +109,7 @@ def collect(codebase_name, app_dir, codebase_path=None, run_log_path=None):
         "files": files,
         "rules": rules,
         "tests": {"unit": unit, "integration": integration},
+        "mutation": mutation,
         "notes": notes,
     }
 
@@ -736,6 +738,38 @@ def _readable_code(code):
         code = (code.replace("\\r\\n", "\n").replace("\\n", "\n")
                     .replace("\\t", "    ").replace('\\"', '"'))
     return code
+
+
+# ---------------------------------------------------------
+# Mutation testing
+# ---------------------------------------------------------
+
+def _read_mutation(folder, notes, since):
+    """
+    The latest mutation testing results (backend/mutation_testing.py), or
+    None when it has not been run. A run that could not measure keeps its
+    status and message, so the report says why instead of showing 0%.
+    """
+    report = _load(folder / "mutation_report.json", notes, "mutation test report", since, missing_ok=True)
+    if not isinstance(report, dict):
+        return None
+
+    tests = _as_dict(report.get("tests"))
+    tool = _as_dict(report.get("tool"))
+
+    return {
+        "status": report.get("status", ""),
+        "message": report.get("message", ""),
+        "finished_at": report.get("finished_at"),
+        "elapsed_seconds": report.get("elapsed_seconds"),
+        "tool": " ".join(filter(None, [tool.get("name"), tool.get("version")])),
+        "overall": report.get("overall") if isinstance(report.get("overall"), dict) else None,
+        "by_file": _as_dict(report.get("by_file")),
+        "tests_used": _as_list(tests.get("used")),
+        "tests_left_out": _as_list(tests.get("left_out")),
+        "rules": _as_list(report.get("rules")),
+        "html_report": _as_dict(report.get("stryker")).get("html_report"),
+    }
 
 
 def _link_tests_to_rules(rules, tests):

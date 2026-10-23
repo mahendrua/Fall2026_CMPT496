@@ -209,3 +209,65 @@ def test_saved_next_to_the_report(tmp_path):
 
     assert path == app / "run_reports" / "shop" / "run_report_data.json"
     assert json.loads(path.read_text(encoding="utf-8"))["codebase"] == "shop"
+
+
+# ---------- test strength (mutation testing) ----------
+
+MUTATION_REPORT = {
+    "status": "finished", "message": "Test strength: 75% of 4 code changes caught.",
+    "finished_at": "2020-01-01T10:10:00", "elapsed_seconds": 200,
+    "tool": {"name": "Stryker.NET", "version": "5.0.0"},
+    "overall": {"killed": 3, "survived": 1, "scored": 4, "detected": 3, "score": 75.0},
+    "by_file": {"shop/cart.py": {"scored": 4, "detected": 3, "score": 75.0}},
+    "tests": {"used": [{"name": "UT_1", "rule_id": 1, "covered": 4, "killed": 3}],
+              "left_out": [{"name": "UT_2", "rule_id": 2, "reason": "dropped by the unit test step"}]},
+    "rules": [{"id": 1, "tests": ["UT_1"], "own_tests": {"covered": 4, "caught": 3}}],
+    "stryker": {"html_report": "C:/x/mutation-report.html"},
+}
+
+
+def test_no_mutation_results_means_not_measured(tmp_path):
+    app, root = make_run(tmp_path)
+    data = collect("shop", app, codebase_path=root)
+
+    assert data["mutation"] is None
+    assert not any("mutation" in note for note in data["notes"])  # not having run it is normal
+
+
+def test_mutation_results_are_read(tmp_path):
+    app, root = make_run(tmp_path)
+    write(app / "agent" / "MT_output" / "shop" / "mutation_report.json", MUTATION_REPORT)
+
+    mutation = collect("shop", app, codebase_path=root)["mutation"]
+
+    assert (mutation["status"], mutation["overall"]["score"], mutation["tool"]) == ("finished", 75.0, "Stryker.NET 5.0.0")
+    assert mutation["tests_used"][0]["killed"] == 3
+    assert mutation["tests_left_out"][0]["name"] == "UT_2"
+    assert mutation["rules"][0]["own_tests"]["caught"] == 3
+    assert mutation["html_report"] == "C:/x/mutation-report.html"
+
+
+def test_unfinished_mutation_run_keeps_its_reason(tmp_path):
+    app, root = make_run(tmp_path)
+    write(app / "agent" / "MT_output" / "shop" / "mutation_report.json",
+          {"status": "not_run", "message": "Stryker.NET is not installed.", "overall": None})
+
+    mutation = collect("shop", app, codebase_path=root)["mutation"]
+
+    assert (mutation["status"], mutation["message"], mutation["overall"]) == ("not_run", "Stryker.NET is not installed.", None)
+
+
+def test_mutation_results_older_than_the_run_get_a_note(tmp_path):
+    app, root = make_run(tmp_path)
+    log = app / "run_logs" / "shop_20200101-100000-aaaaaa.json"
+    entry = json.loads(log.read_text(encoding="utf-8"))
+    entry["started_at"] = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(time.time() - 60))
+    log.write_text(json.dumps(entry), encoding="utf-8")
+    report = app / "agent" / "MT_output" / "shop" / "mutation_report.json"
+    write(report, MUTATION_REPORT)
+    an_hour_ago = time.time() - 3600
+    os.utime(report, (an_hour_ago, an_hour_ago))
+
+    data = collect("shop", app, codebase_path=root)
+
+    assert any("mutation test report" in note and "older than this run" in note for note in data["notes"])

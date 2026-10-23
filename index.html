@@ -117,6 +117,9 @@
             </div>
         </header>
 
+            </div>
+        </header>
+
         <div id="analysisOptions" class="operations-content">
             <section class="codebase-summary operations-codebase-summary" aria-live="polite" aria-label="Selected codebase">
                 <h2 class="codebase-summary-title">Selected Codebase</h2>
@@ -163,6 +166,8 @@
                     <button class="btn-primary operation-task-button" id="runUnitTestGenerationOnlyBtn" type="button">Unit Test Generation</button>
                     <button class="btn-primary operation-task-button" id="runUnitTestValidationOnlyBtn" type="button">Unit Test Validation</button>
                     <button class="btn-primary operation-task-button" id="runIntegrationTestGenerationOnlyBtn" type="button">Integration Test Generation</button>
+                    <button class="btn-primary operation-task-button" id="runMutationTestingOnlyBtn" type="button">Test Strength (Mutation Testing)</button>
+                    <button class="btn-primary operation-task-button" id="runConsistencyReviewOnlyBtn" type="button">Consistency Review</button>
                 </section>
             </div>
         </div>
@@ -271,6 +276,7 @@
                     <button class="btn-primary" id="viewDisplayBusinessRulesBtn">Business Rules</button>
                     <button class="btn-primary" id="viewUnitTestsBtn">Unit Tests</button>
                     <button class="btn-primary" id="viewUsageBtn">AI Usage</button>
+                    <button class="btn-primary" id="viewConsistencyBtn">Consistency Review</button>
                     <button class="btn-primary" id="viewRunReportBtn">Run Report</button>
 
                     <button class="btn-primary" id="viewDisplayFilesBtn">Files</button>
@@ -285,6 +291,8 @@
                 <div id="viewErrorsBtns" class="viewBtnContainer hidden"> </div>
 
                 <div id="viewUsageBtns" class="viewBtnContainer hidden"> </div>
+
+                <div id="viewConsistencyBtns" class="viewBtnContainer hidden"> </div>
 
                 <div id="viewFilesBtns" class="viewBtnContainer hidden"> </div>
 
@@ -800,6 +808,7 @@
             <button id="loadingCancelBtn" class="btn-cancel">Cancel</button>
             <button id="loadingReportBtn" class="btn-primary hidden">Open Report</button>
             <button id="loadingOkBtn" class="btn-primary hidden">OK</button>
+            <button id="loadingOpenReviewBtn" class="btn-primary hidden">Open Consistency Review</button>
         </div>
     </div>
 
@@ -813,6 +822,8 @@
     </div>
 
     <script src="command_requests.js"></script>
+    <script src="consistency_review_model.js"></script>
+    <script src="consistency_review.js"></script>
     <script src="renderer.js"></script>
 
 </body>

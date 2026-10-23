@@ -383,6 +383,148 @@ button.more:hover { text-decoration: underline; }
     return RULES.filter(function (r) { return resultById.get(String(r.id)) === result; }).length;
   }
 
+  // ---------- test strength (mutation testing) ----------
+  //
+  // Checkpoint plants small mistakes in the code after the tests exist and
+  // counts how many the tests catch. Explained like testing a smoke alarm,
+  // for readers who have never heard of mutation testing. No results means
+  // "not measured", never 0%.
+
+  var MUTATION = DATA.mutation || null;
+  var MEASURED = !!(MUTATION && MUTATION.status === "finished" && MUTATION.overall && MUTATION.overall.score !== null);
+  var mutationByRule = new Map(((MUTATION && MUTATION.rules) || []).map(function (r) { return [String(r.id), r]; }));
+  var mutationByTest = new Map(((MUTATION && MUTATION.tests_used) || []).map(function (t) { return [t.name, t]; }));
+  var leftOutByTest = new Map(((MUTATION && MUTATION.tests_left_out) || []).map(function (t) { return [t.name, t]; }));
+  var NOT_MEASURED = "Not measured: mutation testing has not been run for this project.";
+
+  function strengthTile() {
+    if (MEASURED) {
+      return tile("Test strength", Math.round(MUTATION.overall.score) + "%",
+        "of " + plural(MUTATION.overall.scored, "planted mistake") + " caught", "#strength");
+    }
+    return tile("Test strength", "Not measured", MUTATION ? "the last check did not finish" : "not checked yet", "#strength");
+  }
+
+  // How the check works, in steps.
+  function strengthExplained() {
+    return [
+      el("p", { class: "plain" }, "Passing tests don't prove much on their own. So Checkpoint tested the tests, the way you " +
+        "would test a smoke alarm: by setting it off on purpose. It planted small mistakes in the code, one at a time, " +
+        "and ran the tests again after each one:"),
+      el("ul", { class: "notes plain" },
+        el("li", null, el("strong", null, "A test failed: "), "the tests caught the mistake. That is what you want."),
+        el("li", null, el("strong", null, "Every test still passed: "), "the tests missed it."))
+    ];
+  }
+
+  function howOften(score) {
+    if (score >= 80) return "most of the time";
+    if (score >= 60) return "more often than not";
+    if (score >= 40) return "about half the time";
+    if (score >= 20) return "less than half the time";
+    return "rarely";
+  }
+
+  // The result, what it means, and one real mistake the tests missed.
+  function strengthResult() {
+    var o = MUTATION.overall, example = missedExample();
+    return [
+      el("p", { class: "plain" }, el("strong", null, "Result: "), "Checkpoint planted " + plural(o.scored, "mistake") +
+        ", and the tests caught " + fmt(o.detected) + " of them (" + Math.round(o.score) + "%)."),
+      el("p", { class: "plain" }, el("strong", null, "What it means: "), "if someone accidentally broke this code later, " +
+        "these tests would catch it " + howOften(o.score) + ". Under 60% is low; over 80% is good."),
+      example ? el("p", { class: "plain" }, el("strong", null, "A mistake the tests missed: "),
+        "in " + String(example.file).split("/").pop() + ", line " + (example.line || "?") +
+        (example.line_text ? " reads " : ""), example.line_text ? el("code", null, example.line_text) : null,
+        (example.line_text ? ". " : ": ") + "Checkpoint changed ", el("code", null, example.original), " to ",
+        el("code", null, example.mutated), ", and every test still passed.") : null
+    ];
+  }
+
+  // A short, readable missed mistake: a changed operator or method name
+  // explains itself better than a changed string or a whole expression.
+  function missedExample() {
+    var missed = [];
+    ((MUTATION && MUTATION.rules) || []).forEach(function (r) {
+      (r.surviving_examples || []).forEach(function (e) { if (e.status === "Survived") missed.push(e); });
+    });
+    var readable = missed.filter(function (e) {
+      return e.original && e.mutated && e.original.length >= 4 && e.original.length <= 40 && e.original.charAt(0) !== '"';
+    });
+    return readable[0] || missed[0] || null;
+  }
+
+  // A left-out test's reason without the failing method names, for readers who don't read code.
+  function plainReason(text) { return String(text || "").replace(/\s*\(failing check:[^)]*\)/, ""); }
+
+  // The same reasons for several tests at once ("UT_2 and UT_5 already fail ...").
+  var PLURAL_REASONS = {
+    failed: "already fail on the code as it is now, so they cannot show whether a change broke anything",
+    dropped: "were thrown away by the unit test step before they ever ran",
+    not_run: "were not run in the last unit test run, so nobody knows whether they pass",
+    missing: "passed, but their files are no longer in the generated test project",
+    stale: "are left over from an older run and are not in the latest unit test results"
+  };
+  function joinNames(names) {
+    return names.length === 1 ? names[0] : names.slice(0, -1).join(", ") + " and " + names[names.length - 1];
+  }
+
+  // Each unit test Stryker could not use, as "UT_3 already fails on the code as it is now, ...".
+  // For business readers, tests left out for the same reason share one line.
+  function leftOutList(plain) {
+    var left = ((MUTATION && MUTATION.tests_left_out) || []).filter(function (t) { return /^UT_/.test(t.name); });
+    if (!left.length) return null;
+    if (!plain) {
+      return el("ul", { class: "notes" }, left.map(function (t) {
+        return el("li", null, el("span", { class: "mono" }, t.name), " " + t.reason + ".");
+      }));
+    }
+    var order = [], groups = {};
+    left.forEach(function (t) {
+      var key = PLURAL_REASONS[t.why] ? t.why : "test:" + t.name;
+      if (!groups[key]) { groups[key] = []; order.push(key); }
+      groups[key].push(t);
+    });
+    return el("ul", { class: "notes" }, order.map(function (key) {
+      var tests = groups[key];
+      var reason = tests.length > 1 ? PLURAL_REASONS[key] : plainReason(tests[0].reason);
+      return el("li", null, el("span", { class: "mono" }, joinNames(tests.map(function (t) { return t.name; }))), " " + reason + ".");
+    }));
+  }
+
+  // What a rule's own test did with the changes, in one line, or null when there is nothing to say.
+  function ruleStrength(r) {
+    if (r.status !== "proven") return null;
+    if (!MEASURED) return "Not measured.";
+    var m = mutationByRule.get(String(r.id));
+    if (!m) return "Not measured for this rule.";
+    if (!m.own_tests) return m.note || "It has no unit test of its own that could be measured.";
+    if (!m.own_tests.covered) return "Its test does not run any of the code where mistakes were planted.";
+    return "Its test caught " + fmt(m.own_tests.caught) + " of the " + plural(m.own_tests.covered, "planted mistake") +
+      " in the code it runs.";
+  }
+
+  function survivingExamples(m) {
+    if (!m || !m.surviving_examples || !m.surviving_examples.length) return null;
+    var rows = m.surviving_examples.map(function (e) {
+      return el("tr", null,
+        el("td", { class: "mono" }, String(e.file).split("/").pop() + ":" + (e.line || "?")),
+        el("td", { class: "mono" }, e.original || "–",
+          e.line_text && e.line_text !== e.original ? el("div", { class: "muted", style: "font-size: 12px" }, e.line_text) : null),
+        el("td", { class: "mono" }, e.mutated || "–"),
+        el("td", { class: "muted", style: "white-space: nowrap" }, e.status === "NoCoverage" ? "no test runs this code" : "missed"));
+    });
+    var table = el("div", { class: "table-wrap", hidden: true }, el("table", null,
+      el("thead", null, el("tr", null, el("th", null, "Where"), el("th", null, "Code"), el("th", null, "Changed to"), el("th", null, ""))),
+      el("tbody", null, rows)));
+    var more = m.surviving > m.surviving_examples.length ? " (first " + fmt(m.surviving_examples.length) + " of " + fmt(m.surviving) + ")" : "";
+    var button = el("button", { type: "button", class: "more", onclick: function () {
+      table.hidden = !table.hidden;
+      button.textContent = table.hidden ? "Show more" : "Show less";
+    } }, "Show more");
+    return [el("p", { class: "muted" }, "Planted mistakes the tests missed" + more + ": ", button), table];
+  }
+
   // ---------- header ----------
 
   (function header() {
@@ -437,6 +579,7 @@ button.more:hover { text-decoration: underline; }
       testTile("Unit tests", DATA.tests.unit, COUNTS.unit_tests, COUNTS.unit_passed, COUNTS.unit_failed, COUNTS.unit_dropped),
       testTile("Integration tests", DATA.tests.integration, COUNTS.integration_tests, COUNTS.integration_passed,
                COUNTS.integration_failed, COUNTS.integration_dropped),
+      strengthTile(),
       tile("Code read", plural(COUNTS.files, "file"), plural(COUNTS.folders, "folder") + " · " + plural(COUNTS.types, "class", "classes"), "#folders"),
       tile("AI tokens", tokens ? fmt(tokens.total_tokens) : "–",
            tokens ? fmt(tokens.thinking_tokens) + " thinking · " + plural(tokens.calls, "AI call") : "no run log for this run", "#run"),
@@ -447,6 +590,8 @@ button.more:hover { text-decoration: underline; }
         el("h2", null, "Good to know about this report"),
         el("ul", { class: "notes" }, DATA.notes.map(function (n) { return el("li", null, n); }))));
     }
+
+    add(root, strengthCard());
 
     if (run) {
       var rows = run.stages.map(function (s) {
@@ -472,6 +617,50 @@ button.more:hover { text-decoration: underline; }
             el("th", { class: "num" }, "AI calls"), el("th", { class: "num" }, "Tokens"), el("th", { class: "num" }, "of which thinking"))),
           el("tbody", null, rows)))));
     }
+  }
+
+  function strengthCard() {
+    var card = el("div", { class: "card", id: "strength" }, el("h2", null, "How strong are the tests?"), strengthExplained());
+    if (!MUTATION) {
+      add(card, el("p", { class: "muted" }, NOT_MEASURED + " Run it from the app: Run Operations, then Test Strength (Mutation Testing)."));
+      return card;
+    }
+    if (!MEASURED) {
+      add(card, el("p", { class: "muted" }, "Not measured: " + (MUTATION.message || "the last check did not finish.")));
+      return card;
+    }
+
+    var o = MUTATION.overall;
+    add(card, strengthResult());
+    add(card, el("p", { class: "muted" }, "In detail: " + fmt(o.killed) + " caught because a test failed · " +
+      fmt(o.timeout) + " caught because the code froze · " + fmt(o.survived) + " missed although tests ran that code · " +
+      fmt(o.no_coverage) + " missed because no unit test runs that code. Stryker.NET planted " +
+      plural(o.total, "mistake") + " in all; the other " + fmt(o.total - o.scored) +
+      " did not compile or repeated another, so they don't count."));
+
+    var used = MUTATION.tests_used, left = MUTATION.tests_left_out;
+    add(card, el("dl", { class: "facts" },
+      el("dt", null, "Measured"), el("dd", null, when(MUTATION.finished_at) + " · took " + duration(MUTATION.elapsed_seconds) +
+        (MUTATION.tool ? " · " + MUTATION.tool : "")),
+      el("dt", null, "Tests used"), el("dd", null, plural(used.length, "passing unit test") +
+        (used.length ? ": " + used.map(function (t) { return t.name; }).join(", ") : "")),
+      el("dt", null, "Left out"), el("dd", null, left.length
+        ? el("ul", { class: "notes" }, left.map(function (t) { return el("li", null, el("span", { class: "mono" }, t.name), " " + t.reason + "."); }))
+        : "none"),
+      MUTATION.html_report ? [el("dt", null, "Full report"),
+        el("dd", null, el("a", { href: "file:///" + encodeURI(String(MUTATION.html_report).replace(/\\/g, "/")) }, "Stryker's own report, change by change"))] : null));
+
+    var files = Object.keys(MUTATION.by_file || {});
+    if (files.length > 1) {
+      add(card, el("div", { class: "table-wrap" }, el("table", null,
+        el("thead", null, el("tr", null, el("th", null, "File"), el("th", { class: "num" }, "Changes"), el("th", { class: "num" }, "Caught"), el("th", { class: "num" }, "Score"))),
+        el("tbody", null, files.map(function (f) {
+          var c = MUTATION.by_file[f];
+          return el("tr", null, el("td", { class: "mono" }, f), el("td", { class: "num" }, fmt(c.scored)),
+            el("td", { class: "num" }, fmt(c.detected)), el("td", { class: "num" }, c.score === null ? "–" : Math.round(c.score) + "%"));
+        })))));
+    }
+    return card;
   }
 
   // ---------- shared list filtering ----------
@@ -587,7 +776,22 @@ button.more:hover { text-decoration: underline; }
       tile("Confirmed in the code", fmt(confirmed) + " of " + fmt(found), fmt(found - confirmed) + " could not be confirmed", "#show-all"),
       tile("Confirmed and tested", fmt(passed), "a test for the rule passed", "#show-passed"),
       lookTile,
-      tile("Not tested", fmt(untested), "confirmed, but no test ran", "#show-untested")));
+      tile("Not tested", fmt(untested), "confirmed, but no test ran", "#show-untested"),
+      strengthTile()));
+
+    var card = el("div", { class: "card", id: "b-strength" }, el("h2", null, "How strong are the tests?"), strengthExplained());
+    if (MEASURED) {
+      add(card, strengthResult());
+      var left = leftOutList(true);
+      add(card, el("p", { class: "plain" }, el("strong", null, "Tests used: "), "the " +
+        plural(MUTATION.tests_used.length, "unit test") + " that pass" + (MUTATION.tests_used.length === 1 ? "es" : "") +
+        (left ? ". These were left out:" : ".")));
+      add(card, left);
+    } else {
+      add(card, el("p", { class: "plain" }, "Not checked yet for this project" +
+        (MUTATION ? " (the last check did not finish)." : ". Run it from the app: Run Operations, then Test Strength (Mutation Testing).")));
+    }
+    add(root, card);
   }
 
   // ---------- Business view: Business rules ----------
@@ -608,6 +812,9 @@ button.more:hover { text-decoration: underline; }
         "It is also part of " + plural(workflows.length, "bigger workflow test") + ": " +
         fmt(workflows.length - failed) + " passed, " + fmt(failed) + " failed."));
     }
+
+    var strength = ruleStrength(r);
+    if (strength) add(body, el("p", null, el("strong", null, "Test strength: "), plainReason(strength)));
 
     add(body, el("p", null, el("a", { href: "#", onclick: function (e) {
       e.preventDefault();
@@ -682,8 +889,20 @@ button.more:hover { text-decoration: underline; }
       add(body, el("p", { class: "muted" }, r.status === "proven" ? "No test was written for this rule." : "Rejected rules get no tests."));
     }
 
+    var strength = ruleStrength(r), m = mutationByRule.get(String(r.id)), badge = null;
+    if (strength) {
+      add(body, [el("h4", null, "Test strength"), el("p", null, strength)]);
+      if (MEASURED && m && m.own_tests && m.own_tests.covered) {
+        var o = m.own_tests;
+        add(body, el("p", { class: "muted" }, "Of the rest: " + fmt(o.caught_by_other_tests_only) + " caught only by other tests · " +
+          fmt(o.survived) + " missed by every test · " + fmt(o.timeout) + " made the code freeze"));
+        badge = el("span", { class: "badge", title: "Planted mistakes its own test caught" }, fmt(o.caught) + "/" + fmt(o.covered) + " caught");
+      }
+      if (MEASURED) add(body, survivingExamples(m));
+    }
+
     return el("details", { class: "item", id: "rule-" + r.id },
-      el("summary", null, el("span", { class: "id" }, "#" + r.id), pill(r.status), el("span", { class: "item-title" }, r.rule), testDots(r.tests)),
+      el("summary", null, el("span", { class: "id" }, "#" + r.id), pill(r.status), el("span", { class: "item-title" }, r.rule), badge, testDots(r.tests)),
       body);
   }
 
@@ -741,6 +960,14 @@ button.more:hover { text-decoration: underline; }
     }
     if (t.reason) add(body, [el("h4", null, t.status === "dropped" ? "Why it was dropped" : "Note"), el("p", null, t.reason)]);
     if (t.repaired) add(body, el("p", { class: "muted" }, "It did not compile at first; the AI repaired it."));
+
+    var measured = MEASURED && mutationByTest.get(t.name), leftOut = MEASURED && leftOutByTest.get(t.name);
+    if (measured) {
+      add(body, [el("h4", null, "Test strength"), el("p", null, "It caught " + fmt(measured.killed) + " of the " +
+        plural(measured.covered, "planted mistake") + " in the code it runs.")]);
+    } else if (leftOut) {
+      add(body, [el("h4", null, "Test strength"), el("p", { class: "muted" }, "Not used in mutation testing: " + t.name + " " + leftOut.reason + ".")]);
+    }
     var imports = importsOf(t);
     if (imports.length) add(body, [el("h4", null, "Imports"), el("pre", { class: "code" }, imports.join("\n"))]);
     add(body, [el("h4", null, "Test code"), el("pre", { class: "code" }, t.code || "–")]);
@@ -749,6 +976,7 @@ button.more:hover { text-decoration: underline; }
       el("summary", null, el("span", { class: "id mono" }, t.name), pill(t.status),
         t.repaired ? el("span", { class: "badge" }, "repaired") : null,
         el("span", { class: "badge" }, t.kind),
+        measured ? el("span", { class: "badge", title: "Planted mistakes this test caught" }, "caught " + fmt(measured.killed)) : null,
         el("span", { class: "item-title" }, t.title)),
       body);
   }
@@ -1112,6 +1340,7 @@ button.more:hover { text-decoration: underline; }
     else if (kind === "file") { showTab("folders"); reveal(document.getElementById("file-" + key), filters.folders); }
     else if (kind === "type") { showTab("diagram"); showType(key); }
     else if (hash === "run") { setView("developer"); showTab("overview"); reveal(document.getElementById("run")); }
+    else if (hash === "strength") { showTab("overview"); reveal(document.getElementById(VIEW === "business" ? "b-strength" : "strength")); }
     else showTab("overview");
   }
 
