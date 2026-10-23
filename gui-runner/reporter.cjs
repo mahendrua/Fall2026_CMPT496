@@ -2,6 +2,59 @@ function send(type, data = {}) {
     process.stdout.write(`GUI_EVENT:${JSON.stringify({ type, ...data })}\n`);
 }
 
+function diagnoseFailure(errors, output) {
+    const errorText = (errors || []).map(error => error.message || "").join("\n");
+    const outputText = (output || []).map(item => item.text || "").join("\n");
+    const combined = `${errorText}\n${outputText}`.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, "");
+    const locator = combined.match(/Locator:\s+([^\r\n]+)/)?.[1]
+        || combined.match(/waiting for (locator\([^)]*\)[^\r\n]*)/)?.[1]
+        || null;
+
+    if (/APP_PAGE_ERROR:/.test(combined)) {
+        return {
+            category: "application_runtime_error",
+            locator,
+            summary: "The page reported an uncaught application error during this test."
+        };
+    }
+    if (/net::ERR_(?:CONNECTION|NAME|ADDRESS|TUNNEL)|ECONNREFUSED|ENOTFOUND|EAI_AGAIN|proxy connection/i.test(combined)) {
+        return {
+            category: "connection_failure",
+            locator,
+            summary: "The browser could not connect to the app or a requested network destination."
+        };
+    }
+    if (
+        /locator resolved to <[^>]+>/i.test(combined)
+        && /intercepts pointer events|not visible|not enabled|not stable/i.test(combined)
+    ) {
+        return {
+            category: "actionability_failure",
+            locator,
+            summary: "The locator matched an element, but Playwright could not interact with it. This is not evidence of an incorrect selector."
+        };
+    }
+    if (/locator resolved to 0 elements|waiting for locator|waiting for getBy(?:Role|Label|Text|Placeholder)/i.test(combined)) {
+        return {
+            category: "locator_timeout",
+            locator,
+            summary: "A locator did not resolve in time. This may be a selector mismatch, missing test precondition, or timing issue; the cause is not confirmed."
+        };
+    }
+    if (/expect\(/i.test(combined) && /failed|Timeout/i.test(combined)) {
+        return {
+            category: "assertion_mismatch",
+            locator,
+            summary: "An expectation did not match the observed application state; this may indicate an app behavior issue or an unsupported test assumption."
+        };
+    }
+    return {
+        category: "unknown",
+        locator,
+        summary: "The test failed, but the available error does not identify the cause."
+    };
+}
+
 class GuiReporter {
     constructor() {
         this.total = 0;
@@ -16,9 +69,14 @@ class GuiReporter {
     }
 
     onTestBegin(test) {
+        const annotations = Object.fromEntries(
+            (test.annotations || []).map(annotation => [annotation.type, annotation.description || ""])
+        );
         send("test_started", {
             testId: test.id,
-            title: test.titlePath().filter(Boolean).join(" › "),
+            title: test.title,
+            purpose: annotations.purpose || null,
+            expectedResult: annotations.expected || null,
             file: test.location.file.split(/[\\/]/).pop(),
             line: test.location.line
         });
@@ -42,14 +100,22 @@ class GuiReporter {
             ...(result.stdout || []).map(chunk => ({ stream: "stdout", text: String(chunk).slice(0, 8000) })),
             ...(result.stderr || []).map(chunk => ({ stream: "stderr", text: String(chunk).slice(0, 8000) }))
         ];
+        const diagnostics = status === "failed" ? diagnoseFailure(errors, output) : null;
+        const annotations = Object.fromEntries(
+            [...(test.annotations || []), ...(result.annotations || [])]
+                .map(annotation => [annotation.type, annotation.description || ""])
+        );
         send("test_finished", {
             testId: test.id,
-            title: test.titlePath().filter(Boolean).join(" › "),
+            title: test.title,
+            purpose: annotations.purpose || null,
+            expectedResult: annotations.expected || null,
             file: test.location.file.split(/[\\/]/).pop(),
             status,
             duration: result.duration,
             errors,
-            output
+            output,
+            diagnostics
         });
     }
 
@@ -72,3 +138,4 @@ class GuiReporter {
 }
 
 module.exports = GuiReporter;
+module.exports.diagnoseFailure = diagnoseFailure;

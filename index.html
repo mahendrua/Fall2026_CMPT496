@@ -267,6 +267,7 @@
                     <button class="btn-primary" id="viewDisplayBusinessRulesBtn">Business Rules</button>
                     <button class="btn-primary" id="viewUnitTestsBtn">Unit Tests</button>
                     <button class="btn-primary" id="viewUsageBtn">AI Usage</button>
+                    <button class="btn-primary" id="viewGuiTestingReportsBtn">GUI Testing</button>
 
                     <button class="btn-primary" id="viewDisplayFilesBtn">Files</button>
                 </div>
@@ -280,6 +281,11 @@
                 <div id="viewErrorsBtns" class="viewBtnContainer hidden"> </div>
 
                 <div id="viewUsageBtns" class="viewBtnContainer hidden"> </div>
+
+                <div id="viewGuiReportsBtns" class="viewBtnContainer hidden">
+                    <button class="btn-secondary" id="refreshGuiReportsBtn">Refresh reports</button>
+                    <div id="guiTestingReportsList"></div>
+                </div>
 
                 <div id="viewFilesBtns" class="viewBtnContainer hidden"> </div>
 
@@ -298,6 +304,9 @@
         <!-- This box will be for the outputs -->
         <div id="viewDisplayOutput">
             <pre id="viewDisplayOutputBox"></pre>
+            <section id="guiTestingReportView" class="hidden" aria-live="polite">
+                <div id="guiTestingReportContent"></div>
+            </section>
         </div>
         
         
@@ -382,6 +391,10 @@
 
                         • UML diagrams representing relationships between
                         components
+                        <br><br>
+
+                        • GUI testing reports with saved Playwright results,
+                        failure evidence, and downloadable PDF summaries
                         <br><br>
 
                         Use the sidebar navigation to select the type of insight

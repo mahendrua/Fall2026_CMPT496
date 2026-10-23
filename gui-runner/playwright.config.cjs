@@ -1,5 +1,10 @@
 const path = require("path");
 
+const secureOrigin = process.env.GUI_SECURE_ORIGIN;
+const secureOriginArgument = secureOrigin
+    ? `--unsafely-treat-insecure-origin-as-secure=${secureOrigin}`
+    : null;
+
 module.exports = {
     testDir: "/opt/gui-runner/tests",
     testMatch: "**/*.{js,ts}",
@@ -18,7 +23,7 @@ module.exports = {
             bypass: "localhost,127.0.0.1,::1"
         },
         launchOptions: {
-            args: ["--no-sandbox"]
+            args: ["--no-sandbox", ...(secureOriginArgument ? [secureOriginArgument] : [])]
         }
     },
     projects: [{

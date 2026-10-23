@@ -535,6 +535,18 @@ class Commands:
             task,
             individualStep=individualStep,
         )
+
+    def repair_gui_test_case(self, codebase: str, test_file: str, failure: dict, individualStep=True):
+        """Attempt one source-confirmed locator repair for a failed generated GUI test."""
+
+        def task():
+            return GuiTestAgent().repair_failed_test(codebase, test_file, failure)
+
+        return self._run_command(
+            "repair_gui_test_case",
+            task,
+            individualStep=individualStep,
+        )
     
     def validate_unit_tests(
         self,

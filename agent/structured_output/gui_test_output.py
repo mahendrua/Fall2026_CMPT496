@@ -15,3 +15,14 @@ class GeneratedGuiTestSuite(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     test_cases: list[GeneratedGuiTestCase] = Field(..., min_length=1, max_length=8)
+
+
+class GuiTestRepairResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repairable: bool
+    reason: str = Field(..., min_length=1, max_length=500)
+    test_code: str | None = Field(
+        default=None,
+        description="Complete corrected JavaScript test file only when repairable is true.",
+    )

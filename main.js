@@ -5,6 +5,16 @@ const fs = require("fs");
 const dotenv = require("dotenv");
 const { GuiTestRunner } = require("./guiTestRunner");
 const { LocalGuiApp } = require("./guiLocalApp");
+const {
+    applyGuiTestEvent,
+    buildGuiReportHtml,
+    createGuiTestReport,
+    finalizeGuiTestReport,
+    getGuiTestReport,
+    isGuiTestReportEvent,
+    listGuiTestReports,
+    saveGuiTestReport
+} = require("./guiTestReports");
 
 
 let pythonProcess = null;
@@ -15,6 +25,7 @@ let backendOutputDir = __dirname;
 let guiTestRunner = null;
 let localGuiApp = null;
 let guiShutdownStarted = false;
+let activeGuiTestReport = null;
 // ----------------------------------------------------
 // API KEYS (.env)
 // ----------------------------------------------------
@@ -1090,6 +1101,73 @@ ipcMain.handle("select-codebase", async () => {
     return result.filePaths[0];
 });
 
+function guiTestReportDirectory() {
+    return path.join(app.getPath("userData"), "gui-testing-reports");
+}
+
+function persistGuiTestReport(report = activeGuiTestReport) {
+    if (!report) return null;
+    try {
+        return saveGuiTestReport(guiTestReportDirectory(), report);
+    } catch (error) {
+        console.error("Could not save GUI testing report:", error);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send("gui-test-event", {
+                type: "report_storage_error",
+                message: `Could not save GUI testing report: ${error.message}`
+            });
+        }
+        return null;
+    }
+}
+
+function beginGuiTestReport({ appName, appDirectory, framework, testFiles }) {
+    activeGuiTestReport = createGuiTestReport({
+        appName: appName || (appDirectory ? path.basename(appDirectory) : "Application not specified"),
+        appDirectory: appDirectory || null,
+        framework: framework || "Not specified",
+        testFiles: testFiles || []
+    });
+    if (!persistGuiTestReport()) {
+        activeGuiTestReport = null;
+        throw new Error("Could not create a persistent GUI testing report.");
+    }
+    return activeGuiTestReport;
+}
+
+function finishActiveGuiTestReport(status, message = null) {
+    if (!activeGuiTestReport || activeGuiTestReport.status !== "running") return;
+    finalizeGuiTestReport(activeGuiTestReport, status, message);
+    persistGuiTestReport();
+}
+
+function recordGuiTestReportEvent(event) {
+    if (!isGuiTestReportEvent(event)) return;
+    if (!activeGuiTestReport || activeGuiTestReport.status !== "running") return;
+    applyGuiTestEvent(activeGuiTestReport, event);
+    if (event.type === "run_complete") {
+        const status = event.status === "passed"
+            ? "passed"
+            : ["interrupted", "timedout"].includes(event.status)
+                ? "interrupted"
+                : "failed";
+        finishActiveGuiTestReport(status);
+    } else if (event.type === "runner_container_exit") {
+        finishActiveGuiTestReport(
+            "interrupted",
+            event.message || "The Playwright container exited without a completed test summary."
+        );
+    } else if (event.type === "runner_error") {
+        finishActiveGuiTestReport("interrupted", event.message);
+    } else {
+        persistGuiTestReport();
+    }
+}
+
+ipcMain.on("gui-test-report-event", (_event, payload) => {
+    if (isGuiTestReportEvent(payload)) recordGuiTestReportEvent(payload);
+});
+
 function getGuiTestRunner() {
     if (!guiTestRunner) {
         guiTestRunner = new GuiTestRunner({
@@ -1097,11 +1175,9 @@ function getGuiTestRunner() {
             resourcesPath: process.resourcesPath,
             isPackaged: app.isPackaged,
             onEvent: payload => {
+                recordGuiTestReportEvent(payload);
                 if (mainWindow && !mainWindow.isDestroyed()) {
                     mainWindow.webContents.send("gui-test-event", payload);
-                }
-                if (payload.type === "run_complete" || payload.type === "runner_container_exit") {
-                    stopLocalGuiApp().catch(error => console.error("Failed to stop local GUI app:", error));
                 }
             }
         });
@@ -1141,6 +1217,24 @@ ipcMain.handle("start-local-gui-app", async (event, request = {}) => {
         const result = await getLocalGuiApp().start(request.appDirectory);
         return { success: true, ...result };
     } catch (error) {
+        const report = beginGuiTestReport({
+            appDirectory: request.appDirectory,
+            testFiles: []
+        });
+        applyGuiTestEvent(report, {
+            type: "runner_error",
+            message: `Application startup failed: ${error.message}`
+        });
+        finishActiveGuiTestReport("startup_failed");
+        return { success: false, error: error.message };
+    }
+});
+
+ipcMain.handle("stop-local-gui-app", async () => {
+    try {
+        await stopLocalGuiApp();
+        return { success: true };
+    } catch (error) {
         return { success: false, error: error.message };
     }
 });
@@ -1172,10 +1266,22 @@ ipcMain.handle("select-gui-test-files", async () => {
 });
 
 ipcMain.handle("start-gui-tests", async (event, request = {}) => {
+    const runner = getGuiTestRunner();
+    const testFiles = (request.testIds || [])
+        .map(id => runner.uploadedFiles.get(id)?.sourcePath)
+        .filter(Boolean);
+    const report = beginGuiTestReport({
+        appName: request.appName,
+        appDirectory: request.appDirectory,
+        framework: request.framework,
+        testFiles
+    });
     try {
-        const run = await getGuiTestRunner().start(request.testIds, request.allowedHosts);
+        const run = await runner.start(request.testIds, request.allowedHosts);
         return { success: true, ...run };
     } catch (error) {
+        applyGuiTestEvent(report, { type: "runner_error", message: error.message });
+        finishActiveGuiTestReport("startup_failed");
         return { success: false, error: error.message };
     }
 });
@@ -1203,6 +1309,7 @@ ipcMain.handle("start-generated-gui-tests", async (event, request = {}) => {
         }
 
         const runner = getGuiTestRunner();
+        if (request.afterRunComplete === true) await runner.waitForIdle();
         runner.addFiles(resolvedFiles);
         const requestedPaths = new Set(resolvedFiles.map(filePath => path.resolve(filePath).toLowerCase()));
         const selectedIds = Array.from(runner.uploadedFiles.values())
@@ -1214,6 +1321,12 @@ ipcMain.handle("start-generated-gui-tests", async (event, request = {}) => {
         if (!localGuiApp?.active) {
             throw new Error("The local app is no longer running. Start generation again to relaunch it.");
         }
+        const appRun = localGuiApp.active;
+        beginGuiTestReport({
+            appDirectory: appRun.appDirectory,
+            framework: appRun.framework,
+            testFiles: resolvedFiles
+        });
         const appPort = localGuiApp.active.port;
 
         const run = await runner.start(
@@ -1226,6 +1339,13 @@ ipcMain.handle("start-generated-gui-tests", async (event, request = {}) => {
         );
         return { success: true, tests: runner.listFiles(), ...run };
     } catch (error) {
+        if (activeGuiTestReport?.status === "running") {
+            applyGuiTestEvent(activeGuiTestReport, {
+                type: "runner_error",
+                message: error.message
+            });
+            finishActiveGuiTestReport("startup_failed");
+        }
         await stopLocalGuiApp().catch(stopError =>
             console.error("Failed to stop local GUI app after runner startup error:", stopError)
         );
@@ -1233,15 +1353,127 @@ ipcMain.handle("start-generated-gui-tests", async (event, request = {}) => {
     }
 });
 
+ipcMain.handle("repair-generated-gui-test", async (event, request = {}) => {
+    try {
+        if (!localGuiApp?.active) {
+            throw new Error("The local app is no longer running; selector repair cannot be verified.");
+        }
+        if (localGuiApp.active.repairAttempted) {
+            throw new Error("The single automatic selector-repair attempt has already been used for this run.");
+        }
+        const generatedRoot = path.resolve(backendOutputDir, "agent", "GUI_test_agent_output");
+        const testFile = path.resolve(String(request.testFile || ""));
+        const relative = path.relative(generatedRoot, testFile);
+        if (
+            !relative ||
+            relative === ".." ||
+            relative.startsWith(`..${path.sep}`) ||
+            path.isAbsolute(relative) ||
+            !testFile.endsWith(".spec.js")
+        ) {
+            throw new Error("Only generated Playwright spec files can be repaired.");
+        }
+        if (!request.failure || request.failure.category !== "locator_timeout") {
+            throw new Error("Only a failed locator timeout is eligible for selector repair.");
+        }
+        if (!fs.existsSync(testFile)) {
+            throw new Error("The generated test file no longer exists.");
+        }
+        localGuiApp.active.repairAttempted = true;
+        if (!pythonProcess) throw new Error("Python backend is not running.");
+        pythonProcess.stdin.write(JSON.stringify({
+            type: "command",
+            command: "repair_gui_test_case",
+            args: {
+                codebase: localGuiApp.active.appDirectory,
+                test_file: testFile,
+                failure: request.failure
+            }
+        }) + "\n");
+        return { success: true };
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+});
+
 ipcMain.handle("stop-gui-tests", async () => {
     try {
         const stopped = guiTestRunner ? await guiTestRunner.stop() : false;
+        if (stopped) finishActiveGuiTestReport("interrupted", "The GUI test run was stopped by the user.");
         await stopLocalGuiApp();
         return stopped
             ? { success: true }
             : { success: true };
     } catch (error) {
         return { success: false, error: error.message };
+    }
+});
+
+ipcMain.handle("list-gui-testing-reports", async () => {
+    try {
+        return {
+            success: true,
+            reports: listGuiTestReports(
+                guiTestReportDirectory(),
+                activeGuiTestReport?.id || null
+            )
+        };
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+});
+
+ipcMain.handle("get-gui-testing-report", async (event, reportId) => {
+    try {
+        return {
+            success: true,
+            report: getGuiTestReport(
+                guiTestReportDirectory(),
+                reportId,
+                activeGuiTestReport?.id || null
+            )
+        };
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+});
+
+ipcMain.handle("export-gui-testing-report-pdf", async (event, reportId) => {
+    let printWindow = null;
+    try {
+        const report = getGuiTestReport(
+            guiTestReportDirectory(),
+            reportId,
+            activeGuiTestReport?.id || null
+        );
+        const suggestedName = `${String(report.appName || "application").replace(/[^A-Za-z0-9._-]+/g, "-")}-gui-report.pdf`;
+        const selection = await dialog.showSaveDialog(mainWindow, {
+            title: "Export GUI testing report",
+            defaultPath: suggestedName,
+            filters: [{ name: "PDF document", extensions: ["pdf"] }]
+        });
+        if (selection.canceled || !selection.filePath) return { success: false, cancelled: true };
+
+        printWindow = new BrowserWindow({
+            show: false,
+            webPreferences: {
+                sandbox: true,
+                contextIsolation: true,
+                nodeIntegration: false
+            }
+        });
+        await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(buildGuiReportHtml(report))}`);
+        const pdf = await printWindow.webContents.printToPDF({
+            printBackground: true,
+            pageSize: "A4",
+            margins: { top: 0.5, bottom: 0.5, left: 0.5, right: 0.5 }
+        });
+        fs.writeFileSync(selection.filePath, pdf);
+        return { success: true, filePath: selection.filePath };
+    } catch (error) {
+        return { success: false, error: `Could not export the GUI report: ${error.message}` };
+    } finally {
+        if (printWindow && !printWindow.isDestroyed()) printWindow.close();
     }
 });
 
@@ -1455,7 +1687,10 @@ app.on(
                 stopLocalGuiApp()
             ])
                 .catch(error => console.error("Failed to clean up GUI test container:", error))
-                .finally(() => app.quit());
+                .finally(() => {
+                    finishActiveGuiTestReport("interrupted", "Checkpoint closed before the GUI test run finished.");
+                    app.quit();
+                });
         }
     }
 );

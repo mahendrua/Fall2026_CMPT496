@@ -3,6 +3,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const test = require("node:test");
+const { diagnoseFailure } = require("../gui-runner/reporter.cjs");
 
 const {
     GuiTestRunner,
@@ -100,6 +101,34 @@ test("rejects unsafe or malformed allowed host entries", () => {
     assert.throws(() => normalizeAllowedHosts(["example.com:70000"]), /between 1 and 65535/);
     assert.throws(() => normalizeAllowedHosts(["*.host.docker.internal"]), /invalid or blocked/);
     assert.throws(() => normalizeAllowedHosts(["example.com; http://evil.test"]), /Invalid allowed host/);
+});
+
+test("classifies execution failures without claiming an unconfirmed root cause", () => {
+    assert.deepEqual(
+        diagnoseFailure([{ message: "page.goto: net::ERR_CONNECTION_REFUSED" }], []),
+        {
+            category: "connection_failure",
+            locator: null,
+            summary: "The browser could not connect to the app or a requested network destination."
+        }
+    );
+    assert.equal(
+        diagnoseFailure([{ message: "Timed out while waiting for locator" }], []).category,
+        "locator_timeout"
+    );
+    assert.match(
+        diagnoseFailure([{ message: "Timed out while waiting for locator" }], []).summary,
+        /cause is not confirmed/
+    );
+    const actionability = diagnoseFailure([{
+        message: "locator.check: Test timeout\n- waiting for locator('#toggle-all')\u001b[22m\n- locator resolved to <input id=\"toggle-all\"/>\n- <label for=\"toggle-all\">Mark all as complete</label> intercepts pointer events"
+    }], []);
+    assert.equal(actionability.category, "actionability_failure");
+    assert.equal(actionability.locator, "locator('#toggle-all')");
+    assert.equal(
+        diagnoseFailure([{ message: "test failed" }], []).category,
+        "unknown"
+    );
 });
 
 test("keeps uploaded test helpers in a shared relative layout", async () => {

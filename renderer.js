@@ -54,6 +54,9 @@ let guiRunCompleted = false;
 let guiGenerationInProgress = false;
 let guiGenerationSourceDirectory = null;
 let guiGenerationAppPort = null;
+let guiGeneratedTestFiles = [];
+let guiRunFailures = [];
+let guiRepairAttempted = false;
 
 //output
 let pendingLine = '';
@@ -1429,6 +1432,250 @@ function showButtons(buttonId) {
     });
 
     document.getElementById(buttonId).classList.remove('hidden');
+    document.getElementById("guiTestingReportView").classList.add("hidden");
+    document.getElementById("viewDisplayOutputBox").classList.remove("hidden");
+}
+
+function formatGuiReportDuration(milliseconds) {
+    const seconds = Math.max(0, Number(milliseconds) || 0) / 1000;
+    return seconds < 60
+        ? `${seconds.toFixed(1)} seconds`
+        : `${Math.floor(seconds / 60)} min ${(seconds % 60).toFixed(0)} sec`;
+}
+
+function renderGuiReportList(reports) {
+    const container = document.getElementById("guiTestingReportsList");
+    container.replaceChildren();
+    if (!reports.length) {
+        const empty = document.createElement("p");
+        empty.className = "gui-report-empty";
+        empty.textContent = "No GUI testing reports have been saved yet.";
+        container.appendChild(empty);
+        return;
+    }
+
+    reports.forEach(report => {
+        const button = document.createElement("button");
+        button.className = "output-file-btn btn-secondary gui-report-select";
+        const date = report.startedAt ? new Date(report.startedAt).toLocaleString() : "Date unavailable";
+        button.textContent = `${report.appName || "Application"} · ${date} · ${report.status}`;
+        button.addEventListener("click", () => loadGuiTestingReport(report.id));
+        container.appendChild(button);
+    });
+}
+
+async function refreshGuiTestingReports() {
+    const container = document.getElementById("guiTestingReportsList");
+    container.replaceChildren();
+    const loading = document.createElement("p");
+    loading.className = "gui-report-empty";
+    loading.textContent = "Loading saved GUI testing reports...";
+    container.appendChild(loading);
+
+    try {
+        const response = await window.electronAPI.listGuiTestingReports();
+        if (!response?.success) throw new Error(response?.error || "Could not load saved reports.");
+        renderGuiReportList(response.reports || []);
+        if (!(response.reports || []).length) {
+            renderGuiTestingReportMessage("Select a report after completing a GUI test run.");
+        }
+    } catch (error) {
+        renderGuiReportList([]);
+        renderGuiTestingReportMessage(error.message || "Could not load saved GUI testing reports.");
+    }
+}
+
+function guiReportElement(tag, className, text) {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    if (text !== undefined && text !== null) element.textContent = String(text);
+    return element;
+}
+
+function renderGuiTestingReportMessage(message) {
+    const output = document.getElementById("guiTestingReportContent");
+    output.replaceChildren(guiReportElement("p", "gui-report-empty", message));
+    document.getElementById("viewDisplayOutputBox").classList.add("hidden");
+    document.getElementById("guiTestingReportView").classList.remove("hidden");
+}
+
+function renderGuiTestingReport(report) {
+    const output = document.getElementById("guiTestingReportContent");
+    output.replaceChildren();
+    document.getElementById("viewDisplayOutputBox").classList.add("hidden");
+    document.getElementById("guiTestingReportView").classList.remove("hidden");
+
+    const top = guiReportElement("div", "gui-report-header");
+    const heading = guiReportElement("div");
+    heading.append(
+        guiReportElement("h1", "", `${report.appName || "Application"} GUI Testing`),
+        guiReportElement("p", "gui-report-subtitle", report.startedAt
+            ? new Date(report.startedAt).toLocaleString()
+            : "Testing date unavailable")
+    );
+    const exportButton = guiReportElement("button", "btn-primary", "Export PDF");
+    const exportStatus = guiReportElement("span", "gui-report-export-status");
+    exportButton.type = "button";
+    exportButton.addEventListener("click", async () => {
+        exportButton.disabled = true;
+        try {
+            const result = await window.electronAPI.exportGuiTestingReportPdf(report.id);
+            if (result?.cancelled) return;
+            if (!result?.success) throw new Error(result?.error || "PDF export failed.");
+            exportStatus.textContent = `PDF saved to ${result.filePath}`;
+        } catch (error) {
+            exportStatus.textContent = error.message || "Could not export this report.";
+        } finally {
+            exportButton.disabled = false;
+        }
+    });
+    const exportActions = guiReportElement("div", "gui-report-export-actions");
+    exportActions.append(exportButton, exportStatus);
+    top.append(heading, exportActions);
+    output.appendChild(top);
+
+    const metadata = guiReportElement("div", "gui-report-metadata");
+    [
+        ["Status", report.status || "unknown"],
+        ["Date", report.startedAt ? new Date(report.startedAt).toLocaleString() : "Unavailable"],
+        ["Framework", report.framework || "Not specified"],
+        ["Browser", report.browser || "Not specified"],
+        ["Duration", formatGuiReportDuration(report.durationMs)]
+    ].forEach(([label, value]) => {
+        const item = guiReportElement("div", "gui-report-meta-item");
+        item.append(guiReportElement("span", "gui-report-meta-label", label), guiReportElement("strong", "", value));
+        metadata.appendChild(item);
+    });
+    output.appendChild(metadata);
+
+    const summary = guiReportElement("div", "gui-report-summary");
+    [
+        ["Total tests", report.total || 0, "total"],
+        ["Passed", report.passed || 0, "passed"],
+        ["Failed", report.failed || 0, "failed"],
+        ["Skipped", report.skipped || 0, "skipped"]
+    ].forEach(([label, value, kind]) => {
+        const card = guiReportElement("div", `gui-report-card gui-report-${kind}`);
+        card.append(guiReportElement("span", "", label), guiReportElement("strong", "", value));
+        summary.appendChild(card);
+    });
+    output.appendChild(summary);
+
+    const chartSection = guiReportElement("section", "gui-report-chart-section");
+    const chartTitle = guiReportElement("h2", "", "Test outcomes");
+    const chart = guiReportElement("div", "gui-report-chart");
+    const total = Math.max(0, Number(report.total) || 0);
+    const passed = Math.max(0, Number(report.passed) || 0);
+    const failed = Math.max(0, Number(report.failed) || 0);
+    const skipped = Math.max(0, Number(report.skipped) || 0);
+    const passDegrees = total ? passed / total * 360 : 0;
+    const failDegrees = total ? failed / total * 360 : 0;
+    const skipDegrees = total ? skipped / total * 360 : 0;
+    chart.style.background = total
+        ? `conic-gradient(#16835d 0deg ${passDegrees}deg, #c0394b ${passDegrees}deg ${passDegrees + failDegrees}deg, #8793a5 ${passDegrees + failDegrees}deg ${passDegrees + failDegrees + skipDegrees}deg, #e7ebf1 ${passDegrees + failDegrees + skipDegrees}deg 360deg)`
+        : "#e7ebf1";
+    chart.setAttribute("role", "img");
+    chart.setAttribute("aria-label", `${passed} passed, ${failed} failed, ${skipped} skipped`);
+    const rate = guiReportElement("strong", "gui-report-pass-rate", `${Number(report.passPercentage) || 0}%`);
+    chart.appendChild(rate);
+    const legend = guiReportElement("div", "gui-report-legend");
+    [["Passed", passed, "passed"], ["Failed", failed, "failed"], ["Skipped", skipped, "skipped"]]
+        .forEach(([label, value, kind]) => {
+            legend.appendChild(guiReportElement("span", `gui-report-legend-${kind}`, `${label}: ${value}`));
+        });
+    chartSection.append(chartTitle, chart, legend);
+    output.appendChild(chartSection);
+
+    const testsSection = guiReportElement("section", "gui-report-tests");
+    testsSection.appendChild(guiReportElement("h2", "", "Individual test results"));
+    const tests = Array.isArray(report.tests) ? report.tests : [];
+    if (!tests.length) {
+        testsSection.appendChild(guiReportElement("p", "gui-report-empty", "No individual test results were recorded."));
+    }
+    const table = guiReportElement("table", "gui-report-table");
+    const header = guiReportElement("thead");
+    const headerRow = guiReportElement("tr");
+    ["Test name", "Status", "Execution time", "Details"].forEach(label => {
+        headerRow.appendChild(guiReportElement("th", "", label));
+    });
+    header.appendChild(headerRow);
+    table.appendChild(header);
+    const tableBody = guiReportElement("tbody");
+    tests.forEach(test => {
+        const row = guiReportElement("tr", `gui-report-row gui-report-row-${test.status || "unknown"}`);
+        const statusCell = guiReportElement("td");
+        statusCell.appendChild(
+            guiReportElement("span", `gui-report-badge gui-report-badge-${test.status || "unknown"}`, test.status || "unknown")
+        );
+        row.append(
+            guiReportElement("td", "gui-report-test-name", test.name || "Untitled test"),
+            statusCell,
+            guiReportElement("td", "gui-report-test-duration", test.durationMs === null
+                ? "Interrupted"
+                : formatGuiReportDuration(test.durationMs))
+        );
+        const detailCell = guiReportElement("td");
+        const details = guiReportElement("details", "gui-report-test-details");
+        details.appendChild(guiReportElement("summary", "", "View details"));
+        const body = guiReportElement("div", "gui-report-test-body");
+        [
+            ["Purpose", test.purpose || "Not provided by the test."],
+            ["Expected result", test.expectedResult || "Not provided by the test."],
+            ["Actual result", test.actualResult || "No result was reported."]
+        ].forEach(([label, value]) => {
+            const paragraph = guiReportElement("p");
+            paragraph.append(guiReportElement("strong", "", `${label}: `), document.createTextNode(value));
+            body.appendChild(paragraph);
+        });
+        if (test.failureExplanation) {
+            const explanation = guiReportElement("div", "gui-report-failure-explanation");
+            explanation.append(
+                guiReportElement("h3", "", "Failure analysis"),
+                guiReportElement("p", "", `${test.failureExplanation.likelyCause} (${test.failureExplanation.confidence} confidence)`),
+                guiReportElement("p", "", `Suggested investigation: ${test.failureExplanation.investigation}`)
+            );
+            body.appendChild(explanation);
+        }
+        if ((test.errors || []).length || (test.output || []).length || test.diagnostics) {
+            const evidence = guiReportElement("details", "gui-report-evidence");
+            evidence.appendChild(guiReportElement("summary", "", "Execution evidence"));
+            (test.errors || []).forEach(error => {
+                evidence.appendChild(guiReportElement("pre", "gui-report-evidence-text", error.message || "Test error"));
+            });
+            if (test.diagnostics) {
+                evidence.appendChild(guiReportElement("p", "", `Diagnostic: ${test.diagnostics.summary || test.diagnostics.category || "No diagnostic summary."}`));
+            }
+            (test.output || []).forEach(entry => {
+                evidence.appendChild(guiReportElement("pre", "gui-report-evidence-text", `${entry.stream || "output"}: ${entry.text || ""}`));
+            });
+            body.appendChild(evidence);
+        }
+        details.appendChild(body);
+        detailCell.appendChild(details);
+        row.appendChild(detailCell);
+        tableBody.appendChild(row);
+    });
+    table.appendChild(tableBody);
+    if (tests.length) testsSection.appendChild(table);
+    output.appendChild(testsSection);
+
+    if ((report.errors || []).length) {
+        const runErrors = guiReportElement("details", "gui-report-run-errors");
+        runErrors.appendChild(guiReportElement("summary", "", "Run and startup diagnostics"));
+        report.errors.forEach(error => runErrors.appendChild(guiReportElement("pre", "gui-report-evidence-text", error.message)));
+        output.appendChild(runErrors);
+    }
+}
+
+async function loadGuiTestingReport(reportId) {
+    renderGuiTestingReportMessage("Loading report...");
+    try {
+        const response = await window.electronAPI.getGuiTestingReport(reportId);
+        if (!response?.success) throw new Error(response?.error || "Could not load the selected report.");
+        renderGuiTestingReport(response.report);
+    } catch (error) {
+        renderGuiTestingReportMessage(error.message || "Could not load the selected report.");
+    }
 }
 
 function setFAQSupportActive(activeButton) {
@@ -1641,6 +1888,14 @@ function updateGuiResult(testId, title, status, errorMessage = "") {
 function handleGuiTestEvent(event) {
     if (!event) return;
 
+    if (["run_started", "test_started", "test_finished", "test_error", "runner_error", "run_complete"].includes(event.type)) {
+        window.electronAPI.reportGuiTestEvent(event);
+    }
+
+    if (event.type === "report_storage_error") {
+        appendGuiLog(event.message || "The GUI testing report could not be saved.");
+        return;
+    }
     if (event.type === "runner_log") {
         appendGuiLog(event.message);
         return;
@@ -1685,6 +1940,7 @@ function handleGuiTestEvent(event) {
         return;
     }
     if (event.type === "test_finished") {
+        if (event.status === "failed") guiRunFailures.push(event);
         const errorList = event.errors || [];
         const errorMessage = errorList.map(error => error.message).filter(Boolean).join("\n");
         updateGuiResult(event.testId, event.title, event.status, errorMessage);
@@ -1702,6 +1958,11 @@ function handleGuiTestEvent(event) {
             if (error.message) appendGuiLog(error.message);
             if (error.stack) appendGuiLog(error.stack);
         });
+        if (event.diagnostics) {
+            appendGuiLog(`Failure category: ${event.diagnostics.category}`);
+            appendGuiLog(event.diagnostics.summary);
+            if (event.diagnostics.locator) appendGuiLog(`Failing locator: ${event.diagnostics.locator}`);
+        }
         (event.output || []).forEach(output => {
             appendGuiLog(`${String(output.stream || "output").toUpperCase()}: ${output.text || ""}`);
         });
@@ -1712,6 +1973,25 @@ function handleGuiTestEvent(event) {
         return;
     }
     if (event.type === "run_complete") {
+        const selectorFailure = !guiRepairAttempted && guiRunFailures.find(failure =>
+            failure.diagnostics?.category === "locator_timeout"
+        );
+        if (selectorFailure) {
+            const generatedFile = guiGeneratedTestFiles.find(filePath =>
+                filePath.split(/[\\/]/).pop() === selectorFailure.file
+            );
+            if (generatedFile) {
+                guiRepairAttempted = true;
+                guiRunActive = true;
+                updateGuiRunControls();
+                document.getElementById("guiCurrentTest").textContent =
+                    "Checking whether the failed locator can be safely repaired...";
+                appendGuiLog("A locator timeout was found. Checking the selector against app source; only one repair attempt is allowed.");
+                void requestGuiSelectorRepair(generatedFile, selectorFailure);
+                return;
+            }
+            appendGuiLog("A locator timed out, but its generated spec could not be matched to a source file. Repair was not attempted.");
+        }
         guiRunCompleted = true;
         setGuiCount("Total", event.total || 0);
         setGuiCount("Passed", event.passed || 0);
@@ -1722,6 +2002,7 @@ function handleGuiTestEvent(event) {
         document.getElementById("guiCurrentTest").textContent =
             `Run ${event.status}: ${event.passed || 0} passed, ${event.failed || 0} failed, ${event.skipped || 0} skipped`;
         appendGuiLog(`Run finished — ${event.status}.`);
+        void stopLocalGuiApp();
         if (!event.total) {
             showGuiMessage("No Playwright tests were found. Use test() or it() declarations in your selected files.");
         }
@@ -1734,6 +2015,7 @@ function handleGuiTestEvent(event) {
             updateGuiRunControls();
             document.getElementById("guiCurrentTest").textContent = "Run stopped unexpectedly";
             showGuiMessage(event.message);
+            void stopLocalGuiApp();
         }
     }
 }
@@ -1799,9 +2081,46 @@ document.getElementById("guiTestCasesBtn").addEventListener("click", () => {
 });
 
 async function stopLocalGuiApp() {
-    const response = await window.electronAPI.stopGuiTests();
+    const response = await window.electronAPI.stopLocalGuiApp();
     if (!response?.success) {
         appendGuiLog(response?.error || "Could not stop the local app.");
+    }
+}
+
+async function requestGuiSelectorRepair(testFile, event) {
+    activeCommand = "repair_gui_test_case";
+    const failure = {
+        category: event.diagnostics.category,
+        diagnostics: event.diagnostics,
+        errors: (event.errors || []).slice(0, 1).map(error => ({
+            message: String(error.message || "").slice(0, 4000)
+        })),
+        output: (event.output || []).slice(0, 2).map(item => ({
+            stream: item.stream,
+            text: String(item.text || "").slice(0, 4000)
+        }))
+    };
+    try {
+        const response = await window.electronAPI.repairGeneratedGuiTest({ testFile, failure });
+        if (!response?.success) {
+            activeCommand = null;
+            document.getElementById("guiGenerationStatus").textContent = "Automatic selector repair could not start.";
+            document.getElementById("guiGenerationDetails").textContent = response?.error || "The backend did not accept the repair request.";
+            appendGuiLog(document.getElementById("guiGenerationDetails").textContent);
+            guiRunActive = false;
+            guiRunCompleted = true;
+            updateGuiRunControls();
+            await stopLocalGuiApp();
+        }
+    } catch (error) {
+        activeCommand = null;
+        document.getElementById("guiGenerationStatus").textContent = "Automatic selector repair failed.";
+        document.getElementById("guiGenerationDetails").textContent = error.message || "Could not request the repair.";
+        appendGuiLog(document.getElementById("guiGenerationDetails").textContent);
+        guiRunActive = false;
+        guiRunCompleted = true;
+        updateGuiRunControls();
+        await stopLocalGuiApp();
     }
 }
 
@@ -1828,6 +2147,9 @@ document.getElementById("generateGuiTestsBtn").addEventListener("click", async (
     status.textContent = "Starting the local app...";
     guiGenerationSourceDirectory = sourceDirectory;
     guiGenerationAppPort = null;
+    guiGeneratedTestFiles = [];
+    guiRunFailures = [];
+    guiRepairAttempted = false;
     guiGenerationInProgress = true;
     updateGuiRunControls();
 
@@ -1888,6 +2210,7 @@ document.getElementById("guiTestBackBtn").addEventListener("click", async () => 
             return;
         }
     }
+    await stopLocalGuiApp();
     showPage("homePage");
 });
 
@@ -2034,9 +2357,18 @@ document.getElementById('mainViewBtn')
 
         
         showPage('mainViewPage');
+        showButtons("mainViewBtns");
         refreshErrorLog();
 
     });
+
+document.getElementById("viewGuiTestingReportsBtn").addEventListener("click", async () => {
+    showButtons("viewGuiReportsBtns");
+    renderGuiTestingReportMessage("Select a saved GUI testing report to view its summary and test details.");
+    await refreshGuiTestingReports();
+});
+
+document.getElementById("refreshGuiReportsBtn").addEventListener("click", refreshGuiTestingReports);
 
 document.getElementById("errorPopupCloseBtn")
     .addEventListener("click", hideErrorPopup);
@@ -2917,7 +3249,64 @@ window.electronAPI.onBackendResponse(async (response) => {
         return;
     }
 
+    if (response.command === "repair_gui_test_case") {
+        activeCommand = null;
+        const status = document.getElementById("guiGenerationStatus");
+        const details = document.getElementById("guiGenerationDetails");
+        if (!response.success) {
+            status.textContent = "Automatic selector repair failed.";
+            details.textContent = response.error || "The repair backend failed without a diagnostic.";
+            appendGuiLog(details.textContent);
+            guiRunActive = false;
+            guiRunCompleted = true;
+            updateGuiRunControls();
+            await stopLocalGuiApp();
+            return;
+        }
 
+        const repair = response.result || {};
+        if (!repair.repairable || !repair.generated_file) {
+            status.textContent = "Automatic selector repair was not safe to apply.";
+            details.textContent = repair.reason || "The failure could not be confirmed as an incorrect selector.";
+            appendGuiLog(details.textContent);
+            guiRunActive = false;
+            guiRunCompleted = true;
+            updateGuiRunControls();
+            await stopLocalGuiApp();
+            return;
+        }
+
+        status.textContent = "Selector correction validated; rerunning the affected test...";
+        details.textContent = `${repair.reason}\nRepaired spec: ${repair.generated_file}`;
+        appendGuiLog("The corrected spec passed syntax validation. Rerunning only the affected spec.");
+        guiGeneratedTestFiles = [repair.generated_file];
+        guiRunFailures = [];
+        resetGuiDashboard();
+        guiRunActive = true;
+        updateGuiRunControls();
+        try {
+            const allowedHosts = document.getElementById("guiAllowedHosts").value
+                .split(/[,\s]+/).map(host => host.trim()).filter(Boolean);
+            const run = await window.electronAPI.startGeneratedGuiTests({
+                testFiles: guiGeneratedTestFiles,
+                appPort: guiGenerationAppPort,
+                allowedHosts,
+                afterRunComplete: true
+            });
+            if (!run?.success) throw new Error(run?.error || "The repaired test run could not start.");
+            status.textContent = "Rerunning the repaired test in the isolated Playwright browser...";
+            connectGuiRun(run);
+        } catch (error) {
+            status.textContent = "The repaired test could not be rerun.";
+            details.textContent = error.message || "The Playwright runner failed to start.";
+            appendGuiLog(details.textContent);
+            guiRunActive = false;
+            guiRunCompleted = true;
+            updateGuiRunControls();
+            await stopLocalGuiApp();
+        }
+        return;
+    }
 
     // ----------------------------------------
     // Errors
@@ -2948,6 +3337,8 @@ window.electronAPI.onBackendResponse(async (response) => {
                 : ""
         ].filter(Boolean).join("\n");
         const generatedFiles = result.generated_files || [];
+        guiGeneratedTestFiles = generatedFiles.slice();
+        guiRunFailures = [];
         generatedFiles.forEach(filePath => {
             const item = document.createElement("li");
             item.textContent = filePath;

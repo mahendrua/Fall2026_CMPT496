@@ -149,9 +149,16 @@ contextBridge.exposeInMainWorld(
             ipcRenderer.invoke("start-gui-tests", { testIds, allowedHosts }),
         startLocalGuiApp: request =>
             ipcRenderer.invoke("start-local-gui-app", request),
+        stopLocalGuiApp: () => ipcRenderer.invoke("stop-local-gui-app"),
         startGeneratedGuiTests: request =>
             ipcRenderer.invoke("start-generated-gui-tests", request),
+        repairGeneratedGuiTest: request =>
+            ipcRenderer.invoke("repair-generated-gui-test", request),
         stopGuiTests: () => ipcRenderer.invoke("stop-gui-tests"),
+        listGuiTestingReports: () => ipcRenderer.invoke("list-gui-testing-reports"),
+        getGuiTestingReport: reportId => ipcRenderer.invoke("get-gui-testing-report", reportId),
+        exportGuiTestingReportPdf: reportId => ipcRenderer.invoke("export-gui-testing-report-pdf", reportId),
+        reportGuiTestEvent: payload => ipcRenderer.send("gui-test-report-event", payload),
         onGuiTestEvent: (callback) => {
             ipcRenderer.on("gui-test-event", (event, payload) => callback(payload));
         },

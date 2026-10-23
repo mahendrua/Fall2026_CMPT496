@@ -201,6 +201,7 @@ class LocalGuiApp {
             output: "",
             exitError: null,
             stopping: false,
+            repairAttempted: false,
             exitPromise: null,
             resolveExit: null,
             stopPromise: null

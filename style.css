@@ -4266,3 +4266,335 @@ h2{
 }
 
 }
+
+/* GUI testing reports in View Insights */
+#viewGuiReportsBtns {
+    flex: 1;
+    overflow-y: auto;
+}
+
+#guiTestingReportsList {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    overflow-y: auto;
+}
+
+.gui-report-select {
+    width: 100%;
+    max-width: none;
+    text-align: left;
+    white-space: normal;
+    line-height: 1.35;
+}
+
+#guiTestingReportView {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    overflow-y: auto;
+    padding: 1.5rem;
+    color: #1c2939;
+}
+
+#guiTestingReportContent {
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.gui-report-header,
+.gui-report-metadata,
+.gui-report-summary,
+.gui-report-test > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.gui-report-header {
+    margin-bottom: 1.25rem;
+}
+
+.gui-report-header h1 {
+    margin: 0;
+    color: #22395e;
+}
+
+.gui-report-header p {
+    margin: 0.4rem 0 0;
+    color: #637188;
+}
+
+.gui-report-header button {
+    flex: 0 0 auto;
+}
+
+.gui-report-metadata {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    margin-bottom: 1.25rem;
+    padding: 1rem;
+    border: 1px solid #dbe3ee;
+    border-radius: 12px;
+    background: #f7f9fc;
+}
+
+.gui-report-meta-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    min-width: 130px;
+}
+
+.gui-report-meta-label {
+    color: #67758a;
+    font-size: 0.8rem;
+}
+
+.gui-report-summary {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(120px, 1fr));
+    margin-bottom: 1.25rem;
+}
+
+.gui-report-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 1rem;
+    border: 1px solid #dbe3ee;
+    border-radius: 12px;
+    background: #fff;
+}
+
+.gui-report-card strong {
+    font-size: 1.8rem;
+}
+
+.gui-report-passed strong,
+.gui-report-legend-passed {
+    color: #16835d;
+}
+
+.gui-report-failed strong,
+.gui-report-legend-failed {
+    color: #c0394b;
+}
+
+.gui-report-skipped strong,
+.gui-report-legend-skipped {
+    color: #68758a;
+}
+
+.gui-report-chart-section,
+.gui-report-tests {
+    margin: 1.25rem 0;
+    padding: 1.15rem;
+    border: 1px solid #dbe3ee;
+    border-radius: 12px;
+    background: #fff;
+}
+
+.gui-report-chart-section h2,
+.gui-report-tests h2 {
+    margin: 0 0 1rem;
+    color: #273d60;
+}
+
+.gui-report-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+
+.gui-report-table th,
+.gui-report-table td {
+    padding: 0.8rem;
+    border-bottom: 1px solid #dbe3ee;
+    text-align: left;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+}
+
+.gui-report-table th {
+    background: #f1f5fb;
+    color: #405371;
+    font-size: 0.82rem;
+}
+
+.gui-report-table th:nth-child(1) {
+    width: 32%;
+}
+
+.gui-report-table th:nth-child(2) {
+    width: 14%;
+}
+
+.gui-report-table th:nth-child(3) {
+    width: 18%;
+}
+
+.gui-report-table th:nth-child(4) {
+    width: 36%;
+}
+
+.gui-report-table tbody tr:hover {
+    background: #f8fafd;
+}
+
+.gui-report-test-details > summary {
+    cursor: pointer;
+    color: #304a70;
+    font-weight: 600;
+}
+
+.gui-report-chart {
+    position: relative;
+    display: grid;
+    width: 150px;
+    height: 150px;
+    margin: 0 auto 1rem;
+    place-items: center;
+    border-radius: 50%;
+}
+
+.gui-report-chart::before {
+    position: absolute;
+    width: 105px;
+    height: 105px;
+    border-radius: 50%;
+    background: #fff;
+    content: "";
+}
+
+.gui-report-pass-rate {
+    position: relative;
+    font-size: 1.35rem;
+    color: #22395e;
+}
+
+.gui-report-legend {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 1.25rem;
+    font-weight: 600;
+}
+
+.gui-report-test,
+.gui-report-run-errors {
+    margin: 0.65rem 0;
+    border: 1px solid #dbe3ee;
+    border-radius: 10px;
+    background: #fbfcfe;
+}
+
+.gui-report-test > summary,
+.gui-report-run-errors > summary {
+    padding: 0.9rem 1rem;
+    cursor: pointer;
+    list-style-position: inside;
+}
+
+.gui-report-test-name {
+    flex: 1;
+    font-weight: 650;
+}
+
+.gui-report-test-duration {
+    min-width: 85px;
+    color: #67758a;
+    text-align: right;
+}
+
+.gui-report-badge {
+    padding: 0.25rem 0.55rem;
+    border-radius: 999px;
+    background: #e9edf3;
+    color: #4c5a70;
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+.gui-report-badge-passed {
+    background: #dff3ea;
+    color: #116846;
+}
+
+.gui-report-badge-failed {
+    background: #fde6e8;
+    color: #a42d3d;
+}
+
+.gui-report-badge-interrupted,
+.gui-report-badge-skipped,
+.gui-report-badge-running {
+    background: #edf0f5;
+    color: #56647a;
+}
+
+.gui-report-test-body {
+    padding: 0 1rem 1rem 2rem;
+    line-height: 1.5;
+}
+
+.gui-report-test-body p {
+    margin: 0.6rem 0;
+}
+
+.gui-report-failure-explanation {
+    margin: 0.8rem 0;
+    padding: 0.8rem 1rem;
+    border-left: 4px solid #cc5862;
+    border-radius: 5px;
+    background: #fff4f4;
+}
+
+.gui-report-failure-explanation h3 {
+    margin: 0 0 0.5rem;
+    color: #8f2733;
+}
+
+.gui-report-evidence {
+    margin-top: 0.8rem;
+}
+
+.gui-report-evidence summary {
+    cursor: pointer;
+    color: #425572;
+    font-weight: 600;
+}
+
+.gui-report-evidence-text {
+    max-height: 260px;
+    overflow: auto;
+    padding: 0.75rem;
+    border-radius: 6px;
+    background: #eef2f7;
+    color: #26364d;
+    font: 0.82rem/1.45 Consolas, "Courier New", monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.gui-report-empty {
+    color: #68758a;
+    line-height: 1.5;
+}
+
+@media (max-width: 800px) {
+    .gui-report-summary {
+        grid-template-columns: repeat(2, minmax(120px, 1fr));
+    }
+
+    .gui-report-header,
+    .gui-report-test > summary {
+        align-items: flex-start;
+    }
+
+    #guiTestingReportView {
+        padding: 1rem;
+    }
+}

@@ -627,7 +627,8 @@ class GuiTestRunner {
                     "--env", `GUI_APP_PORT=${appOptions.port}`,
                     "--env", `BASE_URL=http://gui-app:${appOptions.port}`
                 ] : appOptions?.mode === "host" ? [
-                    "--env", `BASE_URL=http://host.docker.internal:${appOptions.port}`
+                    "--env", `BASE_URL=http://host.docker.internal:${appOptions.port}`,
+                    "--env", `GUI_SECURE_ORIGIN=http://host.docker.internal:${appOptions.port}`
                 ] : []),
                 this.imageNames.runner
             ], { timeoutMs: 30000, signal: run.abortController.signal });
@@ -797,6 +798,11 @@ class GuiTestRunner {
         if (this.activeRun === run) this.activeRun = null;
         this.onEvent({ type: "runner_status", status: "stopped", message: "GUI test run stopped." });
         return true;
+    }
+
+    async waitForIdle() {
+        const run = this.activeRun;
+        if (run?.monitor) await run.monitor;
     }
 
     async dispose() {
