@@ -75,12 +75,19 @@ test("normalizes allowed hostnames and limits proxy destinations", () => {
         normalizeAllowedHosts(["host.docker.internal:3000"]),
         [{ hostname: "host.docker.internal", ports: [3000], includeSubdomains: false }]
     );
+    assert.deepEqual(
+        normalizeAllowedHosts(["gui-app:5173"]),
+        [{ hostname: "gui-app", ports: [80, 443, 5173], includeSubdomains: false }]
+    );
 
-    const config = createProxyConfig(["*.example.com", "host.docker.internal:3000"]);
+    const config = createProxyConfig(["*.example.com", "host.docker.internal:3000", "gui-app:5173"]);
     const exactConfig = createProxyConfig(["example.com"]);
+    assert.match(config, /acl docker_host dstdomain host\.docker\.internal gui-app/);
     assert.match(config, /http_access deny private_destination !docker_host/);
     assert.match(config, /allowed_domain_0 dstdomain example\.com \.example\.com/);
     assert.match(config, /allowed_port_1 port 3000/);
+    assert.match(config, /allowed_domain_2 dstdomain gui-app/);
+    assert.match(config, /allowed_port_2 port 80 443 5173/);
     assert.match(config, /http_access deny all/);
     assert.match(exactConfig, /allowed_domain_0 dstdomain example\.com\n/);
     assert.doesNotMatch(exactConfig, /\.example\.com/);

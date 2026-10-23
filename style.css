@@ -4015,26 +4015,34 @@ h2{
     font-size: 0.85rem;
 }
 
-.gui-coming-soon:disabled {
-    display: inline-flex;
-    align-items: center;
-    gap: 0.6rem;
-    cursor: not-allowed;
-    opacity: 0.65;
-}
-
-.gui-coming-soon span {
-    padding: 0.2rem 0.5rem;
-    border-radius: 999px;
-    background: rgba(99, 102, 241, 0.12);
-    color: var(--accent);
-    font-size: 0.75rem;
-}
-
 .gui-message {
     flex-basis: 100%;
     color: #b42318;
     overflow-wrap: anywhere;
+}
+
+.gui-generation-result {
+    flex-basis: 100%;
+    padding: 0.85rem 1rem;
+    border: 1px solid rgba(99, 102, 241, 0.25);
+    border-radius: 0.75rem;
+    background: rgba(99, 102, 241, 0.06);
+    overflow-wrap: anywhere;
+}
+
+.gui-generation-result p {
+    margin: 0.45rem 0;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+}
+
+.gui-generation-result ul {
+    margin: 0.5rem 0;
+    padding-left: 1.25rem;
+}
+
+.gui-generation-result li {
+    margin: 0.2rem 0;
 }
 
 .gui-test-layout,

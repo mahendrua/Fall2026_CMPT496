@@ -51,6 +51,9 @@ let guiTestResults = new Map();
 let guiEventSocket = null;
 let guiRunActive = false;
 let guiRunCompleted = false;
+let guiGenerationInProgress = false;
+let guiGenerationSourceDirectory = null;
+let guiGenerationAppPort = null;
 
 //output
 let pendingLine = '';
@@ -1538,6 +1541,8 @@ function updateGuiRunControls() {
     const hasSelection = document.querySelector("#guiTestList input:checked");
     document.getElementById("runGuiTestsBtn").disabled = guiRunActive || !hasSelection;
     document.getElementById("uploadGuiTestsBtn").disabled = guiRunActive;
+    document.getElementById("generateGuiTestsBtn").disabled = guiRunActive || guiGenerationInProgress;
+    document.getElementById("guiTestBackBtn").disabled = guiGenerationInProgress;
     document.getElementById("stopGuiTestsBtn").classList.toggle("hidden", !guiRunActive);
     document.getElementById("stopGuiTestsBtn").disabled = !guiRunActive;
 }
@@ -1637,6 +1642,18 @@ function handleGuiTestEvent(event) {
     if (!event) return;
 
     if (event.type === "runner_log") {
+        appendGuiLog(event.message);
+        return;
+    }
+    if (event.type === "local_app_log") {
+        appendGuiLog(`App ${String(event.stream || "output").toUpperCase()}: ${event.message || ""}`);
+        return;
+    }
+    if (event.type === "local_app_exit") {
+        appendGuiLog(event.message || "The local app process exited.");
+        return;
+    }
+    if (event.type === "local_app_started") {
         appendGuiLog(event.message);
         return;
     }
@@ -1781,6 +1798,88 @@ document.getElementById("guiTestCasesBtn").addEventListener("click", () => {
     showPage("guiTestPage");
 });
 
+async function stopLocalGuiApp() {
+    const response = await window.electronAPI.stopGuiTests();
+    if (!response?.success) {
+        appendGuiLog(response?.error || "Could not stop the local app.");
+    }
+}
+
+document.getElementById("generateGuiTestsBtn").addEventListener("click", async () => {
+    const resultPanel = document.getElementById("guiGenerationResult");
+    const status = document.getElementById("guiGenerationStatus");
+    const details = document.getElementById("guiGenerationDetails");
+    const filesList = document.getElementById("guiGeneratedFiles");
+
+    let sourceDirectory;
+    try {
+        sourceDirectory = await window.electronAPI.selectCodebase();
+    } catch (error) {
+        resultPanel.classList.remove("hidden");
+        status.textContent = "Could not select the app source folder.";
+        details.textContent = error.message || "The folder picker failed.";
+        return;
+    }
+    if (!sourceDirectory) return;
+
+    resultPanel.classList.remove("hidden");
+    filesList.replaceChildren();
+    details.textContent = `Detecting the framework and starting the app...\nSource folder: ${sourceDirectory}`;
+    status.textContent = "Starting the local app...";
+    guiGenerationSourceDirectory = sourceDirectory;
+    guiGenerationAppPort = null;
+    guiGenerationInProgress = true;
+    updateGuiRunControls();
+
+    try {
+        const appResult = await window.electronAPI.startLocalGuiApp({
+            appDirectory: sourceDirectory
+        });
+        if (appResult?.cancelled) {
+            guiGenerationInProgress = false;
+            updateGuiRunControls();
+            status.textContent = "Local app startup cancelled.";
+            details.textContent = "The project was not started.";
+            return;
+        }
+        if (!appResult?.success) {
+            guiGenerationInProgress = false;
+            updateGuiRunControls();
+            status.textContent = "Could not start the local app.";
+            details.textContent = appResult?.error || "The project's npm script failed to start.";
+            return;
+        }
+
+        guiGenerationAppPort = appResult.port;
+        status.textContent = `Detected ${appResult.framework}. App started on port ${appResult.port}; generating GUI test cases...`;
+        details.textContent = [
+            `Framework: ${appResult.framework}`,
+            `Local app: http://host.docker.internal:${appResult.port}`,
+            `Command: npm run ${appResult.script}`,
+            `Source folder: ${sourceDirectory}`
+        ].join("\n");
+        activeCommand = "generate_gui_test_cases";
+        const response = await runBackendCommand("generate_gui_test_cases", {
+            codebase: sourceDirectory
+        });
+        if (!response?.success) {
+            await stopLocalGuiApp();
+            guiGenerationInProgress = false;
+            activeCommand = null;
+            updateGuiRunControls();
+            status.textContent = "Could not start GUI test generation.";
+            details.textContent = response?.error || "The backend did not accept the request.";
+        }
+    } catch (error) {
+        await stopLocalGuiApp();
+        guiGenerationInProgress = false;
+        activeCommand = null;
+        updateGuiRunControls();
+        status.textContent = "Could not start GUI test generation.";
+        details.textContent = error.message || "The backend request failed.";
+    }
+});
+
 document.getElementById("guiTestBackBtn").addEventListener("click", async () => {
     if (guiRunActive) {
         const response = await window.electronAPI.stopGuiTests();
@@ -1815,6 +1914,33 @@ document.getElementById("uploadGuiTestsBtn").addEventListener("click", async () 
     renderGuiTestFiles();
     appendGuiLog(`Loaded ${guiUploadedTests.length} test/support file(s).`);
 });
+
+function connectGuiRun(response) {
+    guiRunActive = true;
+    guiRunCompleted = false;
+    updateGuiRunControls();
+    const preview = document.getElementById("guiPreview");
+    preview.src = response.previewUrl;
+    preview.classList.remove("hidden");
+    document.getElementById("guiPreviewEmpty").classList.add("hidden");
+    document.getElementById("expandGuiPreviewBtn").disabled = false;
+
+    if (guiEventSocket) guiEventSocket.close();
+    guiEventSocket = new WebSocket(response.eventsUrl);
+    guiEventSocket.addEventListener("open", () => {
+        guiEventSocket.send("viewer_ready");
+    });
+    guiEventSocket.addEventListener("message", message => {
+        try {
+            handleGuiTestEvent(JSON.parse(message.data));
+        } catch (error) {
+            appendGuiLog(`Could not read a runner event: ${error.message}`);
+        }
+    });
+    guiEventSocket.addEventListener("error", () => {
+        appendGuiLog("Could not connect to the GUI test event stream.");
+    });
+}
 
 document.getElementById("runGuiTestsBtn").addEventListener("click", async () => {
     const selectedIds = Array.from(
@@ -1858,27 +1984,7 @@ document.getElementById("runGuiTestsBtn").addEventListener("click", async () => 
         return;
     }
 
-    const preview = document.getElementById("guiPreview");
-    preview.src = response.previewUrl;
-    preview.classList.remove("hidden");
-    document.getElementById("guiPreviewEmpty").classList.add("hidden");
-    document.getElementById("expandGuiPreviewBtn").disabled = false;
-
-    if (guiEventSocket) guiEventSocket.close();
-    guiEventSocket = new WebSocket(response.eventsUrl);
-    guiEventSocket.addEventListener("open", () => {
-        guiEventSocket.send("viewer_ready");
-    });
-    guiEventSocket.addEventListener("message", message => {
-        try {
-            handleGuiTestEvent(JSON.parse(message.data));
-        } catch (error) {
-            appendGuiLog(`Could not read a runner event: ${error.message}`);
-        }
-    });
-    guiEventSocket.addEventListener("error", () => {
-        appendGuiLog("Could not connect to the GUI test event stream.");
-    });
+    connectGuiRun(response);
 });
 
 document.getElementById("stopGuiTestsBtn").addEventListener("click", async () => {
@@ -2769,6 +2875,10 @@ window.electronAPI.onBackendResponse(async (response) => {
 
         console.log(response);
 
+        if (activeCommand === "generate_gui_test_cases") {
+            document.getElementById("guiGenerationStatus").textContent = response.stage;
+        }
+
         updateStepLoading(response.stage);
 
         if (response.progress !== undefined) {
@@ -2812,6 +2922,100 @@ window.electronAPI.onBackendResponse(async (response) => {
     // ----------------------------------------
     // Errors
     // ----------------------------------------
+    if (response.command === "generate_gui_test_cases") {
+        guiGenerationInProgress = false;
+        activeCommand = null;
+        updateGuiRunControls();
+        const status = document.getElementById("guiGenerationStatus");
+        const details = document.getElementById("guiGenerationDetails");
+        const filesList = document.getElementById("guiGeneratedFiles");
+        filesList.replaceChildren();
+
+        if (!response.success) {
+            await stopLocalGuiApp();
+            status.textContent = "GUI test generation failed.";
+            details.textContent = response.error || "The AI could not generate GUI test cases.";
+            return;
+        }
+
+        const result = response.result || {};
+        status.textContent = result.message || "GUI test cases generated.";
+        details.textContent = [
+            `Saved to: ${result.output_directory || "output directory unavailable"}`,
+            `Source files analyzed: ${(result.source_files_analyzed || []).length}`,
+            result.source_context_truncated
+                ? "Note: source context was capped; some files or file contents were not included."
+                : ""
+        ].filter(Boolean).join("\n");
+        const generatedFiles = result.generated_files || [];
+        generatedFiles.forEach(filePath => {
+            const item = document.createElement("li");
+            item.textContent = filePath;
+            filesList.appendChild(item);
+        });
+        if (!filesList.childElementCount) {
+            await stopLocalGuiApp();
+            const item = document.createElement("li");
+            item.textContent = "The backend did not return generated file paths.";
+            filesList.appendChild(item);
+            return;
+        }
+
+        if (!guiGenerationSourceDirectory || !guiGenerationAppPort) {
+            status.textContent = "Tests generated, but app startup details are unavailable.";
+            details.textContent += "\nSelect the app folder and generate again to run them automatically.";
+            return;
+        }
+
+        guiRunActive = true;
+        guiRunCompleted = false;
+        updateGuiRunControls();
+        status.textContent = "Starting Playwright tests against the local app...";
+        appendGuiLog("Generated tests. Preparing the isolated Playwright runner.");
+        const allowedHosts = document.getElementById("guiAllowedHosts").value
+            .split(/[,\s]+/)
+            .map(host => host.trim())
+            .filter(Boolean);
+        try {
+            const run = await window.electronAPI.startGeneratedGuiTests({
+                testFiles: generatedFiles,
+                appPort: guiGenerationAppPort,
+                allowedHosts
+            });
+            if (!run?.success) {
+                await stopLocalGuiApp();
+                guiRunActive = false;
+                updateGuiRunControls();
+                status.textContent = "Tests were generated, but the Playwright run could not start.";
+                details.textContent = run?.error || "The app or GUI test runner failed to start.";
+                appendGuiLog(details.textContent);
+                return;
+            }
+
+            const previousSelections = new Map(guiUploadedTests.map(file => [file.id, file.selected]));
+            guiUploadedTests = (run.tests || []).map(file => ({
+                ...file,
+                selected: previousSelections.has(file.id) ? previousSelections.get(file.id) : true
+            }));
+            renderGuiTestFiles();
+            status.textContent = "Local app and generated GUI tests are running.";
+            details.textContent = [
+                `App URL from Docker: http://host.docker.internal:${guiGenerationAppPort}`,
+                `App source: ${guiGenerationSourceDirectory}`,
+                `Generated test files: ${generatedFiles.length}`
+            ].join("\n");
+            connectGuiRun(run);
+        } catch (error) {
+            await stopLocalGuiApp();
+            guiRunActive = false;
+            updateGuiRunControls();
+            status.textContent = "Tests were generated, but the Playwright run could not start.";
+            details.textContent = error.message || "The app or GUI test runner failed to start.";
+            appendGuiLog(details.textContent);
+        }
+        return;
+    }
+
     if (!response.success) {
 
         errorsMade = true;

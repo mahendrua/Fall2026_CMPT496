@@ -9,6 +9,7 @@ const server = new WebSocketServer({ host: "0.0.0.0", port: 3001, maxPayload: 64
 let testProcess = null;
 let shuttingDown = false;
 let proxyReady = false;
+let appReady = false;
 let viewerReady = false;
 let testsStarted = false;
 
@@ -75,11 +76,39 @@ function waitForEgressProxy() {
     });
 }
 
+function waitForApp() {
+    const host = process.env.GUI_APP_HOST;
+    const port = Number(process.env.GUI_APP_PORT);
+    if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
+        return Promise.resolve();
+    }
+
+    const deadline = Date.now() + 60000;
+    return new Promise((resolve, reject) => {
+        const attempt = () => {
+            const socket = net.createConnection({ host, port });
+            socket.once("connect", () => {
+                socket.destroy();
+                resolve();
+            });
+            socket.once("error", () => {
+                socket.destroy();
+                if (Date.now() >= deadline) {
+                    reject(new Error(`The app did not start listening on ${host}:${port} within 60 seconds.`));
+                } else {
+                    setTimeout(attempt, 300);
+                }
+            });
+        };
+        attempt();
+    });
+}
+
 process.on("SIGTERM", () => stop(143));
 process.on("SIGINT", () => stop(130));
 
 function startPlaywrightTests() {
-    if (!proxyReady || !viewerReady || testsStarted) return;
+    if (!proxyReady || !appReady || !viewerReady || testsStarted) return;
     testsStarted = true;
     broadcast({ type: "runner_ready", message: "Playwright browser is starting." });
 
@@ -154,6 +183,11 @@ server.on("listening", () => {
     waitForEgressProxy()
         .then(() => {
             proxyReady = true;
+            broadcast({ type: "runner_ready", message: "Checking that the app container is ready." });
+            return waitForApp();
+        })
+        .then(() => {
+            appReady = true;
             broadcast({ type: "runner_ready", message: "Waiting for the application preview to connect." });
             startPlaywrightTests();
         })

@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require("fs");
 const dotenv = require("dotenv");
 const { GuiTestRunner } = require("./guiTestRunner");
+const { LocalGuiApp } = require("./guiLocalApp");
 
 
 let pythonProcess = null;
@@ -12,6 +13,7 @@ let restartBackendAfterCancel = false;
 // Directory the backend actually writes its output to (userData when packaged).
 let backendOutputDir = __dirname;
 let guiTestRunner = null;
+let localGuiApp = null;
 let guiShutdownStarted = false;
 // ----------------------------------------------------
 // API KEYS (.env)
@@ -1098,11 +1100,50 @@ function getGuiTestRunner() {
                 if (mainWindow && !mainWindow.isDestroyed()) {
                     mainWindow.webContents.send("gui-test-event", payload);
                 }
+                if (payload.type === "run_complete" || payload.type === "runner_container_exit") {
+                    stopLocalGuiApp().catch(error => console.error("Failed to stop local GUI app:", error));
+                }
             }
         });
     }
     return guiTestRunner;
 }
+
+function getLocalGuiApp() {
+    if (!localGuiApp) {
+        localGuiApp = new LocalGuiApp(payload => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                mainWindow.webContents.send("gui-test-event", payload);
+            }
+        });
+    }
+    return localGuiApp;
+}
+
+async function stopLocalGuiApp() {
+    if (localGuiApp?.active) await localGuiApp.stop();
+}
+
+ipcMain.handle("start-local-gui-app", async (event, request = {}) => {
+    const confirmation = await dialog.showMessageBox(mainWindow, {
+        type: "warning",
+        buttons: ["Run project", "Cancel"],
+        defaultId: 1,
+        cancelId: 1,
+        title: "Run local app for GUI testing?",
+        message: "This will execute the selected project's npm dev/start script on your PC.",
+        detail: "The script runs with your Windows user permissions and the app listens on all network interfaces so Docker can connect. Continue only if you trust the selected folder."
+    });
+    if (confirmation.response !== 0) {
+        return { success: false, cancelled: true };
+    }
+    try {
+        const result = await getLocalGuiApp().start(request.appDirectory);
+        return { success: true, ...result };
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+});
 
 ipcMain.handle("select-gui-test-files", async () => {
     let selection;
@@ -1139,12 +1180,66 @@ ipcMain.handle("start-gui-tests", async (event, request = {}) => {
     }
 });
 
+ipcMain.handle("start-generated-gui-tests", async (event, request = {}) => {
+    try {
+        const generatedFiles = request.testFiles;
+        if (!Array.isArray(generatedFiles) || generatedFiles.length === 0 || generatedFiles.length > 8) {
+            throw new Error("The generated test selection is empty or invalid.");
+        }
+
+        const generatedRoot = path.resolve(backendOutputDir, "agent", "GUI_test_agent_output");
+        const resolvedFiles = generatedFiles.map(filePath => path.resolve(String(filePath)));
+        for (const filePath of resolvedFiles) {
+            const relative = path.relative(generatedRoot, filePath);
+            if (
+                !relative ||
+                relative === ".." ||
+                relative.startsWith(`..${path.sep}`) ||
+                path.isAbsolute(relative) ||
+                !/\.spec\.js$/i.test(filePath)
+            ) {
+                throw new Error("Only generated Playwright spec files can be started by this action.");
+            }
+        }
+
+        const runner = getGuiTestRunner();
+        runner.addFiles(resolvedFiles);
+        const requestedPaths = new Set(resolvedFiles.map(filePath => path.resolve(filePath).toLowerCase()));
+        const selectedIds = Array.from(runner.uploadedFiles.values())
+            .filter(file => requestedPaths.has(path.resolve(file.sourcePath).toLowerCase()))
+            .map(file => file.id);
+        if (selectedIds.length !== resolvedFiles.length) {
+            throw new Error("Could not prepare all generated test files for execution.");
+        }
+        if (!localGuiApp?.active) {
+            throw new Error("The local app is no longer running. Start generation again to relaunch it.");
+        }
+        const appPort = localGuiApp.active.port;
+
+        const run = await runner.start(
+            selectedIds,
+            Array.isArray(request.allowedHosts) ? request.allowedHosts : [],
+            {
+                mode: "host",
+                port: appPort
+            }
+        );
+        return { success: true, tests: runner.listFiles(), ...run };
+    } catch (error) {
+        await stopLocalGuiApp().catch(stopError =>
+            console.error("Failed to stop local GUI app after runner startup error:", stopError)
+        );
+        return { success: false, error: error.message };
+    }
+});
+
 ipcMain.handle("stop-gui-tests", async () => {
     try {
-        const stopped = await getGuiTestRunner().stop();
+        const stopped = guiTestRunner ? await guiTestRunner.stop() : false;
+        await stopLocalGuiApp();
         return stopped
             ? { success: true }
-            : { success: false, error: "There is no GUI test run to stop." };
+            : { success: true };
     } catch (error) {
         return { success: false, error: error.message };
     }
@@ -1352,10 +1447,13 @@ app.on(
 app.on(
     "before-quit",
     (event)=>{
-        if (guiTestRunner?.activeRun && !guiShutdownStarted) {
+        if ((guiTestRunner?.activeRun || localGuiApp?.active) && !guiShutdownStarted) {
             event.preventDefault();
             guiShutdownStarted = true;
-            guiTestRunner.dispose()
+            Promise.all([
+                guiTestRunner?.dispose(),
+                stopLocalGuiApp()
+            ])
                 .catch(error => console.error("Failed to clean up GUI test container:", error))
                 .finally(() => app.quit());
         }

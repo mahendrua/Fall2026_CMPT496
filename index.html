@@ -35,16 +35,25 @@
 
         <div class="gui-feature-actions">
             <button class="btn-primary" id="uploadGuiTestsBtn">Upload Test Cases Manually</button>
-            <button class="btn-secondary gui-coming-soon" id="generateGuiTestsBtn" disabled>
-                Generate Test Cases Using AI <span>Coming Soon</span>
-            </button>
-            <label class="gui-host-label" for="guiAllowedHosts">Allowed website hosts</label>
+            <button class="btn-secondary" id="generateGuiTestsBtn">Generate Test Cases Using AI</button>
+            <p class="gui-host-help">
+                AI generation detects the Node.js framework, starts the app on an available port, and lets the
+                Playwright container connect through host.docker.internal. Dependencies must already be installed.
+            </p>
+            <section id="guiGenerationResult" class="gui-generation-result hidden" aria-live="polite">
+                <strong id="guiGenerationStatus">Choose an app source folder to generate GUI tests.</strong>
+                <p id="guiGenerationDetails"></p>
+                <ul id="guiGeneratedFiles"></ul>
+                <p>Generated specs are saved separately and run against the local app. The app process is stopped when generation or testing ends.</p>
+            </section>
+            <label class="gui-host-label" for="guiAllowedHosts">Allowed website hosts for manual tests</label>
             <textarea id="guiAllowedHosts" class="input-glass gui-host-input" rows="2"
                 placeholder="app.example.com&#10;host.docker.internal:3000"></textarea>
             <p class="gui-host-help">
                 Enter one hostname per line; add :port for a nonstandard port. Local apps must use
                 host.docker.internal:port. Prefix a hostname with *. to allow it and its subdomains.
-                Other private-network targets are blocked.
+                Other private-network targets are blocked. Generated tests automatically target the local app through
+                host.docker.internal; use this list only for external website dependencies.
             </p>
             <p id="guiUploadError" class="gui-message hidden" role="alert"></p>
         </div>

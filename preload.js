@@ -147,6 +147,10 @@ contextBridge.exposeInMainWorld(
         selectGuiTestFiles: () => ipcRenderer.invoke("select-gui-test-files"),
         startGuiTests: (testIds, allowedHosts) =>
             ipcRenderer.invoke("start-gui-tests", { testIds, allowedHosts }),
+        startLocalGuiApp: request =>
+            ipcRenderer.invoke("start-local-gui-app", request),
+        startGeneratedGuiTests: request =>
+            ipcRenderer.invoke("start-generated-gui-tests", request),
         stopGuiTests: () => ipcRenderer.invoke("stop-gui-tests"),
         onGuiTestEvent: (callback) => {
             ipcRenderer.on("gui-test-event", (event, payload) => callback(payload));

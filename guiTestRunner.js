@@ -160,11 +160,11 @@ function normalizeAllowedHosts(hostEntries) {
             !hostname ||
             net.isIP(hostname) ||
             !validLabels ||
-            (labels.length < 2 && hostname !== "host.docker.internal") ||
+            (labels.length < 2 && !["host.docker.internal", "gui-app"].includes(hostname)) ||
             hostname === "localhost" ||
             hostname.endsWith(".localhost") ||
             hostname.endsWith(".local") ||
-            (match[1] && hostname === "host.docker.internal")
+            (match[1] && ["host.docker.internal", "gui-app"].includes(hostname))
         ) {
             throw new Error(`Host "${value}" is invalid or blocked. Use a public hostname or host.docker.internal.`);
         }
@@ -210,7 +210,7 @@ function createProxyConfig(hostEntries) {
         "pid_filename none",
         "coredump_dir /tmp",
         "acl private_destination dst 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.0.2.0/24 192.168.0.0/16 198.18.0.0/15 198.51.100.0/24 203.0.113.0/24 224.0.0.0/4 240.0.0.0/4 ::/128 ::1/128 fc00::/7 fe80::/10 ff00::/8",
-        "acl docker_host dstdomain host.docker.internal",
+        "acl docker_host dstdomain host.docker.internal gui-app",
         "http_access deny private_destination !docker_host"
     ];
 
@@ -425,7 +425,7 @@ class GuiTestRunner {
         this.imageReady = true;
     }
 
-    async start(selectedIds, allowedHosts) {
+    async start(selectedIds, allowedHosts, appUnderTest = null) {
         if (this.activeRun) {
             throw new Error("A GUI test run is already active.");
         }
@@ -440,14 +440,50 @@ class GuiTestRunner {
         if (selectedFiles.some(file => !file)) {
             throw new Error("The selection includes a file that is no longer available. Upload it again.");
         }
-        const proxyConfig = createProxyConfig(allowedHosts);
+        let appOptions = null;
+        let effectiveHosts = allowedHosts;
+        if (appUnderTest) {
+            const appPort = Number(appUnderTest.port);
+            if (!Number.isInteger(appPort) || appPort < 1 || appPort > 65535) {
+                throw new Error("The app port must be between 1 and 65535.");
+            }
+            if (appUnderTest.mode === "host") {
+                appOptions = { mode: "host", port: appPort };
+                effectiveHosts = [...(Array.isArray(allowedHosts) ? allowedHosts : []), `host.docker.internal:${appPort}`];
+            } else {
+                const appDirectory = path.resolve(String(appUnderTest.directory || ""));
+                let appStat;
+                try {
+                    appStat = fs.statSync(appDirectory);
+                } catch (error) {
+                    throw new Error(`Cannot access the app source folder: ${error.message}`);
+                }
+                if (!appStat.isDirectory()) {
+                    throw new Error("The app source path must be a folder.");
+                }
+                const dockerfilePath = path.join(appDirectory, "Dockerfile");
+                try {
+                    if (!fs.statSync(dockerfilePath).isFile()) {
+                        throw new Error("The Dockerfile path is not a regular file.");
+                    }
+                } catch (error) {
+                    throw new Error(`A Dockerfile is required in the selected app folder: ${error.message}`);
+                }
+                appOptions = { mode: "docker", directory: appDirectory, port: appPort };
+                effectiveHosts = [...(Array.isArray(allowedHosts) ? allowedHosts : []), `gui-app:${appPort}`];
+            }
+        }
+        const proxyConfig = createProxyConfig(effectiveHosts);
 
         const stagingDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "checkpoint-gui-tests-"));
         const proxyDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "checkpoint-gui-proxy-"));
         const name = `checkpoint-gui-${crypto.randomUUID().replace(/-/g, "").slice(0, 20)}`;
+        const appImageName = appOptions?.mode === "docker" ? `${name}-app:latest` : null;
         const run = {
             name,
             proxyName: `${name}-egress`,
+            appName: appOptions?.mode === "docker" ? `${name}-app` : null,
+            appImageName,
             networkName: `${name}-net`,
             stagingDirectory,
             proxyDirectory,
@@ -490,6 +526,21 @@ class GuiTestRunner {
             });
             this.assertNotCancelled(run);
 
+            if (appOptions?.mode === "docker") {
+                this.onEvent({
+                    type: "runner_status",
+                    status: "building_app",
+                    message: "Building the selected application Dockerfile..."
+                });
+                await runProcess("docker", [
+                    "build",
+                    "--tag", run.appImageName,
+                    "--file", path.join(appOptions.directory, "Dockerfile"),
+                    appOptions.directory
+                ], { timeoutMs: 15 * 60 * 1000, signal: run.abortController.signal });
+                this.assertNotCancelled(run);
+            }
+
             const configMount = `type=bind,source=${run.configPath},target=/etc/squid/squid.conf,readonly`;
             const proxy = await runProcess("docker", [
                 "run", "--detach", "--init",
@@ -522,6 +573,31 @@ class GuiTestRunner {
             await this.assertContainerRunning(run.proxyContainerId, "egress proxy");
             this.assertNotCancelled(run);
 
+            if (appOptions?.mode === "docker") {
+                this.onEvent({
+                    type: "runner_status",
+                    status: "starting_app",
+                    message: `Starting the app container on its private port ${appOptions.port}...`
+                });
+                const appResult = await runProcess("docker", [
+                    "run", "--detach", "--init",
+                    "--name", run.appName,
+                    "--network", run.networkName,
+                    "--network-alias", "gui-app",
+                    "--memory", "1g",
+                    "--cpus", "1",
+                    "--pids-limit", "128",
+                    "--security-opt", "no-new-privileges",
+                    "--cap-drop", "ALL",
+                    "--cap-add", "NET_BIND_SERVICE",
+                    "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m",
+                    run.appImageName
+                ], { timeoutMs: 30000, signal: run.abortController.signal });
+                run.appContainerId = appResult.stdout.split(/\s+/)[0];
+                await this.assertContainerRunning(run.appContainerId, "app under test");
+                this.assertNotCancelled(run);
+            }
+
             const mount = `type=bind,source=${stagingDirectory},target=/opt/gui-runner/tests,readonly`;
             const result = await runProcess("docker", [
                 "run", "--detach", "--init",
@@ -546,6 +622,13 @@ class GuiTestRunner {
                 "--env", "NO_PROXY=localhost,127.0.0.1,::1",
                 "--env", `GUI_EVENT_TOKEN=${run.eventToken}`,
                 "--env", `VNC_PASSWORD=${run.vncPassword}`,
+                ...(appOptions?.mode === "docker" ? [
+                    "--env", `GUI_APP_HOST=gui-app`,
+                    "--env", `GUI_APP_PORT=${appOptions.port}`,
+                    "--env", `BASE_URL=http://gui-app:${appOptions.port}`
+                ] : appOptions?.mode === "host" ? [
+                    "--env", `BASE_URL=http://host.docker.internal:${appOptions.port}`
+                ] : []),
                 this.imageNames.runner
             ], { timeoutMs: 30000, signal: run.abortController.signal });
 
@@ -666,26 +749,40 @@ class GuiTestRunner {
             });
     }
 
-    async cleanupRun(run) {
-        const removeContainer = async name => {
+    cleanupRun(run) {
+        if (run.cleanupPromise) return run.cleanupPromise;
+        run.cleanupPromise = (async () => {
+            const removeContainer = async name => {
+                try {
+                    await runProcess("docker", ["rm", "--force", name], { timeoutMs: 10000 });
+                } catch (error) {
+                    if (!/no such container|not found/i.test(error.message)) {
+                        this.onEvent({ type: "runner_log", message: `Container cleanup warning: ${error.message}` });
+                    }
+                }
+            };
+            await Promise.all([removeContainer(run.name), removeContainer(run.proxyName)]);
+            if (run.appName) await removeContainer(run.appName);
             try {
-                await runProcess("docker", ["rm", "--force", name], { timeoutMs: 10000 });
+                await runProcess("docker", ["network", "rm", run.networkName], { timeoutMs: 10000 });
             } catch (error) {
-                if (!/no such container|not found/i.test(error.message)) {
-                    this.onEvent({ type: "runner_log", message: `Container cleanup warning: ${error.message}` });
+                if (!/no such network|not found/i.test(error.message)) {
+                    this.onEvent({ type: "runner_log", message: `Network cleanup warning: ${error.message}` });
                 }
             }
-        };
-        await Promise.all([removeContainer(run.name), removeContainer(run.proxyName)]);
-        try {
-            await runProcess("docker", ["network", "rm", run.networkName], { timeoutMs: 10000 });
-        } catch (error) {
-            if (!/no such network|not found/i.test(error.message)) {
-                this.onEvent({ type: "runner_log", message: `Network cleanup warning: ${error.message}` });
+            if (run.appImageName) {
+                try {
+                    await runProcess("docker", ["image", "rm", run.appImageName], { timeoutMs: 30000 });
+                } catch (error) {
+                    if (!/no such image|not found/i.test(error.message)) {
+                        this.onEvent({ type: "runner_log", message: `App image cleanup warning: ${error.message}` });
+                    }
+                }
             }
-        }
-        fs.rmSync(run.stagingDirectory, { recursive: true, force: true });
-        fs.rmSync(run.proxyDirectory, { recursive: true, force: true });
+            fs.rmSync(run.stagingDirectory, { recursive: true, force: true });
+            fs.rmSync(run.proxyDirectory, { recursive: true, force: true });
+        })();
+        return run.cleanupPromise;
     }
 
     async stop() {
