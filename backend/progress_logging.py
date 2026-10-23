@@ -71,13 +71,23 @@ def progress(message, percent=None, step_complete=False):
         flush=True
     )
 
-def pipeline_progress(stage, percent):
+def pipeline_progress(stage, percent, step_percent=True):
+    """
+    Announce a pipeline stage. percent places the stage on the pipeline bar.
+    step_percent=False says the stage reports no percentage of its own, so
+    the step bar should not show one.
+    """
+
+    data = {
+        "type": "pipeline_progress",
+        "stage": stage,
+        "progress": percent
+    }
+
+    if not step_percent:
+        data["step_percent"] = False
 
     print(
-        json.dumps(_include_request_id({
-            "type": "pipeline_progress",
-            "stage": stage,
-            "progress": percent
-        })),
+        json.dumps(_include_request_id(data)),
         flush=True
     )
