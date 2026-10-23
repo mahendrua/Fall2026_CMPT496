@@ -22,7 +22,6 @@ import time
 import requests
 from pathlib import Path
 from backend.progress_logging import progress, pipeline_progress
-from backend.env_file import save_env_value
 
 # ---------------------------------------------------------
 # Logging Configuration 
@@ -49,8 +48,8 @@ from agent.UT_agent import UTAgent
 from agent.UTV_agent import UTVAgent
 from agent.directory_agent import DirectoryAgent
 from agent.file_summary_agent import FileSummaryAgent
-from agent.llm import GEMINI_MODEL
-from agent.structured_output.file_summary_output import BusinessRule
+from agent.llm import verify_llm_key
+from agent.BR_input_loader import load_rule_candidates, deduplicate_rule_candidates
 from agent.structured_output.UT_output import ValidatedRule
 from agent.structured_output.UTV_output import UnitTest
 
@@ -92,6 +91,7 @@ def test_run_result(test_run, **extra):
 
     return result
 
+from backend.run_report import write_run_report
 from backend.token_estimate import estimate_pipeline
 from backend.token_usage import (
     record_usage,
@@ -384,10 +384,19 @@ class Commands:
         self,
         codebase: str,
         rules_path: str = None,
-        individualStep = True
+        individualStep = True,
+        directory_rules_path: str = None,
     ):
         """
         Validate generated business rules.
+
+        Loads file-level and folder-level rules, merges exact
+        duplicates, then validates them with the BR agent.
+
+        With no paths given, the default file and directory agent
+        outputs are used; whichever exists is validated and a missing
+        one is returned as a warning. If either path is given, only
+        the given inputs are loaded, and each must exist.
 
         Refactor of old:
             run_br()
@@ -396,49 +405,49 @@ class Commands:
         codebase_path = Path(codebase)
         codebase_name = codebase_path.name
 
-        if rules_path is None:
-            rules_path = (
-                self.app_dir
-                / "agent"
-                / "file_summary_agent_output"
-                / codebase_name
-                / "business_rules"
-                / "business_rules.json"
-            )
-
-        rules_path = Path(rules_path)
+        # A custom path means a custom invocation: do not mix in
+        # default outputs for the input that was not given.
+        custom = rules_path is not None or directory_rules_path is not None
+        skip = False if custom else None
 
         def task():
 
             progress("Validating business rules...")
 
-            if not rules_path.exists():
-                raise FileNotFoundError(
-                    f"Business rules not found: {rules_path}"
-                )
+            inputs = load_rule_candidates(
+                codebase_path,
+                rules_path if rules_path is not None else skip,
+                directory_rules_path if directory_rules_path is not None else skip,
+                app_dir=self.app_dir,
+            )
 
-            with open(
-                rules_path,
-                "r",
-                encoding="utf-8"
-            ) as file:
+            candidates = deduplicate_rule_candidates(inputs.candidates)
 
-                raw_rules = json.load(file)
-
-
-            input_rules = {
-                path: [
-                    BusinessRule(**rule)
-                    for rule in rules
-                ]
-                for path, rules in raw_rules.items()
-            }
-
+            progress(
+                f"Loaded {len(inputs.candidates)} business rules "
+                f"({len(candidates)} after merging exact duplicates)."
+            )
 
             BRAgent().run(
-                input_rules,
+                candidates,
                 codebase_name
             )
+
+            result = {
+                "message": (
+                    f"Business rule validation finished for {len(candidates)} "
+                    f"rule{'' if len(candidates) == 1 else 's'}"
+                ),
+            }
+
+            if inputs.missing_inputs:
+                result["warning"] = "\n".join(
+                    f"No {kind}-level business rules were found at {path}, "
+                    "so only the other rules were validated."
+                    for kind, path in inputs.missing_inputs.items()
+                )
+
+            return result
 
 
         return self._run_command(
@@ -834,80 +843,30 @@ class Commands:
     # than just checking the key also catches a key that is real but has
     # no access to this model -- a failure that would otherwise only show
     # up part-way through a run.
-    VALIDATION_MODEL = GEMINI_MODEL
     VALIDATION_TIMEOUT_SECONDS = 15
 
-    def verify_api_key(self, api_key: str):
+    def verify_api_key(self, provider: str = "", model: str = "", api_key: str = ""):
         """
-        Check a key by making the smallest real generation call possible.
+        Check an API key with one tiny real call.
 
-        Returns a dict with:
-            ok      True accepted, False rejected, None could not ask.
-                    A failure to ask is not a rejection, so it does not
-                    block a key that may be perfectly good.
-            detail  human-readable reason, Google's own wording when it
-                    rejected the key.
-            model   the model version Google answered with.
-            tokens  what this check cost, from Google's own accounting.
+        Read-only and deliberately outside _run_command: a key check must not
+        be logged as a run of its own. It does not write .env; main.js owns
+        that file and saves the key once this reports it is usable.
         """
+        base = {"command": "verify_api_key", "individualStep": True}
 
-        url = (
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self.VALIDATION_MODEL}:generateContent"
-        )
+        if not (api_key or "").strip():
+            return {**base, "success": False, "error": "No API key provided."}
 
-        try:
-            response = requests.post(
-                url,
-                params={"key": api_key},
-                json={
-                    # One token in, one token out: enough to prove the key
-                    # works without a meaningful cost.
-                    "contents": [{"parts": [{"text": "hi"}]}],
-                    "generationConfig": {"maxOutputTokens": 1},
-                },
-                timeout=self.VALIDATION_TIMEOUT_SECONDS,
-            )
-        except requests.RequestException as exc:
-            return {
-                "ok": None,
-                "detail": f"Could not reach Google to verify the key ({exc}).",
-                "model": None,
-                "tokens": None,
-            }
+        if not (model or "").strip():
+            return {**base, "success": False, "error": "No model name provided."}
 
         try:
-            body = response.json()
-        except ValueError:
-            body = {}
+            check = verify_llm_key(provider, model.strip(), api_key.strip())
+        except Exception as exc:
+            return {**base, "success": False, "error": str(exc)}
 
-        if response.status_code == 200:
-
-            # Google reports the exact model that answered and what the
-            # call cost. Both are worth surfacing: the model confirms the
-            # key can reach the one the pipeline needs, and the token
-            # count is the honest price of checking.
-            usage = body.get("usageMetadata") or {}
-
-            return {
-                "ok": True,
-                "detail": "Key accepted by Google.",
-                "model": body.get("modelVersion") or self.VALIDATION_MODEL,
-                "tokens": usage.get("totalTokenCount"),
-            }
-
-        # Google puts a readable reason in the body; prefer it to the code.
-        try:
-            detail = body["error"]["message"]
-        except (KeyError, TypeError):
-            detail = response.text[:200] or f"HTTP {response.status_code}"
-
-        return {
-            "ok": False,
-            "detail": detail,
-            "model": None,
-            "tokens": None,
-        }
+        return {**base, "success": True, "result": check}
 
     def set_api_key(self, api_key: str):
         """
@@ -942,12 +901,15 @@ class Commands:
 
             env_path = self.app_dir / ".env"
 
-            # Only the key's line changes; other .env values survive.
-            save_env_value(
+            with open(
                 env_path,
-                "GOOGLE_API_KEY",
-                api_key.strip()
-            )
+                "w",
+                encoding="utf-8"
+            ) as env:
+
+                env.write(
+                    f"GOOGLE_API_KEY={api_key}\n"
+                )
 
 
             if check["ok"] is None:
@@ -1107,8 +1069,25 @@ class Commands:
             return summary
 
 
-        return self._run_command(
+        result = self._run_command(
             "full_pipeline",
             task,
             individualStep=True,
         )
+
+        # US-049: one readable report for the run; the Complete screen's
+        # "Open Report" button opens it from the path in run_report.
+        # Built after _run_command so the run log is finished and the report
+        # shows the final numbers. It makes no AI calls, and a report problem
+        # only adds a warning: the run itself has already succeeded.
+        if result["success"]:
+            report = write_run_report(codebase_path, self.app_dir)
+            summary = result["result"]
+
+            if report["path"]:
+                summary["run_report"] = report["path"]
+            else:
+                note = f"The run report could not be written: {report['error']}"
+                summary["warning"] = "\n\n".join(filter(None, [summary.get("warning"), note]))
+
+        return result

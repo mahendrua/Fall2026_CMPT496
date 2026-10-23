@@ -12,20 +12,22 @@ contextBridge.exposeInMainWorld(
 
         executeCommand: (
             command,
-            args = {}
+            args = {},
+            requestId
         ) => {
 
             return ipcRenderer.invoke(
                 "execute-command",
                 {
                     command,
-                    args
+                    args,
+                    request_id: requestId
                 }
             );
 
         },
 
-    cancelCommand: () => ipcRenderer.invoke("cancel-command"),
+    cancelCommand: (requestId) => ipcRenderer.invoke("cancel-command", requestId),
 
         getErrorLog: () => ipcRenderer.invoke("get-error-log"),
 
@@ -66,6 +68,12 @@ contextBridge.exposeInMainWorld(
 
         },
 
+        // --- multi-key manager ---
+        listApiKeys:  ()     => ipcRenderer.invoke("list-api-keys"),
+        saveApiKey:   (data) => ipcRenderer.invoke("save-api-key", data),
+        selectApiKey: (data) => ipcRenderer.invoke("select-api-key", data),
+        deleteApiKey: (data) => ipcRenderer.invoke("delete-api-key", data),
+
         getValidatedRules: (
             codebasePath
         ) => {
@@ -105,6 +113,11 @@ contextBridge.exposeInMainWorld(
         exitApp: () => {
             return ipcRenderer.invoke("exit-app");
         },
+
+        // Run report (US-049): opens run_reports/<codebase>/run_report.html in its own window.
+        openReport: (reportPath) => ipcRenderer.invoke("open-report", reportPath),
+        // The selected codebase's report, or the newest one when none is selected.
+        openLatestReport: (codebaseName) => ipcRenderer.invoke("open-latest-report", codebaseName),
 
 
         // ==================================

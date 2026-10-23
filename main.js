@@ -1,42 +1,123 @@
 const { app, BrowserWindow, ipcMain, shell, dialog, Menu } = require('electron');
 const { spawn } = require('child_process');
+const { randomUUID } = require('node:crypto');
 const path = require('path');
 const fs = require("fs");
 const dotenv = require("dotenv");
+const { CommandRequestTracker } = require("./command_requests");
 
 
 let pythonProcess = null;
 let mainWindow = null;
 let restartBackendAfterCancel = false;
+const backendRequests = new CommandRequestTracker();
 // Directory the backend actually writes its output to (userData when packaged).
 let backendOutputDir = __dirname;
 // ----------------------------------------------------
-// API KEY CHECK
+// API KEYS (.env)
 // ----------------------------------------------------
+// Each saved key is one line  APIKEY__<PROVIDER>__<label>=<key>
+// with its model in           APIMODEL__<PROVIDER>__<label>=<model>
+// The selected one is mirrored into ACTIVE_LLM_* for the Python backend.
 
-function hasAPIKey() {
-    const isWindows = process.platform === "win32";
+const PROVIDERS = ["google", "openai", "anthropic", "mistral", "groq", "deepseek", "xai", "openrouter"];
 
+function getEnvPath() {
     const backendDir = app.isPackaged
         ? path.join(process.resourcesPath, "backend")
         : path.join(__dirname, "releases", "main");
 
-    const executableName = isWindows ? "main.exe" : "main";
-    const exePath = path.join(backendDir, executableName);
+    const exeName = process.platform === "win32" ? "main.exe" : "main";
+    const exeExists = fs.existsSync(path.join(backendDir, exeName));
 
-    // If exe exists, .env should be next to it
-    // If not, .env should be next to main.py
-    const envDir = fs.existsSync(exePath) ? backendDir : __dirname;
-    const envPath = path.join(envDir, ".env");
-
-    if (!fs.existsSync(envPath))
-        return false;
-
-    const env = dotenv.parse(fs.readFileSync(envPath));
-    return env.GOOGLE_API_KEY && env.GOOGLE_API_KEY.trim() !== "";
+    // Same rule the Python side uses: next to the exe, else next to main.py.
+    return path.join(exeExists ? backendDir : __dirname, ".env");
 }
 
+function ensureEnvFile() {
+    const p = getEnvPath();
+    try {
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        if (!fs.existsSync(p)) fs.writeFileSync(p, "", "utf8");
+    } catch (error) {
+        console.error("Could not create .env:", error);
+    }
+}
 
+function readEnv() {
+    const p = getEnvPath();
+    return fs.existsSync(p) ? dotenv.parse(fs.readFileSync(p)) : {};
+}
+
+function writeEnv(env) {
+    const p = getEnvPath();
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+
+    const text = Object.entries(env)
+        .filter(([, v]) => v !== undefined && v !== null && v !== "")
+        .map(([k, v]) => `${k}=${v}`)
+        .join("\n") + "\n";
+
+    const tmp = `${p}.tmp`;
+    fs.writeFileSync(tmp, text, "utf8");
+    fs.renameSync(tmp, p);
+}
+
+function applyActive(env, id) {
+    const key = id && env[`APIKEY__${id}`];
+
+    if (!key) {
+        delete env.ACTIVE_LLM_KEY;
+        delete env.ACTIVE_LLM_PROVIDER;
+        delete env.ACTIVE_LLM_MODEL;
+        delete env.ACTIVE_LLM_API_KEY;
+        return;
+    }
+
+    env.ACTIVE_LLM_KEY = id;
+    env.ACTIVE_LLM_PROVIDER = id.split("__")[0].toLowerCase();
+    env.ACTIVE_LLM_MODEL = env[`APIMODEL__${id}`] || "";
+    env.ACTIVE_LLM_API_KEY = key;
+}
+
+// Moves an old single GOOGLE_API_KEY into the new format. Returns true if it changed anything.
+function migrateLegacyKey(env) {
+    const legacy = (env.GOOGLE_API_KEY || "").trim();
+    if (!legacy) return false;
+
+    if (!env["APIKEY__GOOGLE__default"]) {
+        env["APIKEY__GOOGLE__default"] = legacy;
+        env["APIMODEL__GOOGLE__default"] = "gemini-3-flash-preview";
+    }
+
+    delete env.GOOGLE_API_KEY;
+
+    if (!env.ACTIVE_LLM_KEY) applyActive(env, "GOOGLE__default");
+    return true;
+}
+
+function listKeys(env) {
+    return Object.keys(env)
+        .filter(k => k.startsWith("APIKEY__"))
+        .map(k => {
+            const id = k.slice("APIKEY__".length);
+            const [provider, label] = id.split("__");
+            return {
+                id,
+                provider: provider.toLowerCase(),
+                label,
+                model: env[`APIMODEL__${id}`] || "",
+                masked: "…" + String(env[k]).slice(-4),
+                active: env.ACTIVE_LLM_KEY === id
+            };
+        });
+}
+
+function hasAPIKey() {
+    const env = readEnv();
+    if (migrateLegacyKey(env)) writeEnv(env);
+    return Boolean((env.ACTIVE_LLM_API_KEY || "").trim());
+}
 
 
 function detectFileType(json) {
@@ -409,6 +490,74 @@ function formatBusinessRules(json) {
 // ICP HANDLERS
 // ----------------------------------------------------
 
+ipcMain.handle("list-api-keys", () => {
+    const env = readEnv();
+    if (migrateLegacyKey(env)) writeEnv(env);
+    return { success: true, keys: listKeys(env) };
+});
+
+ipcMain.handle("save-api-key", (event, { provider, label, apiKey, model, makeActive = true }) => {
+    provider = String(provider || "").toLowerCase();
+    if (!PROVIDERS.includes(provider)) return { success: false, error: "Unknown provider." };
+
+    apiKey = String(apiKey || "").trim();
+    if (!apiKey) return { success: false, error: "API key is empty." };
+
+    label = String(label || "default").replace(/[^A-Za-z0-9-]/g, "-").slice(0, 32) || "default";
+    const id = `${provider.toUpperCase()}__${label}`;
+
+    const env = readEnv();
+    migrateLegacyKey(env);
+
+    env[`APIKEY__${id}`] = apiKey;
+    env[`APIMODEL__${id}`] = String(model || "").trim();
+
+    if (makeActive || !env.ACTIVE_LLM_KEY || env.ACTIVE_LLM_KEY === id) applyActive(env, id);
+
+    try {
+        writeEnv(env);
+    } catch (error) {
+        return { success: false, error: `Could not write .env: ${error.message}` };
+    }
+
+    return { success: true, id };
+});
+
+ipcMain.handle("select-api-key", (event, { id, model }) => {
+    const env = readEnv();
+    if (!env[`APIKEY__${id}`]) return { success: false, error: "Key not found." };
+
+    if (typeof model === "string") env[`APIMODEL__${id}`] = model.trim();
+    applyActive(env, id);
+
+    try {
+        writeEnv(env);
+    } catch (error) {
+        return { success: false, error: `Could not write .env: ${error.message}` };
+    }
+
+    return { success: true };
+});
+
+ipcMain.handle("delete-api-key", (event, { id }) => {
+    const env = readEnv();
+    delete env[`APIKEY__${id}`];
+    delete env[`APIMODEL__${id}`];
+
+    if (env.ACTIVE_LLM_KEY === id) {
+        const next = listKeys(env)[0];
+        applyActive(env, next ? next.id : null);
+    }
+
+    try {
+        writeEnv(env);
+    } catch (error) {
+        return { success: false, error: `Could not write .env: ${error.message}` };
+    }
+
+    return { success: true };
+});
+
 ipcMain.handle(
     "has-api-key",
     () => {
@@ -451,6 +600,7 @@ ipcMain.handle(
 
         errors.push({
             time: new Date().toISOString().slice(0, 19),
+            ...(error?.request_id ? { request_id: error.request_id } : {}),
             command: error?.command || "unknown",
             code: error?.code || null,
             message: error?.message || "Unknown error"
@@ -488,25 +638,80 @@ ipcMain.handle(
 // SEND COMMAND TO PYTHON BACKEND
 // ----------------------------------------------------
 
+function publishBackendResponse(response) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("backend-response", response);
+    }
+}
+
+function failPendingBackendRequests(error, extra = {}) {
+    for (const failure of backendRequests.failAll(error, extra)) {
+        publishBackendResponse(failure.response);
+    }
+}
+
+function failOldestBackendRequest(error) {
+    const request = backendRequests.firstPending();
+    if (!request) return;
+
+    const failure = backendRequests.fail(request.requestId, error);
+    if (failure) publishBackendResponse(failure.response);
+}
+
+function handleBackendLine(line) {
+    let response;
+    try {
+        response = JSON.parse(line);
+    } catch (error) {
+        console.error("Backend response parse error:", error.message);
+        failOldestBackendRequest("Malformed response from Python backend.");
+        return;
+    }
+
+    if (!response || typeof response !== "object" || Array.isArray(response)) {
+        failOldestBackendRequest("Malformed response from Python backend.");
+        return;
+    }
+
+    if (typeof response.request_id !== "string" || !response.request_id) {
+        failOldestBackendRequest("Backend response did not include a request ID.");
+        return;
+    }
+
+    const result = backendRequests.handle(response);
+    if (!result.matched) return;
+    publishBackendResponse(result.response);
+}
+
 ipcMain.handle(
     "execute-command",
     async (event, request) => {
 
+        const requestId = typeof request?.request_id === "string" && request.request_id
+            ? request.request_id
+            : randomUUID();
 
-        if (!pythonProcess) {
+        if (!pythonProcess || !pythonProcess.stdin?.writable) {
 
             return {
-                success:false,
-                error:"Python backend is not running"
+                request_id: requestId,
+                success: false,
+                error: "Python backend is not running"
             };
 
         }
 
+        try {
+            backendRequests.register(requestId, request.command);
+        } catch (error) {
+            return { request_id: requestId, success: false, error: error.message };
+        }
 
         const payload =
             JSON.stringify({
 
                 type:"command",
+                request_id: requestId,
 
                 command:
                     request.command,
@@ -516,15 +721,22 @@ ipcMain.handle(
 
             });
 
-
-
-        pythonProcess.stdin.write(
-            payload + "\n"
-        );
+        try {
+            pythonProcess.stdin.write(payload + "\n", (error) => {
+                if (!error) return;
+                const failure = backendRequests.fail(requestId, error.message);
+                if (failure) publishBackendResponse(failure.response);
+            });
+        } catch (error) {
+            const failure = backendRequests.fail(requestId, error.message);
+            if (failure) publishBackendResponse(failure.response);
+            return { request_id: requestId, accepted: false, success: false, error: error.message };
+        }
 
 
         return {
-            success:true
+            request_id: requestId,
+            accepted: true
         };
 
     }
@@ -532,16 +744,20 @@ ipcMain.handle(
 
 ipcMain.handle(
     "cancel-command",
-    async () => {
+    async (event, requestId) => {
         if (!pythonProcess) {
-            return { success: false, error: "No backend command is running" };
+            return { request_id: requestId, success: false, error: "No backend command is running" };
+        }
+
+        if (requestId && !backendRequests.get(requestId)) {
+            return { request_id: requestId, success: false, error: "The command is no longer running" };
         }
 
         const processToCancel = pythonProcess;
         restartBackendAfterCancel = true;
 
         return new Promise((resolve) => {
-            processToCancel.once("close", () => resolve({ success: true }));
+            processToCancel.once("close", () => resolve({ success: true, request_id: requestId }));
             processToCancel.kill();
         });
     }
@@ -953,6 +1169,7 @@ function createWindow() {
         }
     });
 
+    ensureEnvFile();
     startPythonBackend();
 
     // Clear the previous session before the renderer can request the error log.
@@ -977,6 +1194,123 @@ ipcMain.handle("select-codebase", async () => {
     }
 
     return result.filePaths[0];
+});
+
+// ----------------------------------------------------
+// RUN REPORT (US-049)
+// ----------------------------------------------------
+// The backend writes one self-contained HTML report after a full run, to
+// run_reports/<codebase>/run_report.html. It opens in its own window with no
+// access to Node or the backend. Only a run_report.html inside the backend's
+// run_reports folder is opened, so the renderer cannot use this to open any
+// other file.
+
+const REPORT_NAME = "run_report.html";
+let reportWindow = null;
+
+function reportsDir() {
+    return path.resolve(backendOutputDir, "run_reports");
+}
+
+function isRunReport(file) {
+    const fold = (p) => process.platform === "win32" ? p.toLowerCase() : p;
+    return path.basename(file) === REPORT_NAME &&
+        fold(file).startsWith(fold(reportsDir() + path.sep)) &&
+        fs.existsSync(file);
+}
+
+async function showReportWindow(file) {
+
+    if (!reportWindow || reportWindow.isDestroyed()) {
+
+        reportWindow = new BrowserWindow({
+            width: 1300,
+            height: 900,
+            icon: path.join(__dirname, "assets", "checkpoint.ico"),
+            autoHideMenuBar: true,
+            webPreferences: {
+                nodeIntegration: false,
+                contextIsolation: true,
+                sandbox: true
+            }
+        });
+
+        // Links in the report only move within the page; keep everything else out.
+        reportWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+        reportWindow.webContents.on("will-navigate", (navigation) => navigation.preventDefault());
+
+        reportWindow.webContents.on("before-input-event", (e, input) => {
+            if (input.key === "F12") {
+                reportWindow.webContents.toggleDevTools();
+            }
+        });
+
+        reportWindow.on("closed", () => {
+            reportWindow = null;
+        });
+    }
+
+    await reportWindow.loadFile(file);
+    reportWindow.show();
+    reportWindow.focus();
+}
+
+// From the Complete screen, right after a full run.
+ipcMain.handle("open-report", async (event, reportPath) => {
+
+    const file = path.resolve(String(reportPath || ""));
+
+    if (!isRunReport(file)) {
+        return {
+            success: false,
+            error: "The run report was not found. Run the full pipeline to make one."
+        };
+    }
+
+    await showReportWindow(file);
+    return { success: true };
+});
+
+// From View Insights, any time later: the selected codebase's report, or
+// when none is selected, the most recently written report.
+ipcMain.handle("open-latest-report", async (event, codebaseName) => {
+
+    let file = null;
+
+    if (codebaseName) {
+        file = path.join(reportsDir(), path.basename(String(codebaseName)), REPORT_NAME);
+
+        if (!isRunReport(file)) {
+            return {
+                success: false,
+                error: `No run report for ${codebaseName} yet. Run the full pipeline on it to make one.`
+            };
+        }
+    } else {
+        let folders = [];
+        try {
+            folders = fs.readdirSync(reportsDir());
+        } catch (error) {
+            // No report has been written yet.
+        }
+
+        const reports = folders
+            .map((folder) => path.join(reportsDir(), folder, REPORT_NAME))
+            .filter(isRunReport)
+            .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+
+        if (!reports.length) {
+            return {
+                success: false,
+                error: "No run report yet. Run the full pipeline to make one."
+            };
+        }
+
+        file = reports[0];
+    }
+
+    await showReportWindow(file);
+    return { success: true, codebase: path.basename(path.dirname(file)) };
 });
 
 // ----------------------------------------------------
@@ -1073,27 +1407,7 @@ function startPythonBackend(preserveErrors = false) {
                 continue;
 
 
-            try {
-
-                const parsed = JSON.parse(line);
-
-                mainWindow.webContents.send(
-                    "backend-response",
-                    parsed
-                );
-
-
-            }
-            catch(error) {
-
-                console.log(
-                    "Backend parse error:",
-                    error.message
-                );
-
-                console.log(line);
-
-            }
+            handleBackendLine(line);
 
         }
 
@@ -1110,6 +1424,7 @@ function startPythonBackend(preserveErrors = false) {
 
         console.error("Failed to start backend:");
         console.error(err);
+        failPendingBackendRequests(`Python backend failed: ${err.message}`);
 
     });
 
@@ -1119,22 +1434,13 @@ function startPythonBackend(preserveErrors = false) {
 
         if (restartBackendAfterCancel) {
             restartBackendAfterCancel = false;
+            failPendingBackendRequests("Operation cancelled by user.", { cancelled: true });
             pythonProcess = null;
             startPythonBackend(true);
             return;
         }
 
-        if (code !== 0 && mainWindow && !mainWindow.isDestroyed()) {
-
-            mainWindow.webContents.send(
-                "backend-response",
-                {
-                    success: false,
-                    error: `Backend exited unexpectedly (code ${code}).`
-                }
-            );
-
-        }
+        failPendingBackendRequests(`Backend exited unexpectedly (code ${code}).`);
 
         pythonProcess = null;
 
