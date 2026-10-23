@@ -10,6 +10,7 @@ from tree_sitter import Parser, Tree, Node, Query, QueryCursor
 from pathlib import Path
 from dataclasses import dataclass
 import os
+import sys
 from agent.crawl_config import prune
 
 # Consecutive Python module-level statements are packed until either bound
@@ -103,8 +104,8 @@ def parse_file(filepath: Path, parser: Parser, language: str) -> CodeBundle:
     if not filepath.exists():
         raise FileNotFoundError(f"Source file not found: {filepath}")
     
-    # Parse file
-    print(f"Parsing: {filepath}")
+    # Parse file. Stdout is reserved for Checkpoint's JSON protocol.
+    print(f"Parsing: {filepath}", file=sys.stderr)
     code_bytes = filepath.read_bytes()
     ast = parser.parse(code_bytes)
 
@@ -193,7 +194,10 @@ def get_chunks(bundle: CodeBundle) -> list[dict]:
     config = LANGUAGE_DICT.get(ext)
 
     if bundle.tree.root_node.has_error:
-        print(f"Skipping {bundle.path}: source contains syntax errors.")
+        print(
+            f"Skipping {bundle.path}: source contains syntax errors.",
+            file=sys.stderr,
+        )
         return []
 
     # Validate that the file extension is supported
@@ -341,7 +345,8 @@ def _python_module_body_chunks(
         if oversized:
             print(
                 f"Emitting oversized module_body in {bundle.path} "
-                f"({lines} lines, {chars} characters) without truncating."
+                f"({lines} lines, {chars} characters) without truncating.",
+                file=sys.stderr,
             )
         name = "__module__" if body_index == 1 else f"__module__#{body_index}"
         chunks.append({

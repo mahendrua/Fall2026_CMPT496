@@ -34,7 +34,24 @@ FIXTURE_DIR = (
 )
 
 
-def test_python_functions_are_chunked():
+def _assert_no_parser_diagnostics_on_stdout(captured):
+    for marker in ("Parsing:", "Skipping", "without truncating"):
+        assert marker not in captured.out
+
+
+def test_parse_file_does_not_write_parsing_progress_to_stdout(capsys):
+    path = FIXTURE_DIR / "sample_lab.py"
+    parser = Parser(tslp.get_language(LANGUAGE_DICT[".py"]["name"]))
+
+    bundle = parse_file(path, parser, LANGUAGE_DICT[".py"]["name"])
+
+    assert bundle.language == "python"
+    captured = capsys.readouterr()
+    _assert_no_parser_diagnostics_on_stdout(captured)
+    assert "Parsing:" in captured.err
+
+
+def test_python_functions_are_chunked(capsys):
     bundles = parse_dir(str(FIXTURE_DIR))
 
     sample_bundle = next(
@@ -57,6 +74,7 @@ def test_python_functions_are_chunked():
     imports = chunks_by_name["calculate_average"]["imports"]
     assert "import math" in imports
     assert "from pathlib import Path" in imports
+    _assert_no_parser_diagnostics_on_stdout(capsys.readouterr())
 
 def test_decorated_and_async_python_functions_are_chunked():
     bundles = parse_dir(str(FIXTURE_DIR / "advanced"))
@@ -74,12 +92,16 @@ def test_decorated_and_async_python_functions_are_chunked():
     assert "from functools import wraps" in imports
 
 
-def test_python_syntax_errors_are_skipped():
+def test_python_syntax_errors_are_skipped(capsys):
     bundles = parse_dir(str(FIXTURE_DIR / "invalid"))
 
     assert len(bundles) == 1
     assert bundles[0].tree.root_node.has_error is True
     assert get_chunks(bundles[0]) == []
+    captured = capsys.readouterr()
+    _assert_no_parser_diagnostics_on_stdout(captured)
+    assert "Skipping" in captured.err
+    assert "syntax errors" in captured.err
 
 def test_python_files_in_ignored_directories_are_skipped(tmp_path):
     lab_directory = tmp_path / "lab"
@@ -254,7 +276,9 @@ def test_oversized_single_statement_is_emitted_whole(tmp_path, capsys):
     assert while_bodies[0]["end_line"] - while_bodies[0]["start_line"] + 1 > MODULE_BODY_MAX_LINES
     assert while_bodies[0]["code"].startswith("while True:")
     assert while_bodies[0]["code"].count("total += 1") == MODULE_BODY_MAX_LINES + 10
-    assert "without truncating" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    _assert_no_parser_diagnostics_on_stdout(captured)
+    assert "without truncating" in captured.err
 
 
 def test_oversized_single_assignment_respects_character_bound_without_truncation(tmp_path, capsys):
@@ -265,7 +289,9 @@ def test_oversized_single_assignment_respects_character_bound_without_truncation
     assert len(bodies) == 1
     assert payload in bodies[0]["code"]
     assert len(bodies[0]["code"]) > MODULE_BODY_MAX_CHARS
-    assert "without truncating" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    _assert_no_parser_diagnostics_on_stdout(captured)
+    assert "without truncating" in captured.err
 
 
 def test_paths_with_spaces_are_preserved(tmp_path):
