@@ -796,6 +796,47 @@ ipcMain.handle(
 );
 
 ipcMain.handle(
+    "get-business-rule-files",
+    async (event, request) => {
+        const codebasePath = request?.codebasePath;
+        if (!codebasePath) {
+            return { success: false, error: "No codebase path provided" };
+        }
+
+        const codebaseName = path.basename(codebasePath);
+        const rulesDirectory = path.join(
+            backendOutputDir,
+            "agent",
+            "BR_agent_output",
+            codebaseName
+        );
+
+        const readRuleFile = filename => {
+            const filePath = path.join(rulesDirectory, filename);
+            if (!fs.existsSync(filePath)) {
+                return { available: false, rules: [] };
+            }
+
+            try {
+                const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+                return Array.isArray(parsed)
+                    ? { available: true, rules: parsed }
+                    : { available: false, rules: [] };
+            } catch {
+                return { available: false, rules: [] };
+            }
+        };
+
+        return {
+            success: true,
+            codebase: codebaseName,
+            validated: readRuleFile("validated_rules.json"),
+            discarded: readRuleFile("discarded_rules.json"),
+        };
+    }
+);
+
+ipcMain.handle(
     "get-validated-rules",
     async (event, request) => {
 

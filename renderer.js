@@ -5,6 +5,7 @@
 
 
 let pathSubmitted = false;
+let codebasePickerPreviousSelection = null;
 
 let ranFullPipeline = false;
 
@@ -29,6 +30,7 @@ let backendOutputBuffer = "";
 //loadingscreen 
 let activeCommand = null;
 let pipelineMode = false;
+let operationReturnPage = "homePage";
 
 let totalSteps = 1;
 let currentStep = 0;
@@ -101,12 +103,17 @@ window.electronAPI.hasAPIKey()
 
 function showLoading(title, message) {
 
+    const currentPage = document.querySelector(".page:not(.hidden)");
+    if (currentPage?.id) {
+        operationReturnPage = currentPage.id;
+    }
 
     const overlay =
         document.getElementById("loadingOverlay");
 
     if (!overlay) return;
 
+    overlay.classList.remove("token-report-mode");
     overlay.classList.remove("hidden");
 
     document.getElementById("loadingTitle").textContent = title;
@@ -131,7 +138,8 @@ function showLoading(title, message) {
 
     if (previousEstimate) {
         previousEstimate.classList.add("hidden");
-        previousEstimate.textContent = "";
+        previousEstimate.replaceChildren();
+        previousEstimate.classList.remove("token-report-estimate", "token-report-calibration");
     }
 
     resetTokenMeter();
@@ -230,6 +238,268 @@ function updateTokenMeter(response) {
 
 }
 
+function createTokenReportElement(tagName, className, text) {
+    const element = document.createElement(tagName);
+    if (className) element.className = className;
+    if (text !== undefined) element.textContent = text;
+    return element;
+}
+
+function renderTokenEstimateResult(result) {
+    const report = document.getElementById("estimateOutput");
+    if (!report) return;
+
+    report.replaceChildren();
+    report.classList.remove("token-report-calibration");
+    report.classList.add("token-report-estimate");
+
+    const heading = createTokenReportElement("div", "token-report-heading");
+    heading.appendChild(createTokenReportElement("h3", "", "Token Estimate:"));
+    heading.appendChild(createTokenReportElement(
+        "span",
+        "token-report-codebase-tag",
+        result.codebase_name || getSelectedCodebaseName() || "Selected codebase"
+    ));
+    report.appendChild(heading);
+
+    const chips = createTokenReportElement("div", "token-report-chips");
+    if (Number.isFinite(result.files_after_exclusions)) {
+        chips.appendChild(createTokenReportElement(
+            "span", "token-report-chip", `📄 ${result.files_after_exclusions.toLocaleString()} Source Files`
+        ));
+    }
+    if (Number.isFinite(result.directories)) {
+        chips.appendChild(createTokenReportElement(
+            "span", "token-report-chip", `📁 ${result.directories.toLocaleString()} Directories`
+        ));
+    }
+    if (chips.childElementCount) report.appendChild(chips);
+
+    if (Number.isFinite(result.excluded_files) && result.excluded_files > 0) {
+        const warning = createTokenReportElement("div", "token-report-warning");
+        warning.appendChild(createTokenReportElement("span", "token-report-warning-icon", "⚠"));
+        warning.appendChild(createTokenReportElement(
+            "p",
+            "",
+            `Skipping ${result.excluded_files.toLocaleString()} files in generated or vendored folders (node_modules, .venv, bin, obj), saving ${Number(result.excluded_tokens || 0).toLocaleString()} tokens.`
+        ));
+        report.appendChild(warning);
+    }
+
+    const table = createTokenReportElement("table", "token-report-table");
+    const tableHead = document.createElement("thead");
+    const headerRow = document.createElement("tr");
+    headerRow.appendChild(createTokenReportElement("th", "", "Stage"));
+    headerRow.appendChild(createTokenReportElement("th", "token-report-value-head", "Estimated input tokens"));
+    tableHead.appendChild(headerRow);
+    table.appendChild(tableHead);
+    const tableBody = document.createElement("tbody");
+
+    (Array.isArray(result.stages) ? result.stages : []).forEach(stage => {
+        const row = document.createElement("tr");
+        const name = createTokenReportElement("th", "token-report-stage-name", stage.stage || "Stage");
+        name.scope = "row";
+        if (stage.note) name.title = stage.note;
+        const value = createTokenReportElement("td", "token-report-stage-value");
+
+        if (stage.uses_ai === false) {
+            value.appendChild(createTokenReportElement("span", "token-report-state token-report-state-free", "● free (no AI)"));
+        } else if (stage.input_tokens === null || stage.input_tokens === undefined) {
+            value.appendChild(createTokenReportElement("span", "token-report-state token-report-state-prior", "! needs a prior run"));
+        } else {
+            const low = Number(stage.input_tokens).toLocaleString();
+            const high = Number.isFinite(stage.input_tokens_max)
+                ? ` – ${Number(stage.input_tokens_max).toLocaleString()}`
+                : "";
+            value.appendChild(document.createTextNode(`${low}${high}`));
+            if (stage.confidence === "range") {
+                value.appendChild(createTokenReportElement("span", "token-report-range-badge", "range"));
+            }
+        }
+
+        row.append(name, value);
+        tableBody.appendChild(row);
+    });
+
+    if (Number.isFinite(result.total_input_low) && Number.isFinite(result.total_input_high)) {
+        const row = document.createElement("tr");
+        row.className = "token-report-total-row";
+        const label = createTokenReportElement("th", "token-report-total-label", "Estimated input total");
+        label.scope = "row";
+        const value = createTokenReportElement(
+            "td",
+            "token-report-total-value",
+            result.total_input_low === result.total_input_high
+                ? `${result.total_input_low.toLocaleString()} tokens`
+                : `${result.total_input_low.toLocaleString()} – ${result.total_input_high.toLocaleString()} tokens`
+        );
+        row.append(label, value);
+        tableBody.appendChild(row);
+    }
+
+    table.appendChild(tableBody);
+    report.appendChild(table);
+    report.classList.remove("hidden");
+}
+
+function getTokenCalibrationStageMetrics(evidence, fileSummary) {
+    const definitions = [
+        { name: "build_database", label: "Build database", doesNotUseLlm: true },
+        { name: "generate_file_summaries", label: "File summaries" },
+        { name: "generate_directory_summaries", label: "Directory summaries" },
+        { name: "validate_business_rules", label: "Business rule validation" },
+    ];
+
+    return definitions.map(stage => {
+        if (stage.doesNotUseLlm) {
+            return { ...stage, status: "no-llm", calls: null, totalInputTokens: null, avgTokensPerCall: null };
+        }
+
+        const evidenceEntry = evidence.find(item => item.stage === stage.name);
+        const fileStage = stage.name === "generate_file_summaries" ? fileSummary : null;
+        const source = fileStage && Number(fileStage.calls) > 0 ? fileStage : evidenceEntry;
+        if (!source) {
+            return { ...stage, status: "not-recorded", calls: null, totalInputTokens: null, avgTokensPerCall: null };
+        }
+
+        const rawCalls = source.calls;
+        const calls = rawCalls !== null && rawCalls !== undefined && Number.isFinite(Number(rawCalls))
+            ? Number(rawCalls)
+            : null;
+        const rawMissingUsage = source.missing_usage ?? source.calls_missing_usage ?? evidenceEntry?.missing_usage;
+        const missingUsage = Number.isFinite(Number(rawMissingUsage)) ? Number(rawMissingUsage) : 0;
+        const rawTotal = source.input_tokens;
+        const hasTotal = rawTotal !== null && rawTotal !== undefined && Number.isFinite(Number(rawTotal));
+
+        if (calls === null || calls <= 0) {
+            return { ...stage, status: "not-recorded", calls: null, totalInputTokens: null, avgTokensPerCall: null };
+        }
+        if (missingUsage > 0) {
+            return { ...stage, status: "incomplete", calls, totalInputTokens: null, avgTokensPerCall: null };
+        }
+        if (!hasTotal) {
+            return { ...stage, status: "usage-unavailable", calls, totalInputTokens: null, avgTokensPerCall: null };
+        }
+
+        const totalInputTokens = Number(rawTotal);
+        return {
+            ...stage,
+            status: "calibrated",
+            calls,
+            totalInputTokens,
+            avgTokensPerCall: Number((totalInputTokens / calls).toFixed(1)),
+        };
+    });
+}
+
+function renderTokenCalibrationResult(result) {
+    const report = document.getElementById("estimateOutput");
+    if (!report) return;
+
+    report.replaceChildren();
+    report.classList.remove("token-report-estimate");
+    report.classList.add("token-report-calibration");
+
+    const evidence = Array.isArray(result.evidence) ? result.evidence : [];
+    const stageMetrics = getTokenCalibrationStageMetrics(evidence, result.file_summary_actual);
+    const hasRecordedBaseline = stageMetrics.some(stage => stage.status === "calibrated");
+
+    const heading = createTokenReportElement("div", "token-calibration-heading");
+    heading.appendChild(createTokenReportElement(
+        "p",
+        "token-calibration-subtitle",
+        hasRecordedBaseline
+            ? "Calibration analyzed past execution logs to establish baseline token usage per call for future cost estimation."
+            : "Calibration checked past execution logs, but no complete token usage was available to establish a baseline."
+    ));
+    heading.appendChild(createTokenReportElement(
+        "span",
+        "token-report-codebase-tag",
+        result.codebase_name || getSelectedCodebaseName() || "Selected codebase"
+    ));
+    report.appendChild(heading);
+
+    const tablePanel = createTokenReportElement("section", "token-calibration-breakdown");
+    tablePanel.appendChild(createTokenReportElement("h3", "token-calibration-breakdown-title", "Calibration stage breakdown"));
+    const tableWrap = createTokenReportElement("div", "token-calibration-table-wrap");
+    const table = createTokenReportElement("table", "token-calibration-table");
+    const tableHead = document.createElement("thead");
+    const headerRow = document.createElement("tr");
+    ["Pipeline Stage", "LLM Calls", "Total Input Tokens", "Avg Tokens / Call", "Calibration Status"].forEach(label => {
+        headerRow.appendChild(createTokenReportElement("th", "", label));
+    });
+    tableHead.appendChild(headerRow);
+    table.appendChild(tableHead);
+
+    const tableBody = document.createElement("tbody");
+    stageMetrics.forEach(stage => {
+        const row = document.createElement("tr");
+        row.className = `token-calibration-row is-${stage.status}`;
+        row.appendChild(createTokenReportElement("th", "token-calibration-stage-name", stage.label));
+
+        let callsText = "Not recorded";
+        let totalText = "Not recorded";
+        let averageText = "Not recorded";
+        let statusText = "Not recorded";
+        let statusClass = "token-calibration-status-muted";
+
+        if (stage.status === "no-llm") {
+            callsText = "Not required";
+            totalText = "Not required";
+            averageText = "Not required";
+            statusText = "No LLM calls required";
+            statusClass = "token-calibration-status-muted";
+        } else if (stage.status === "incomplete") {
+            callsText = `${stage.calls.toLocaleString()} ${stage.calls === 1 ? "call" : "calls"}`;
+            statusText = "Usage incomplete";
+            statusClass = "token-calibration-status-warning";
+        } else if (stage.status === "usage-unavailable") {
+            callsText = `${stage.calls.toLocaleString()} ${stage.calls === 1 ? "call" : "calls"}`;
+            statusText = "Usage unavailable";
+            statusClass = "token-calibration-status-warning";
+        } else if (stage.status === "calibrated") {
+            callsText = `${stage.calls.toLocaleString()} ${stage.calls === 1 ? "call" : "calls"}`;
+            totalText = stage.totalInputTokens.toLocaleString();
+            averageText = `${stage.avgTokensPerCall.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 1 })} tokens/call`;
+            statusText = "Calibrated";
+            statusClass = "token-calibration-status-ready";
+        }
+
+        row.appendChild(createTokenReportElement("td", "token-calibration-numeric", callsText));
+        row.appendChild(createTokenReportElement("td", "token-calibration-numeric", totalText));
+        row.appendChild(createTokenReportElement("td", "token-calibration-numeric", averageText));
+        const statusCell = document.createElement("td");
+        statusCell.appendChild(createTokenReportElement("span", `token-calibration-status ${statusClass}`, statusText));
+        row.appendChild(statusCell);
+        tableBody.appendChild(row);
+    });
+    table.appendChild(tableBody);
+    tableWrap.appendChild(table);
+    tablePanel.appendChild(tableWrap);
+    report.appendChild(tablePanel);
+
+    const suggestions = result.suggestions && typeof result.suggestions === "object"
+        ? Object.entries(result.suggestions)
+        : [];
+    if (suggestions.length) {
+        const values = createTokenReportElement("div", "token-calibration-suggestions");
+        values.appendChild(createTokenReportElement("h4", "", "Suggested values"));
+        values.appendChild(createTokenReportElement(
+            "p",
+            "token-calibration-suggestion-note",
+            "These values are not applied automatically. Future estimates continue using the configured constants until they are updated."
+        ));
+        suggestions.forEach(([constant, value]) => {
+            const row = createTokenReportElement("div", "token-calibration-measured-row");
+            row.appendChild(createTokenReportElement("code", "", constant));
+            row.appendChild(createTokenReportElement("strong", "", Number(value).toLocaleString()));
+            values.appendChild(row);
+        });
+        report.appendChild(values);
+    }
+
+    report.classList.remove("hidden");
+}
 
 function addTokenMeterStage(response) {
 
@@ -312,6 +582,14 @@ function hideLoading() {
         cancelButton.classList.add("hidden");
         cancelButton.disabled = false;
     }
+}
+
+function returnToOperationPage() {
+    const destination = document.getElementById(operationReturnPage)
+        ? operationReturnPage
+        : "homePage";
+    operationReturnPage = "homePage";
+    showPage(destination);
 }
 
 function showErrorPopup(message) {
@@ -536,6 +814,23 @@ function getSelectedCodebaseName() {
 
 function updateCodebaseSummary() {
     const codebaseName = getSelectedCodebaseName();
+
+    const homeCodebaseName = document.getElementById("homeActiveCodebaseName");
+    const homeCodebaseProject = document.getElementById("homeActiveCodebaseProject");
+    const homeActiveStatus = document.getElementById("homeActiveStatus");
+    const homeActiveCodebase = document.getElementById("homeActiveCodebase");
+
+    if (homeCodebaseName && homeCodebaseProject && homeActiveStatus && homeActiveCodebase) {
+        const hasCodebase = Boolean(codebaseName);
+        homeCodebaseName.textContent = codebaseName || "No codebase selected";
+        homeCodebaseProject.classList.toggle("is-empty", !hasCodebase);
+        homeActiveStatus.classList.toggle("hidden", !hasCodebase);
+        homeActiveCodebase.setAttribute(
+            "aria-label",
+            hasCodebase ? `${codebaseName}, active codebase` : "No codebase selected"
+        );
+        homeCodebaseName.title = hasCodebase ? selectedCodebasePath : "";
+    }
 
     document.querySelectorAll(".codebase-summary").forEach(summary => {
         const emptyMessage = summary.querySelector(".codebase-summary-empty");
@@ -1188,6 +1483,531 @@ function renderSourcePreview(text){
 
 }
 
+function extractBusinessRuleOrigins(entry) {
+    if (!entry || typeof entry !== "object") return [];
+
+    const labels = {
+        file: "Source file",
+        directory_observed: "Observed in directory analysis",
+        directory_inferred: "Inferred from directory analysis",
+    };
+    const originFields = [
+        "origin",
+        "origins",
+        "origin_type",
+        "origin_types",
+        "provenance",
+        "provenance_type",
+        "source_type",
+        "source_origins",
+        "sources",
+    ];
+    const topFilePaths = Array.isArray(entry.source_file_paths)
+        ? entry.source_file_paths.filter(item => typeof item === "string" && item.trim())
+        : [];
+    const topDirectory = typeof entry.source_directory === "string"
+        ? entry.source_directory.trim()
+        : "";
+    const origins = [];
+
+    const asPaths = value => {
+        if (typeof value === "string" && value.trim()) return [value];
+        if (!Array.isArray(value)) return [];
+        return value.flatMap(item => {
+            if (typeof item === "string" && item.trim()) return [item];
+            if (!item || typeof item !== "object") return [];
+            const path = item.path ?? item.file_path ?? item.source_file_path ?? item.source;
+            return typeof path === "string" && path.trim() ? [path] : [];
+        });
+    };
+
+    const addOrigin = (rawType, detail) => {
+        if (typeof rawType !== "string" || !rawType.trim()) return;
+        const type = rawType.trim();
+        const normalizedType = type.toLowerCase();
+        const isFile = normalizedType === "file";
+        const isDirectory = normalizedType === "directory_observed" ||
+            normalizedType === "directory_inferred";
+
+        let filePaths = [];
+        let directory = "";
+        if (typeof detail === "string") {
+            if (isFile && normalizedType !== detail.trim().toLowerCase()) {
+                filePaths = [detail];
+            } else if (isDirectory) {
+                directory = detail.trim();
+            }
+        } else if (detail && typeof detail === "object") {
+            filePaths = asPaths(
+                detail.source_file_paths ?? detail.file_paths ?? detail.source_files ?? detail.files ??
+                detail.source_file_path ?? detail.source_file ?? detail.file_path ??
+                (isFile ? (detail.path ?? detail.source) : undefined)
+            );
+            directory = [detail.source_directory, detail.directory, detail.directory_path, detail.folder]
+                .find(value => typeof value === "string" && value.trim()) ||
+                (isDirectory && typeof detail.path === "string" ? detail.path.trim() : "");
+        }
+
+        if (isFile && !filePaths.length) filePaths = topFilePaths;
+        if (isDirectory && !filePaths.length) {
+            filePaths = topFilePaths;
+            if (!filePaths.length) directory = directory || topDirectory;
+        }
+
+        origins.push({
+            type,
+            label: labels[normalizedType] || `Origin: ${type}`,
+            icon: isFile ? "📄" : "📁",
+            filePaths,
+            directory,
+        });
+    };
+
+    const parseOriginValue = (value, fieldName) => {
+        if (Array.isArray(value)) {
+            value.forEach(item => parseOriginValue(item, fieldName));
+            return;
+        }
+
+        if (typeof value === "string") {
+            const raw = value.trim();
+            if (!raw) return;
+            const knownOrigin = /^(file|directory_observed|directory_inferred)$/i.test(raw);
+            if (knownOrigin || fieldName !== "sources") addOrigin(raw);
+            return;
+        }
+
+        if (!value || typeof value !== "object") return;
+
+        const type = value.type ?? value.origin ?? value.source_type ?? value.kind ?? value.category;
+        if (typeof type === "string" && type.trim()) {
+            addOrigin(type, value);
+            return;
+        }
+
+        let foundKeyedOrigin = false;
+        ["file", "directory_observed", "directory_inferred"].forEach(originType => {
+            if (Object.prototype.hasOwnProperty.call(value, originType)) {
+                foundKeyedOrigin = true;
+                const details = value[originType];
+                if (Array.isArray(details) && details.length && details.every(item => typeof item === "string")) {
+                    details.forEach(item => addOrigin(originType, item));
+                } else {
+                    addOrigin(originType, details);
+                }
+            }
+        });
+        if (foundKeyedOrigin) return;
+
+        originFields.forEach(field => {
+            if (Object.prototype.hasOwnProperty.call(value, field)) {
+                parseOriginValue(value[field], field);
+            }
+        });
+    };
+
+    originFields.forEach(field => {
+        if (Object.prototype.hasOwnProperty.call(entry, field)) {
+            parseOriginValue(entry[field], field);
+        }
+    });
+
+    return origins;
+}
+
+function renderBusinessRulesList(result) {
+    const output = document.getElementById("viewDisplayOutputBox");
+    output.replaceChildren();
+
+    const card = document.createElement("section");
+    card.className = "summary-card business-rules-view";
+
+    const heading = document.createElement("h2");
+    heading.className = "business-rules-title";
+    heading.textContent = "Business Rules";
+    card.appendChild(heading);
+
+    const validated = result.validated || { available: false, rules: [] };
+    const discarded = result.discarded || { available: false, rules: [] };
+    const ruleRecords = [];
+    const recordedFolders = new Set();
+
+    const foldersForRule = entry => {
+        const folders = new Set();
+        if (!entry || typeof entry !== "object") return folders;
+
+        if (typeof entry.source_directory === "string" && entry.source_directory.trim()) {
+            folders.add(entry.source_directory.trim());
+        }
+
+        if (Array.isArray(entry.source_file_paths)) {
+            entry.source_file_paths.forEach(filePath => {
+                if (typeof filePath !== "string" || !filePath.trim()) return;
+                const normalizedPath = filePath.trim().replace(/\\/g, "/");
+                const parent = normalizedPath.slice(0, normalizedPath.lastIndexOf("/"));
+                if (parent) folders.add(parent);
+            });
+        }
+
+        return folders;
+    };
+
+    const collectRules = (dataset, status) => {
+        if (!dataset.available) return;
+        dataset.rules.forEach(entry => {
+            const rawText = typeof entry === "string"
+                ? entry
+                : entry?.rule ?? entry?.text;
+            const folders = foldersForRule(entry);
+            folders.forEach(folder => recordedFolders.add(folder));
+            ruleRecords.push({
+                entry,
+                status,
+                text: typeof rawText === "string" && rawText.trim()
+                    ? rawText
+                    : "Rule text unavailable",
+                folders,
+            });
+        });
+    };
+
+    collectRules(validated, "Validated");
+    collectRules(discarded, "Discarded");
+
+    const countText = (dataset) => dataset.available
+        ? dataset.rules.length.toLocaleString()
+        : "Unavailable";
+    const counts = document.createElement("div");
+    counts.className = "business-rules-counts";
+
+    const validatedCount = document.createElement("span");
+    validatedCount.className = "business-rules-count business-rules-count-validated";
+    validatedCount.textContent = `Validated: ${countText(validated)}`;
+    const discardedCount = document.createElement("span");
+    discardedCount.className = "business-rules-count business-rules-count-discarded";
+    discardedCount.textContent = `Discarded: ${countText(discarded)}`;
+    counts.append(validatedCount, discardedCount);
+    card.appendChild(counts);
+
+    if (!validated.available && !discarded.available) {
+        const empty = document.createElement("p");
+        empty.className = "business-rules-empty";
+        empty.textContent = "No business-rule validation results are available for this codebase.";
+        card.appendChild(empty);
+        output.appendChild(card);
+        return;
+    }
+
+    const toolbar = document.createElement("div");
+    toolbar.className = "business-rules-toolbar";
+
+    const search = document.createElement("input");
+    search.className = "business-rules-search";
+    search.type = "search";
+    search.placeholder = "Search rules...";
+    search.setAttribute("aria-label", "Search rules");
+
+    const statusFilter = document.createElement("select");
+    statusFilter.className = "business-rules-filter";
+    statusFilter.setAttribute("aria-label", "Filter by status");
+    ["All", "Validated", "Discarded"].forEach(status => {
+        const option = document.createElement("option");
+        option.value = status;
+        option.textContent = status;
+        statusFilter.appendChild(option);
+    });
+
+    const folderFilter = document.createElement("select");
+    folderFilter.className = "business-rules-filter business-rules-folder-filter";
+    folderFilter.setAttribute("aria-label", "Filter by source folder");
+    const allFolders = document.createElement("option");
+    allFolders.value = "";
+    allFolders.textContent = "All Folders";
+    folderFilter.appendChild(allFolders);
+    [...recordedFolders].sort((a, b) => a.localeCompare(b)).forEach(folder => {
+        const option = document.createElement("option");
+        option.value = folder;
+        option.textContent = folder;
+        folderFilter.appendChild(option);
+    });
+
+    const clearFilters = document.createElement("button");
+    clearFilters.className = "business-rules-clear";
+    clearFilters.type = "button";
+    clearFilters.textContent = "✕ Clear Filters";
+
+    toolbar.append(search, statusFilter, folderFilter, clearFilters);
+    card.appendChild(toolbar);
+
+    const resultCount = document.createElement("p");
+    resultCount.className = "business-rules-result-count";
+    resultCount.setAttribute("aria-live", "polite");
+    card.appendChild(resultCount);
+
+    const list = document.createElement("div");
+    list.className = "business-rules-list";
+
+    const detailPanel = document.createElement("section");
+    detailPanel.className = "business-rule-detail-panel";
+    detailPanel.setAttribute("aria-live", "polite");
+    let selectedRecord = null;
+    let selectionMessage = "Select a rule to view its full details.";
+
+    const renderDetailPanel = () => {
+        detailPanel.replaceChildren();
+
+        if (!selectedRecord) {
+            const message = document.createElement("p");
+            message.className = "business-rule-detail-selection-message";
+            message.textContent = selectionMessage;
+            detailPanel.appendChild(message);
+            return;
+        }
+
+        const detailHeader = document.createElement("div");
+        detailHeader.className = "business-rule-detail-header";
+        const detailTitle = document.createElement("h3");
+        detailTitle.textContent = "Rule details";
+        const detailStatus = document.createElement("span");
+        detailStatus.className = `business-rule-status business-rule-status-${selectedRecord.status.toLowerCase()}`;
+        detailStatus.textContent = selectedRecord.status;
+        detailHeader.append(detailTitle, detailStatus);
+        detailPanel.appendChild(detailHeader);
+
+        const addDetailField = (label, value) => {
+            const field = document.createElement("div");
+            field.className = "business-rule-detail-field";
+            const fieldLabel = document.createElement("h4");
+            fieldLabel.textContent = label;
+            const fieldValue = document.createElement("div");
+            fieldValue.className = "business-rule-detail-value";
+            fieldValue.textContent = value;
+            field.append(fieldLabel, fieldValue);
+            detailPanel.appendChild(field);
+        };
+
+        addDetailField("Full Rule", selectedRecord.text);
+
+        const originField = document.createElement("div");
+        originField.className = "business-rule-detail-field";
+        const originHeading = document.createElement("h4");
+        originHeading.textContent = "Origin";
+        originField.appendChild(originHeading);
+        const origins = extractBusinessRuleOrigins(selectedRecord.entry);
+        if (!origins.length) {
+            const missingOrigin = document.createElement("p");
+            missingOrigin.className = "business-rule-origin-missing";
+            missingOrigin.textContent = "Origin not recorded";
+            originField.appendChild(missingOrigin);
+        } else {
+            const originList = document.createElement("div");
+            originList.className = "business-rule-origin-list";
+            origins.forEach(origin => {
+                const originRow = document.createElement("div");
+                originRow.className = "business-rule-origin-item";
+
+                const originIcon = document.createElement("span");
+                originIcon.className = "business-rule-origin-icon";
+                originIcon.setAttribute("aria-hidden", "true");
+                originIcon.textContent = origin.icon;
+
+                const originCopy = document.createElement("div");
+                originCopy.className = "business-rule-origin-copy";
+                const originLabel = document.createElement("strong");
+                originLabel.className = "business-rule-origin-label";
+                originLabel.textContent = origin.label;
+                originCopy.appendChild(originLabel);
+
+                if (origin.filePaths.length) {
+                    const sourceList = document.createElement("ul");
+                    sourceList.className = "business-rule-origin-paths";
+                    origin.filePaths.forEach(filePath => {
+                        const source = document.createElement("li");
+                        source.textContent = filePath;
+                        sourceList.appendChild(source);
+                    });
+                    originCopy.appendChild(sourceList);
+                } else {
+                    const location = document.createElement("span");
+                    location.className = "business-rule-origin-location";
+                    location.textContent = origin.directory || "Not recorded";
+                    originCopy.appendChild(location);
+                }
+
+                originRow.append(originIcon, originCopy);
+                originList.appendChild(originRow);
+            });
+            originField.appendChild(originList);
+        }
+        detailPanel.appendChild(originField);
+
+        const sourceDirectory = selectedRecord.entry?.source_directory;
+        addDetailField(
+            "Source Directory",
+            typeof sourceDirectory === "string" && sourceDirectory.trim()
+                ? sourceDirectory
+                : "Not recorded"
+        );
+
+        const paths = selectedRecord.entry?.source_file_paths;
+        const pathsField = document.createElement("div");
+        pathsField.className = "business-rule-detail-field";
+        const pathsLabel = document.createElement("h4");
+        pathsLabel.textContent = "Source File Paths";
+        pathsField.appendChild(pathsLabel);
+        if (Array.isArray(paths) && paths.some(filePath => typeof filePath === "string" && filePath.trim())) {
+            const pathList = document.createElement("ul");
+            pathList.className = "business-rule-detail-paths";
+            paths.forEach(filePath => {
+                if (typeof filePath !== "string" || !filePath.trim()) return;
+                const pathItem = document.createElement("li");
+                pathItem.textContent = filePath;
+                pathList.appendChild(pathItem);
+            });
+            pathsField.appendChild(pathList);
+        } else {
+            const pathValue = document.createElement("div");
+            pathValue.className = "business-rule-detail-value";
+            pathValue.textContent = "Not recorded";
+            pathsField.appendChild(pathValue);
+        }
+        detailPanel.appendChild(pathsField);
+
+        if (selectedRecord.status === "Discarded") {
+            const entry = selectedRecord.entry;
+            const explanation = entry?.explanation;
+            const reason = typeof entry?.reason === "string" && entry.reason.trim()
+                ? entry.reason
+                : typeof explanation === "string" && explanation.trim()
+                    ? explanation
+                    : typeof explanation?.reasoning === "string" && explanation.reasoning.trim()
+                        ? explanation.reasoning
+                        : "Not recorded";
+            addDetailField("Discard Reason or Explanation", reason);
+        }
+    };
+
+    const appendRule = record => {
+        const row = document.createElement("div");
+        row.className = `business-rule-item business-rule-item-${record.status.toLowerCase()}`;
+        row.setAttribute("role", "button");
+        row.setAttribute("tabindex", "0");
+        row.setAttribute("aria-pressed", String(selectedRecord === record));
+        row.setAttribute("aria-label", `${record.status} rule: ${record.text}`);
+        if (selectedRecord === record) row.classList.add("is-selected");
+
+        const badge = document.createElement("span");
+        badge.className = `business-rule-status business-rule-status-${record.status.toLowerCase()}`;
+        badge.textContent = record.status;
+
+        const text = document.createElement("p");
+        text.className = "business-rule-text";
+        text.textContent = record.text;
+
+        row.append(badge, text);
+        const selectRule = () => {
+            selectedRecord = record;
+            selectionMessage = "Select a rule to view its full details.";
+            list.querySelectorAll(".business-rule-item").forEach(otherRow => {
+                const isSelected = otherRow === row;
+                otherRow.classList.toggle("is-selected", isSelected);
+                otherRow.setAttribute("aria-pressed", String(isSelected));
+            });
+            renderDetailPanel();
+        };
+        row.addEventListener("click", selectRule);
+        row.addEventListener("keydown", event => {
+            if (event.key === "Enter" || event.key === " ") {
+                event.preventDefault();
+                selectRule();
+            }
+        });
+        list.appendChild(row);
+    };
+
+    const isUnfiltered = () => !search.value.trim() &&
+        statusFilter.value === "All" &&
+        folderFilter.value === "";
+
+    const renderFilteredRules = () => {
+        const term = search.value.trim().toLowerCase();
+        const status = statusFilter.value;
+        const folder = folderFilter.value;
+        const matches = ruleRecords.filter(record => {
+            const matchesText = !term || record.text.toLowerCase().includes(term);
+            const matchesStatus = status === "All" || record.status === status;
+            const matchesFolder = !folder || record.folders.has(folder);
+            return matchesText && matchesStatus && matchesFolder;
+        });
+
+        resultCount.textContent = `Showing ${matches.length.toLocaleString()} of ${ruleRecords.length.toLocaleString()} rules`;
+        list.replaceChildren();
+
+        if (selectedRecord && !matches.includes(selectedRecord)) {
+            selectedRecord = null;
+            selectionMessage = "The selected rule no longer matches these filters. Adjust or clear filters to select another rule.";
+        }
+
+        if (ruleRecords.length > 0 && matches.length === 0) {
+            const empty = document.createElement("p");
+            empty.className = "business-rules-no-matches";
+            empty.textContent = "No matching rules";
+            const hint = document.createElement("span");
+            hint.textContent = "Try changing your search or filters, or clear them to restore all rules.";
+            empty.appendChild(hint);
+            list.appendChild(empty);
+            renderDetailPanel();
+            return;
+        }
+
+        if (isUnfiltered()) {
+            if (validated.available && validated.rules.length === 0) {
+                const empty = document.createElement("p");
+                empty.className = "business-rules-group-empty";
+                empty.textContent = "No validated rules";
+                list.appendChild(empty);
+            }
+            if (discarded.available && discarded.rules.length === 0) {
+                const empty = document.createElement("p");
+                empty.className = "business-rules-group-empty";
+                empty.textContent = "No discarded rules";
+                list.appendChild(empty);
+            }
+        }
+
+        matches.forEach(appendRule);
+        renderDetailPanel();
+    };
+
+    ["input", "change"].forEach(eventName => {
+        search.addEventListener(eventName, renderFilteredRules);
+        statusFilter.addEventListener(eventName, renderFilteredRules);
+        folderFilter.addEventListener(eventName, renderFilteredRules);
+    });
+
+    clearFilters.addEventListener("click", () => {
+        search.value = "";
+        statusFilter.value = "All";
+        folderFilter.value = "";
+        renderFilteredRules();
+        search.focus();
+    });
+
+    card.appendChild(list);
+    card.appendChild(detailPanel);
+    output.appendChild(card);
+    renderFilteredRules();
+}
+
+function clearBusinessRulesResultsIfCodebaseChanged(previousPath, nextPath) {
+    if (previousPath === nextPath) return;
+
+    const output = document.getElementById("viewDisplayOutputBox");
+    if (output?.querySelector(".business-rules-view")) {
+        output.replaceChildren();
+    }
+}
+
 function renderBusinessRulesPreview(text) {
 
     const output = document.getElementById("viewDisplayOutputBox");
@@ -1276,39 +2096,143 @@ function renderErrorPreview(errors) {
 
     output.innerHTML = "";
 
-    if (errorList.length === 0) {
-
-        output.textContent =
-            "No errors have been recorded.";
-
-        return;
-    }
-
-    // Entries are {time, command, code, message}; older ones may be strings.
-    const rows = errorList.map(error => (
-        typeof error === "string"
-            ? ["—", "—", "—", error]
-            : [
-                formatStamp(error.time),
-                error.code ?? "—",
-                error.command || "—",
-                error.message || "—",
-            ]
-    ));
-
     const card = document.createElement("div");
-    card.className = "summary-card usage-card";
+    card.className = "summary-card error-view-card";
 
-    card.appendChild(usageHeader("Errors"));
+    const header = document.createElement("div");
+    header.className = "error-view-header";
+    const title = usageHeader("Errors");
+    const alertIcon = document.createElement("span");
+    alertIcon.className = "error-view-alert-icon";
+    alertIcon.setAttribute("aria-hidden", "true");
+    alertIcon.textContent = "⚠️";
+    title.prepend(alertIcon);
 
-    card.appendChild(usageTable(["Time", "Code", "Step", "Message"], rows))
-        .classList.add("error-table");
-
-    const note = document.createElement("p");
-    note.className = "usage-note";
-    note.textContent =
+    const noteText =
         "Errors recorded during the current app session. " +
         "They are cleared when the app starts.";
+    const topNote = document.createElement("p");
+    topNote.className = "error-view-top-note";
+    topNote.textContent = noteText;
+    header.append(title, topNote);
+    card.appendChild(header);
+
+    if (errorList.length === 0) {
+        const empty = document.createElement("p");
+        empty.className = "error-view-empty";
+        empty.textContent = "No errors have been recorded.";
+        card.appendChild(empty);
+    } else {
+        const tableWrap = document.createElement("div");
+        tableWrap.className = "error-view-table-wrap";
+
+        const table = document.createElement("table");
+        table.className = "usage-table error-table error-view-table";
+        const head = table.createTHead().insertRow();
+        ["Time", "Code", "Step", "Message"].forEach(label => {
+            const th = document.createElement("th");
+            th.textContent = label;
+            head.appendChild(th);
+        });
+        const body = table.createTBody();
+
+        const appendMessage = (container, message) => {
+            const importantText = /Business rules not found|Validated rules not found/ig;
+            const pathText = /(?:\/[A-Za-z0-9._~!$&'()+,;=@%-]+|[A-Za-z]:\\[^\s,;]+)/g;
+            const tokens = new RegExp(`${importantText.source}|${pathText.source}`, "ig");
+            let offset = 0;
+            let match;
+
+            while ((match = tokens.exec(message)) !== null) {
+                if (match.index > offset) {
+                    container.appendChild(document.createTextNode(message.slice(offset, match.index)));
+                }
+
+                const span = document.createElement("span");
+                if (/Business rules not found|Validated rules not found/i.test(match[0])) {
+                    span.className = "error-view-highlight";
+                    span.textContent = match[0];
+                } else {
+                    span.className = "error-view-path";
+                    span.title = match[0];
+                    span.textContent = match[0];
+                }
+                container.appendChild(span);
+                offset = match.index + match[0].length;
+            }
+
+            if (offset < message.length) {
+                container.appendChild(document.createTextNode(message.slice(offset)));
+            }
+        };
+
+        errorList.forEach(error => {
+            const entry = typeof error === "string"
+                ? { time: null, code: "—", command: "—", message: error }
+                : {
+                    time: error.time,
+                    code: error.code ?? "—",
+                    command: error.command || "—",
+                    message: error.message || "—",
+                };
+            const code = String(entry.code);
+            const message = String(entry.message);
+            const isCancelled = code.toUpperCase() === "CANCELLED" ||
+                /\boperation cancelled\b/i.test(message);
+            const isEnvironmentIssue = /GOOGLE_API_KEY|environment variable/i.test(`${code} ${message}`);
+            const row = body.insertRow();
+            row.className = isCancelled ? "error-view-row-cancelled" : "error-view-row-critical";
+
+            const timeCell = row.insertCell();
+            timeCell.textContent = formatStamp(entry.time);
+
+            const codeCell = row.insertCell();
+            if (isCancelled) {
+                const badge = document.createElement("span");
+                badge.className = "error-view-cancelled-badge";
+                badge.textContent = "CANCELLED";
+                codeCell.appendChild(badge);
+            } else {
+                const codeLabel = document.createElement("span");
+                codeLabel.className = "error-view-code";
+                codeLabel.textContent = code;
+                codeCell.appendChild(codeLabel);
+                if (isEnvironmentIssue) {
+                    const warning = document.createElement("span");
+                    warning.className = "error-view-environment-warning";
+                    warning.setAttribute("aria-label", "Environment configuration warning");
+                    warning.textContent = "⚠️";
+                    codeCell.appendChild(warning);
+                }
+            }
+
+            const stepCell = row.insertCell();
+            stepCell.className = isCancelled ? "error-view-cancelled-text" : "";
+            stepCell.textContent = String(entry.command);
+
+            const messageCell = row.insertCell();
+            messageCell.className = "error-view-message-cell";
+            const messageCopy = document.createElement("span");
+            messageCopy.className = isCancelled ? "error-view-cancelled-text" : "error-view-message";
+            appendMessage(messageCopy, message);
+            messageCell.appendChild(messageCopy);
+
+            if (!isCancelled) {
+                const severity = document.createElement("span");
+                severity.className = "error-view-severity-badge";
+                severity.textContent = "[ERROR]";
+                severity.setAttribute("aria-label", "Error severity");
+                messageCell.appendChild(severity);
+            }
+        });
+
+        tableWrap.appendChild(table);
+        card.appendChild(tableWrap);
+    }
+
+    const note = document.createElement("p");
+    note.className = "usage-note error-view-footer-note";
+    note.textContent = noteText;
     card.appendChild(note);
 
     output.appendChild(card);
@@ -1344,9 +2268,85 @@ function usageStatus(status) {
 
     const badge = document.createElement("span");
     badge.className = `usage-status ${status}`;
-    badge.textContent = status;
+    badge.textContent = `● ${status}`;
 
     return badge;
+}
+
+function usageIcon(text) {
+
+    const icon = document.createElement("span");
+    icon.className = "usage-icon";
+    icon.setAttribute("aria-hidden", "true");
+    icon.textContent = text;
+
+    return icon;
+}
+
+function usageMetric(label, value, visual, detail) {
+
+    const metric = document.createElement("section");
+    metric.className = "usage-metric-card";
+
+    const copy = document.createElement("div");
+    copy.className = "usage-metric-copy";
+
+    const title = document.createElement("h3");
+    title.textContent = label;
+
+    const amount = document.createElement("p");
+    amount.className = "usage-metric-value";
+    amount.textContent = value;
+
+    copy.append(title, amount);
+
+    if (detail) {
+        const note = document.createElement("p");
+        note.className = "usage-metric-detail";
+        note.textContent = detail;
+        copy.appendChild(note);
+    }
+
+    const spark = document.createElement("span");
+    spark.className = `usage-sparkline ${visual}`;
+    spark.setAttribute("aria-hidden", "true");
+    spark.innerHTML = '<svg viewBox="0 0 72 36" focusable="false"><path d="M2 29 13 22 23 25 34 13 45 18 57 7 70 11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M2 35h68" fill="none" stroke="currentColor" stroke-width="1" opacity=".25"/></svg>';
+
+    metric.append(copy, spark);
+    return metric;
+}
+
+function usageDetail(iconText, label, value, secondaryValue) {
+
+    const detail = document.createElement("div");
+    detail.className = "usage-detail-card";
+
+    const heading = document.createElement("div");
+    heading.className = "usage-detail-label";
+    heading.append(usageIcon(iconText), document.createTextNode(label));
+
+    const content = document.createElement("div");
+    content.className = "usage-detail-value";
+    content.textContent = value;
+
+    detail.append(heading, content);
+
+    if (secondaryValue !== undefined) {
+        const secondary = document.createElement("div");
+        secondary.className = "usage-detail-secondary";
+        secondary.append(usageIcon("📁"), document.createTextNode(`Run ID: ${secondaryValue}`));
+        detail.appendChild(secondary);
+    }
+
+    return detail;
+}
+
+function usageStepName(name) {
+
+    const step = document.createElement("span");
+    step.className = "usage-step-name";
+    step.append(usageIcon("⚙️"), document.createTextNode(name || "—"));
+    return step;
 }
 
 // rows: array of arrays of cells; a cell is text or a DOM node.
@@ -1413,38 +2413,61 @@ function renderRunUsage(run) {
     const card = document.createElement("div");
     card.className = "summary-card usage-card";
 
-    card.appendChild(usageHeader("AI Usage — Last Run"));
-
     const totals = run.totals || {};
 
-    const failedNote = totals.failed_calls
-        ? ` (${totals.failed_calls} failed)`
-        : "";
+    const titlebar = document.createElement("div");
+    titlebar.className = "usage-titlebar";
+    const title = usageHeader("AI Usage — Last Run");
+    title.prepend(usageIcon("📈"));
+    const identity = document.createElement("div");
+    identity.className = "usage-run-identity";
+    const codebase = document.createElement("span");
+    codebase.className = "usage-codebase-name";
+    codebase.textContent = run.codebase || "Codebase unavailable";
+    identity.append(codebase, usageStatus(run.status || "unknown"));
+    titlebar.append(title, identity);
+    card.appendChild(titlebar);
 
-    const overview = [
-        ["Codebase", run.codebase || "—"],
-        ["Status", usageStatus(run.status)],
-        ["Started", formatStamp(run.started_at)],
-        ["Duration", formatSeconds(run.elapsed_seconds)],
-        ["AI calls", formatCount(totals.calls) + failedNote],
-        ["Input tokens", formatCount(totals.input_tokens)],
-        ["Output tokens", formatCount(totals.output_tokens)],
-        ["Total tokens", formatCount(totals.total_tokens)],
-        ["Run ID", run.run_id || "—"],
-    ];
+    const dashboard = document.createElement("div");
+    dashboard.className = "usage-dashboard-grid";
 
-    // Only when Google made us wait, so a slow run reads as throttled,
-    // not stuck.
+    const details = document.createElement("section");
+    details.className = "usage-detail-list";
+    details.setAttribute("aria-label", "Run details and timings");
+    details.appendChild(usageDetail("⏱️", "Duration", formatSeconds(run.elapsed_seconds)));
+
     if (totals.waits) {
-        overview.splice(4, 0, [
+        details.appendChild(usageDetail(
+            "⏳",
             "Waited for Google",
-            `${totals.waits} time${totals.waits === 1 ? "" : "s"}, ` +
-            formatSeconds(totals.waited_seconds),
-        ]);
+            `${totals.waits} time${totals.waits === 1 ? "" : "s"}, ${formatSeconds(totals.waited_seconds)}`
+        ));
+    } else {
+        details.appendChild(usageDetail("⏳", "Waited for Google", "No recorded waits"));
     }
 
-    card.appendChild(usageTable(null, overview))
-        .classList.add("usage-overview");
+    details.appendChild(usageDetail(
+        "📅",
+        "Started",
+        formatStamp(run.started_at),
+        run.run_id || "—"
+    ));
+
+    const metrics = document.createElement("section");
+    metrics.className = "usage-metrics-grid";
+    metrics.setAttribute("aria-label", "Token and API call metrics");
+    const failedNote = totals.failed_calls
+        ? `${formatCount(totals.failed_calls)} failed`
+        : "Recorded calls";
+    metrics.append(
+        usageMetric("Input Tokens", formatCount(totals.input_tokens), "usage-sparkline-input"),
+        usageMetric("Output Tokens", formatCount(totals.output_tokens), "usage-sparkline-output"),
+        usageMetric("Total Tokens", formatCount(totals.total_tokens), "usage-sparkline-total"),
+        usageMetric("AI Calls", formatCount(totals.calls), "usage-sparkline-calls", failedNote)
+    );
+
+    dashboard.append(details, metrics);
+    card.appendChild(dashboard);
 
     if (run.error) {
         const error = document.createElement("pre");
@@ -1495,13 +2518,20 @@ function renderRunUsage(run) {
         card.appendChild(usageTable(
             ["Step", "Time", "Input", "Output", "Status"],
             slowest.map(call => [
-                call.stage,
-                formatSeconds(call.duration_seconds),
+                usageStepName(call.stage),
+                (() => {
+                    const time = document.createElement("span");
+                    time.className = (call.duration_seconds ?? 0) >= 60
+                        ? "usage-call-time usage-call-time-slow"
+                        : "usage-call-time";
+                    time.textContent = formatSeconds(call.duration_seconds);
+                    return time;
+                })(),
                 formatCount(call.input_tokens),
                 formatCount(call.output_tokens),
                 usageStatus(call.status),
             ])
-        ));
+        )).classList.add("usage-slowest-table");
     }
 
     const failed = calls.filter(call => call.status === "failed");
@@ -1533,11 +2563,16 @@ function renderRunUsage(run) {
         card.appendChild(usageTable(
             ["Step", "Reason", "Waited"],
             waits.map(wait => [
-                wait.stage,
-                reasonText(wait.reason),
+                usageStepName(wait.stage),
+                (() => {
+                    const reason = document.createElement("span");
+                    reason.className = "usage-wait-reason";
+                    reason.textContent = reasonText(wait.reason);
+                    return reason;
+                })(),
                 formatSeconds(wait.seconds),
             ])
-        ));
+        )).classList.add("usage-waits-table");
     }
 
     const note = document.createElement("p");
@@ -1726,14 +2761,14 @@ document.getElementById("loadingCancelBtn").addEventListener("click", async () =
 
     activeCommand = null;
     hideLoading();
-    showPage("homePage");
+    returnToOperationPage();
 });
 
 document.getElementById("loadingOkBtn").addEventListener("click", () => {
 
     hideLoading();
     document.getElementById("loadingOkBtn").classList.add("hidden");
-    showPage('homePage');
+    returnToOperationPage();
 
 });
 
@@ -1751,6 +2786,13 @@ document.getElementById('analysisBtn')
         }
 
     
+    });
+
+document.getElementById("connectCodebaseBtn")
+    .addEventListener("click", () => {
+        codebasePickerPreviousSelection = selectedCodebasePath;
+        document.getElementById("codebasePath").value = selectedCodebasePath;
+        showPage("codebasePipelinePage");
     });
 
 document.getElementById('apiBtn')
@@ -1914,12 +2956,34 @@ document.getElementById("viewDisplayFilesBtn").addEventListener("click", () => {
 });
 
 document.getElementById("viewDisplayBusinessRulesBtn").addEventListener("click", () => {
+    showButtons("mainViewBtns");
 
-    showButtons("viewBusinessRulesBtns");
+    const codebasePath = selectedCodebasePath;
+    if (!codebasePath) {
+        renderTextPreview("Select a codebase first from the pipeline page.");
+        return;
+    }
 
+    const output = document.getElementById("viewDisplayOutputBox");
+    output.replaceChildren();
+    const loading = document.createElement("p");
+    loading.className = "business-rules-loading";
+    loading.textContent = "Loading business rules…";
+    output.appendChild(loading);
 
-    
-
+    window.electronAPI.getBusinessRuleFiles(codebasePath)
+        .then(result => {
+            if (selectedCodebasePath !== codebasePath) return;
+            if (!result?.success) {
+                renderTextPreview(result?.error || "Could not load business rules.");
+                return;
+            }
+            renderBusinessRulesList(result);
+        })
+        .catch(error => {
+            if (selectedCodebasePath !== codebasePath) return;
+            renderTextPreview(error?.message || "Could not load business rules.");
+        });
 });
 
 document.getElementById("viewUnitTestsBtn")
@@ -1956,61 +3020,6 @@ document.getElementById("viewUnitTestsBtn")
         loadTestResultsDashboard(codebasePath, codebaseName);
 
     });
-
-//Hardcoded to see if outputs work
-document.getElementById("validatedBusinessRulesBtn").addEventListener("click", () => {
-
-    const codebaseName = getSelectedCodebaseName();
-    if (!codebaseName) {
-        renderTextPreview("Select a codebase first from the pipeline page.");
-        return;
-    }
-
-    try{
-        runPreviewCommand(
-            "open_file",
-            {
-                path: `agent/BR_agent_output/${codebaseName}/validated_rules.json`
-            }
-        );
-    } catch (error) {
-        runPreviewCommand(
-            "open_file",
-            {
-                path: `backend/agent/BR_agent_output/${codebaseName}/validated_rules.json`
-            }
-        );
-    }
-
-
-});
-
-//hoardcoded to see if outputs work
-document.getElementById("discardedBusinessRulesBtn").addEventListener("click", () => {
-
-    const codebaseName = getSelectedCodebaseName();
-    if (!codebaseName) {
-        renderTextPreview("Select a codebase first from the pipeline page.");
-        return;
-    }
-
-    try{
-        runPreviewCommand(
-            "open_file",
-            {
-                path: `agent/BR_agent_output/${codebaseName}/discarded_rules.json`
-            }
-        );
-    } catch (error) {
-        runPreviewCommand(
-            "open_file",
-            {
-                path: `backend/agent/BR_agent_output/${codebaseName}/discarded_rules.json`
-            }
-        );
-    }
-
-});
 
 document.getElementById('mainViewBackBtn')
     .addEventListener('click', () => {
@@ -2456,8 +3465,14 @@ document.getElementById('codebaseBackBtn')
     .addEventListener('click', () => {
 
         invalidateTestResultsDashboard();
-        selectedCodebasePath = "";
-        document.getElementById("codebasePath").value = "";
+        if (codebasePickerPreviousSelection !== null) {
+            selectedCodebasePath = codebasePickerPreviousSelection;
+            document.getElementById("codebasePath").value = codebasePickerPreviousSelection;
+            codebasePickerPreviousSelection = null;
+        } else {
+            selectedCodebasePath = "";
+            document.getElementById("codebasePath").value = "";
+        }
         updateCodebaseSummary();
 
         showPage('homePage');
@@ -2507,10 +3522,13 @@ document.getElementById('submitPathBtn')
 .addEventListener('click', () => {
 
     invalidateTestResultsDashboard();
+    const previousPath = selectedCodebasePath;
     selectedCodebasePath =
         document.getElementById(
             'codebasePath'
         ).value;
+    clearBusinessRulesResultsIfCodebaseChanged(previousPath, selectedCodebasePath);
+    codebasePickerPreviousSelection = null;
 
     updateCodebaseSummary();
     showPage('analysisPage');
@@ -2529,7 +3547,9 @@ document.getElementById("browseCodebaseBtn")
     invalidateTestResultsDashboard();
     document.getElementById("codebasePath").value = path;
 
+    const previousPath = selectedCodebasePath;
     selectedCodebasePath = path;
+    clearBusinessRulesResultsIfCodebaseChanged(previousPath, selectedCodebasePath);
     updateCodebaseSummary();
 });
 
@@ -2758,7 +3778,7 @@ window.electronAPI.onBackendResponse((response) => {
         if (activeCommand) {
 
             hideLoading();
-            showPage('homePage');
+            returnToOperationPage();
             activeCommand = null;
 
         }
@@ -2782,14 +3802,11 @@ window.electronAPI.onBackendResponse((response) => {
         response.result
     ) {
 
-        const report =
-            document.getElementById("estimateOutput");
-
-        if (report && response.result.message) {
-
-            report.textContent = response.result.message;
-            report.classList.remove("hidden");
-
+        const isCalibration = response.command === "token_calibration";
+        if (isCalibration) {
+            renderTokenCalibrationResult(response.result);
+        } else {
+            renderTokenEstimateResult(response.result);
         }
 
         const low  = response.result.total_input_low;
@@ -2810,6 +3827,15 @@ window.electronAPI.onBackendResponse((response) => {
         }
 
         finishLoading(summary);
+
+        const overlay = document.getElementById("loadingOverlay");
+        const title = document.getElementById("loadingTitle");
+        overlay?.classList.add("token-report-mode");
+        if (title) {
+            title.textContent = isCalibration
+                ? "✓ Calibration Complete"
+                : "✓ Complete";
+        }
 
         activeCommand = null;
 
