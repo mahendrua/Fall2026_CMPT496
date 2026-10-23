@@ -52,6 +52,9 @@ from agent.llm import verify_llm_key
 from agent.BR_input_loader import load_rule_candidates, deduplicate_rule_candidates
 from agent.structured_output.UT_output import ValidatedRule
 from agent.structured_output.UTV_output import UnitTest
+from agent.consistency_checker import run_consistency_check
+from agent.consistency_store import ConsistencyStoreError
+from backend import consistency_review
 
 from src.build_database import build_database
 from src.build_database_JSON import build_database as build_summary_database
@@ -247,6 +250,124 @@ class Commands:
             }
 
         return {"success": True, "run_usage": data}
+
+    # -----------------------------------------------------
+    # Consistency Review Commands
+    # -----------------------------------------------------
+    # Read saved results and save review decisions for the Consistency Review
+    # screen. Like get_run_usage they are outside _run_command (viewing is not
+    # a run), and none of them creates or calls a model.
+
+    def get_consistency_result(self, codebase: str = "", scope: str = "full"):
+        """Return the saved full or selected consistency check for a codebase."""
+        return self._consistency_call(
+            lambda: {"review": consistency_review.load_for_review(codebase, scope, self.app_dir)}
+        )
+
+    def save_consistency_review(
+        self,
+        codebase: str = "",
+        scope: str = "full",
+        check_id: str = "",
+        finding_id: str = "",
+        status: str = "",
+        note: str = None,
+    ):
+        """Save a review status and optional note for one finding of the result being reviewed."""
+        return self._consistency_call(
+            lambda: {"saved": consistency_review.save_review(
+                codebase, scope, check_id, finding_id, status, note, self.app_dir,
+            )}
+        )
+
+    def get_consistency_targets(self, codebase: str = ""):
+        """List the source files a consistency check can cover, with what was generated for each."""
+        return self._consistency_call(
+            lambda: {"targets": consistency_review.list_targets(codebase, self.app_dir)}
+        )
+
+    def get_consistency_methods(self, codebase: str = "", path: str = ""):
+        """List the methods of one source file that a check can be limited to."""
+        return self._consistency_call(
+            lambda: {"methods": consistency_review.list_methods(codebase, path, self.app_dir)}
+        )
+
+    def get_consistency_artifact(
+        self,
+        codebase: str = "",
+        scope: str = "full",
+        check_id: str = "",
+        finding_id: str = "",
+        artifact_index: int = -1,
+    ):
+        """Return the current state and content of one artifact a finding refers to."""
+        return self._consistency_call(
+            lambda: {"artifact": consistency_review.read_artifact(
+                codebase, scope, check_id, finding_id, artifact_index, self.app_dir,
+            )}
+        )
+
+    def _consistency_review_stage(self, codebase_path, outputs_before):
+        """
+        The full pipeline's Consistency Review stage: its own stage in the
+        pipeline's run (run ID, usage and timing), whole-codebase scope, and
+        only this run's outputs. Not the independent check_consistency command.
+        """
+
+        def task():
+            progress("Checking consistency of the outputs this run generated...")
+            return consistency_review.review_pipeline_outputs(
+                codebase_path, self.app_dir, outputs_before, run_consistency_check,
+            )
+
+        return self._run_command("consistency_review", task, individualStep=False)
+
+    def check_consistency(
+        self,
+        codebase: str = "",
+        scope: str = "full",
+        targets: list = None,
+        individualStep=True,
+    ):
+        """
+        Run a Consistency Review check now, for the whole codebase or selected
+        files (optionally one method each), and save its result.
+
+        Uses the outputs already on disk: nothing is regenerated and no
+        pipeline step runs. The request is validated before anything is
+        logged, and the checker only creates a model for comparisons that
+        have artifacts to compare, so missing outputs cost no call. It runs
+        as its own command, so its run ID, AI calls, tokens and timing go to
+        the run log like any other step.
+        """
+        try:
+            root, checked_targets = consistency_review.prepare_check(codebase, scope, targets)
+        except (consistency_review.ReviewRequestError, ConsistencyStoreError) as exc:
+            return {
+                "success": False,
+                "command": "check_consistency",
+                "individualStep": individualStep,
+                "error": str(exc),
+            }
+
+        def task():
+            what = "the whole codebase" if checked_targets is None else (
+                f"{len(checked_targets)} selected file{'s' if len(checked_targets) != 1 else ''}"
+            )
+            progress(f"Checking consistency of {what} in {root.name}...")
+            result = run_consistency_check(root, targets=checked_targets, app_dir=self.app_dir, save=True)
+            return consistency_review.check_summary(result)
+
+        return self._run_command("check_consistency", task, individualStep=individualStep)
+
+    @staticmethod
+    def _consistency_call(task):
+        try:
+            return {"success": True, **task()}
+        except (consistency_review.ReviewRequestError, ConsistencyStoreError) as exc:
+            return {"success": False, "error": str(exc)}
+        except OSError as exc:
+            return {"success": False, "error": f"Could not read the saved result: {exc}"}
 
     # -----------------------------------------------------
     # Calibration Commands
@@ -959,6 +1080,12 @@ class Commands:
 
             1. Full Codebase Analysis Pipeline
 
+        After the generation steps, a Consistency Review stage checks the
+        whole codebase against the outputs this run wrote and saves the result
+        (View Insights -> Consistency Review). A mismatch is a finding, and an
+        incomplete or failed review is reported, but neither fails the
+        pipeline or touches what was generated. A failed generation step stops
+        the pipeline before the review, as before.
         """
 
         codebase_path = Path(codebase)
@@ -1011,6 +1138,10 @@ class Commands:
 
             steps = []
 
+            # What the review stage could read before this run wrote anything,
+            # so it can tell this run's outputs from leftovers.
+            outputs_before = consistency_review.snapshot_outputs(codebase_name, self.app_dir)
+
             pipeline_progress("Building database...", 5)
             steps.append( self._require_success(self.build_database(str(codebase_path), False)))
 
@@ -1048,8 +1179,14 @@ class Commands:
                     failed
                 )
 
+            # Not through _require_success: a review problem must not fail a
+            # run whose generation succeeded.
+            pipeline_progress("Checking consistency...", 97, step_percent=False)
+            review = self._consistency_review_stage(codebase_path, outputs_before)
+
             summary = {
                 "steps": steps,
+                "consistency_review": review,
                 "message": "Full pipeline completed",
             }
 
@@ -1061,6 +1198,14 @@ class Commands:
                 if isinstance(step.get("result"), dict)
                 and step["result"].get("warning")
             ]
+
+            if not review["success"]:
+                warnings.append(
+                    "The Consistency Review stage did not finish: "
+                    f"{review.get('error', 'unknown error')}. Everything generated before it was kept."
+                )
+            elif review["result"].get("warning"):
+                warnings.append(review["result"]["warning"])
 
             if warnings:
                 summary["warning"] = "\n\n".join(warnings)

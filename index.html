@@ -57,7 +57,8 @@
                
                 <button class="btn-primary" id="estimateTokensBtn">Estimate Token Usage</button>
                 <button class="btn-primary" id="tokenCalibrationBtn">Show Token Calibration</button>
-                <button class="btn-primary" id="codebaseAnalysisPipelineBtn">Full Codebase Analysis Pipeline</button>
+                <button class="btn-primary" id="codebaseAnalysisPipelineBtn" aria-describedby="pipelineReviewNote">Full Codebase Analysis Pipeline</button>
+                <p id="pipelineReviewNote" class="operation-note">Ends with a Consistency Review of what it generated: one more AI request per source file, on your API key.</p>
                 <button class="btn-primary" id="createCodeDatabaseOnlyBtn">Create Code Database</button>
                 <button class="btn-primary" id="createJSONSummariesOnlyBtn">Create JSON Summaries</button>
                 <button class="btn-primary" id="createSummaryDatabasefromJSONOnlyBtn">Create Summary Database from JSON</button>
@@ -67,6 +68,7 @@
                 <button class="btn-primary" id="runUnitTestGenerationOnlyBtn">Unit Test Generation</button>
                 <button class="btn-primary" id="runUnitTestValidationOnlyBtn">Unit Test Validation</button>
                 <button class="btn-primary" id="runIntegrationTestGenerationOnlyBtn">Integration Test Generation</button>
+                <button class="btn-primary" id="runConsistencyReviewOnlyBtn">Consistency Review</button>
                 
                 
             </div>
@@ -170,6 +172,7 @@
                     <button class="btn-primary" id="viewDisplayBusinessRulesBtn">Business Rules</button>
                     <button class="btn-primary" id="viewUnitTestsBtn">Unit Tests</button>
                     <button class="btn-primary" id="viewUsageBtn">AI Usage</button>
+                    <button class="btn-primary" id="viewConsistencyBtn">Consistency Review</button>
                     <button class="btn-primary" id="viewRunReportBtn">Run Report</button>
 
                     <button class="btn-primary" id="viewDisplayFilesBtn">Files</button>
@@ -184,6 +187,8 @@
                 <div id="viewErrorsBtns" class="viewBtnContainer hidden"> </div>
 
                 <div id="viewUsageBtns" class="viewBtnContainer hidden"> </div>
+
+                <div id="viewConsistencyBtns" class="viewBtnContainer hidden"> </div>
 
                 <div id="viewFilesBtns" class="viewBtnContainer hidden"> </div>
 
@@ -704,6 +709,7 @@
             <button id="loadingCancelBtn" class="btn-cancel">Cancel</button>
             <button id="loadingReportBtn" class="btn-primary hidden">Open Report</button>
             <button id="loadingOkBtn" class="btn-primary hidden">OK</button>
+            <button id="loadingOpenReviewBtn" class="btn-primary hidden">Open Consistency Review</button>
         </div>
     </div>
 
@@ -717,6 +723,8 @@
     </div>
 
     <script src="command_requests.js"></script>
+    <script src="consistency_review_model.js"></script>
+    <script src="consistency_review.js"></script>
     <script src="renderer.js"></script>
 
 </body>
