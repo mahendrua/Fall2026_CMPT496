@@ -15,6 +15,9 @@ retries instead of failing the run:
 
 The providers' own SDK retries are switched off (or minimised) because they
 give up within seconds and ignore the wait the provider asks for.
+
+Every model it returns also replaces secrets in what it sends with
+placeholders (T-077, US-034); see redacting() below.
 """
 
 import asyncio
@@ -27,7 +30,9 @@ from functools import lru_cache
 from pathlib import Path
 
 from dotenv import dotenv_values
+from langchain_core.runnables import Runnable
 
+from agent.request_redaction import redact_model_input, redact_prompts
 from backend.progress_logging import progress
 from backend.token_usage import record_wait, status_code
 
@@ -302,6 +307,144 @@ def _retrying(base, label):
 
 
 # ---------------------------------------------------------
+# Secret redaction
+# ---------------------------------------------------------
+# A chat model reports a call to its callbacks (token usage, any tracer)
+# with the messages *before* _generate runs, inside generate(), agenerate(),
+# stream() and astream(). So redaction happens on the way into those four,
+# not in _generate like the retries: callbacks, retries and the provider all
+# get the redacted copy. invoke, ainvoke, batch, abatch and every
+# with_structured_output() or bind_tools() binding go through them.
+#
+# with_structured_output() returns a chain, and a chain reports its raw input
+# to callbacks before it reaches the model, so that input is redacted first
+# too (_RedactedInput).
+#
+# If a request cannot be checked, SecretRedactionError is raised before any
+# callback fires or anything is sent.
+#
+# Still unredacted, outside this boundary:
+#   - LangGraph reports each node's input (the graph state, which holds
+#     source code and summaries) to chain callbacks before the node calls
+#     the model. Checkpoint registers no tracer and its token-usage handler
+#     ignores chain events, but a LangSmith tracer switched on through
+#     environment variables (LANGSMITH_TRACING) would receive that state.
+#   - Other wrappers that report their raw input (with_retry,
+#     with_fallbacks, prompt | model chains). The agents do not use them.
+#   - Structured-output and tool schemas, which come from this repository's
+#     pydantic models, not from the code being analysed.
+#   - The model's answers, and the logs and saved summaries built from them
+#     (T-078).
+
+# Callback metadata key carrying how many secrets a call had replaced, by
+# category. Counts only, never values.
+REDACTION_METADATA_KEY = "redacted_secrets"
+
+
+def _with_report(metadata, report):
+    """metadata plus this call's redaction counts, if anything was replaced."""
+    if not report.total:
+        return metadata
+    return {**(metadata or {}), REDACTION_METADATA_KEY: dict(report.replaced)}
+
+
+def _config_with_report(config, report):
+    if not report.total:
+        return config
+    config = dict(config or {})
+    config["metadata"] = _with_report(config.get("metadata"), report)
+    return config
+
+
+class _RedactedInput(Runnable):
+    """
+    The runnable with_structured_output() returns, with its input redacted
+    before it starts. Fires no callbacks of its own, so nothing sees the
+    input before it is redacted.
+    """
+
+    def __init__(self, bound):
+        self.bound = bound
+
+    @property
+    def InputType(self):
+        return self.bound.InputType
+
+    @property
+    def OutputType(self):
+        return self.bound.OutputType
+
+    def get_input_schema(self, config=None):
+        return self.bound.get_input_schema(config)
+
+    def get_output_schema(self, config=None):
+        return self.bound.get_output_schema(config)
+
+    def invoke(self, input, config=None, **kwargs):
+        safe, report = redact_model_input(input)
+        return self.bound.invoke(safe, _config_with_report(config, report), **kwargs)
+
+    async def ainvoke(self, input, config=None, **kwargs):
+        safe, report = redact_model_input(input)
+        return await self.bound.ainvoke(safe, _config_with_report(config, report), **kwargs)
+
+    def stream(self, input, config=None, **kwargs):
+        safe, report = redact_model_input(input)
+        yield from self.bound.stream(safe, _config_with_report(config, report), **kwargs)
+
+    async def astream(self, input, config=None, **kwargs):
+        safe, report = redact_model_input(input)
+        async for chunk in self.bound.astream(safe, _config_with_report(config, report), **kwargs):
+            yield chunk
+
+
+@lru_cache(maxsize=None)
+def redacting(base):
+    """
+    A subclass of the given LangChain chat model that replaces secrets in
+    every request with placeholders before callbacks or the provider see it.
+
+    build_chat_model() applies it to every provider. Tests apply it to a fake
+    model to exercise the same protection without a real provider.
+    """
+
+    def generate(self, messages, *args, metadata=None, **kwargs):
+        safe, report = redact_prompts(messages)
+        return base.generate(self, safe, *args, metadata=_with_report(metadata, report), **kwargs)
+
+    async def agenerate(self, messages, *args, metadata=None, **kwargs):
+        safe, report = redact_prompts(messages)
+        return await base.agenerate(
+            self, safe, *args, metadata=_with_report(metadata, report), **kwargs
+        )
+
+    def stream(self, input, config=None, **kwargs):
+        safe, report = redact_model_input(input)
+        yield from base.stream(self, safe, _config_with_report(config, report), **kwargs)
+
+    async def astream(self, input, config=None, **kwargs):
+        safe, report = redact_model_input(input)
+        async for chunk in base.astream(self, safe, _config_with_report(config, report), **kwargs):
+            yield chunk
+
+    def with_structured_output(self, *args, **kwargs):
+        return _RedactedInput(base.with_structured_output(self, *args, **kwargs))
+
+    return type(
+        f"Redacting{base.__name__}",
+        (base,),
+        {
+            "__module__": __name__,
+            "generate": generate,
+            "agenerate": agenerate,
+            "stream": stream,
+            "astream": astream,
+            "with_structured_output": with_structured_output,
+        },
+    )
+
+
+# ---------------------------------------------------------
 # Model construction
 # ---------------------------------------------------------
 
@@ -364,6 +507,9 @@ def build_chat_model(config: LLMConfig, max_output_tokens=None, retry=True):
 
     if retry:
         model_class = _retrying(model_class, label)
+
+    # Always, including the key check: nothing reaches a provider unredacted.
+    model_class = redacting(model_class)
 
     return model_class(model=config.model, api_key=config.api_key, **kwargs)
 
