@@ -85,6 +85,11 @@ contextBridge.exposeInMainWorld(
             );
         },
 
+        getBusinessRules: (codebasePath) => ipcRenderer.invoke(
+            "get-business-rules",
+            { codebasePath }
+        ),
+
         setAPIKey: (
             key
         ) => {

@@ -1085,6 +1085,49 @@ ipcMain.handle(
     }
 );
 
+ipcMain.handle("get-business-rules", async (_event, request) => {
+    const codebaseName = path.basename(String(request?.codebasePath || ""));
+    if (!codebaseName || codebaseName === "." || codebaseName === ".." || codebaseName === path.sep) {
+        return { success: false, error: "No codebase selected" };
+    }
+
+    const folder = path.join(backendOutputDir, "agent", "BR_agent_output", codebaseName);
+    const readRules = (filename) => {
+        const file = path.join(folder, filename);
+        if (!fs.existsSync(file)) {
+            return { exists: false, loaded: false, count: null, rules: [] };
+        }
+        try {
+            const entries = JSON.parse(fs.readFileSync(file, "utf8"));
+            if (!Array.isArray(entries)) {
+                return { exists: true, loaded: false, count: null, rules: [], error: "Expected a JSON array." };
+            }
+            return {
+                exists: true,
+                loaded: true,
+                count: entries.length,
+                rules: entries.map((entry) => ({
+                    text: typeof entry === "string"
+                        ? entry
+                        : (typeof entry?.rule === "string" && entry.rule) || "No rule text recorded",
+                    source: typeof entry?.source_directory === "string"
+                        ? entry.source_directory.trim()
+                        : ""
+                }))
+            };
+        } catch (error) {
+            return { exists: true, loaded: false, count: null, rules: [], error: `Could not read ${filename}: ${error.message}` };
+        }
+    };
+
+    return {
+        success: true,
+        codebase: codebaseName,
+        validated: readRules("validated_rules.json"),
+        discarded: readRules("discarded_rules.json")
+    };
+});
+
 
 
 
@@ -1206,6 +1249,11 @@ async function showReportWindow(file) {
 
         reportWindow.on("closed", () => {
             reportWindow = null;
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                if (mainWindow.isMinimized()) mainWindow.restore();
+                mainWindow.show();
+                mainWindow.focus();
+            }
         });
     }
 
