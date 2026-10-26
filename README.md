@@ -377,6 +377,190 @@ PyInstaller command below before `npm run dist`. `releases/main.spec` needs no
 change: the new modules are imported directly by `backend/commands.py`, so
 PyInstaller finds them.
 
+## Secret redaction in AI requests (US-034, T-077)
+
+Before a request reaches an AI provider, Checkpoint replaces passwords, API
+keys, tokens, authorization values, connection-string credentials and private
+keys in it with typed placeholders:
+
+```text
+private const string AdminPassword = "Fake-Pass-111!";   ->   ... = "[REDACTED_PASSWORD_1]";
+"Server=db;User Id=sa;Password=Fake-Pass-111!;"          ->   "...;Password=[REDACTED_PASSWORD_1];"
+Authorization: Bearer Fake-Token-123456789               ->   Authorization: Bearer [REDACTED_AUTHORIZATION_1]
+```
+
+Detection is local pattern matching; nothing is sent anywhere to decide what
+is a secret. Only the outgoing copy changes: source files and saved outputs
+are not touched, and the provider's own API key still authenticates the call.
+
+### Where it happens
+
+| Module | Role |
+|---|---|
+| `utils/secret_redaction.py` | Finds secrets and assigns placeholders. Plain text, no LangChain. Its docstring lists every supported pattern and limitation. |
+| `agent/request_redaction.py` | Applies it to chat messages: string content, content blocks and tool-call arguments. Roles, ids, `tool_call_id`, metadata and base64 payloads are copied unchanged. |
+| `agent/llm.py` | `build_chat_model()` gives every provider's model `redacting()`. |
+
+LangChain hands the messages to callbacks (token usage, any tracer) inside
+`generate`, `agenerate`, `stream` and `astream`, before `_generate` and its
+retries run. Redaction therefore happens on the way into those four methods,
+and the chain `with_structured_output()` returns redacts its input before it
+starts. Callbacks, retries and the provider all receive only the redacted copy.
+
+### What is covered
+
+Every AI request the app makes is built by `build_chat_model()`:
+
+- file summaries;
+- directory summaries and business rules;
+- business-rule condensing and validation;
+- unit and integration test generation;
+- test repair, including compiler errors and codebase context;
+- Consistency Review;
+- the key check in **Manage API Keys**.
+
+A test fails if production code imports a provider package anywhere else.
+The vector-store embeddings are computed locally and send nothing.
+
+### Placeholders
+
+- Typed and numbered within a request: `PASSWORD`, `API_KEY`, `TOKEN`,
+  `AUTHORIZATION`, `PRIVATE_KEY`. The type says what the secret is, so a
+  connection-string password is a `PASSWORD`.
+- The same secret gets the same placeholder everywhere in one request: system
+  and user messages, and tool arguments. A secret found with context is also
+  replaced where it appears on its own, if it is 8 or more characters mixing
+  letters with digits or symbols.
+- Redacting an already redacted request changes nothing. Existing
+  placeholders are kept, and new ones are numbered after them.
+- The secret-to-placeholder mapping exists only for the one request. It is
+  not saved, logged or shared, so concurrent requests cannot see each
+  other's values. The model never sees real values, so they cannot come back
+  in its answers.
+
+### Supported patterns (summary)
+
+- **Assignments** to names ending in password/pwd/pass, api key (and access,
+  secret, private, signing, subscription, … key), secret or token. Covered
+  formats: C#, Python, JavaScript/TypeScript, JSON, YAML, `.env`, INI and XML
+  attributes, including code inside JSON strings (`\"password\": \"...\"`).
+- **Vendor key and token formats** wherever they appear: AWS, Google,
+  Stripe, OpenAI/Anthropic, SendGrid, GitHub, GitLab, Slack, npm, Hugging
+  Face, and JWTs.
+- **Authorization:** `Authorization` headers, `AuthenticationHeaderValue`,
+  `NetworkCredential`, `HTTPBasicAuth`, `curl -u`, and `X-Api-Key`-style
+  headers.
+- **Connection strings:** `Password`/`Pwd`/`AccountKey`/`SharedAccessKey`,
+  passwords in URLs (`postgres://user:...@host`), and secrets in query
+  strings.
+- **Private keys:** the body of a PEM private key block.
+- **Prose:** "the admin password is ...", "the token was changed to ...".
+  Only values that look generated count.
+
+Ordinary values are left alone: `cacheKey`, `CancellationToken`, labels, file
+paths, environment-variable lookups, `${TEMPLATES}` and obvious stand-ins
+such as `<your-api-key>`. It was run against this repository's code and tests
+(apart from the redaction tests' planted fakes), its target codebases, and
+about 11 MB of third-party Python (openai, anthropic, langchain, httpx,
+requests, google-genai). It changed nothing in the first two. In the
+libraries it changed only documentation passwords, test-fixture keys and one
+pagination token.
+
+### Safe counts
+
+- `RedactionReport` gives counts per category (occurrences and distinct
+  values), never the values themselves: `str(report)` →
+  `3 secret value(s) replaced (API_KEY x1, PASSWORD x2)`.
+- Each model call passes its counts to callbacks as `redacted_secrets`
+  metadata, for example `{"PASSWORD": 2}`.
+- The counts are not yet shown in the UI or written to the run log.
+
+### When a request cannot be checked
+
+Anything the sanitizer cannot read raises `SecretRedactionError` before any
+callback fires or anything is sent: an unknown message class, bytes, or an
+object inside a content block. It is never passed through. The agents send
+plain text, so in practice this does not happen. If it did:
+
+| Step | Result |
+|---|---|
+| File summary | that file is skipped with an error |
+| Rule condensing/validation, unit/integration test generation | that rule or test is reported as an error and skipped |
+| Test repair | that test is dropped |
+| Consistency Review | that file is listed as not checked |
+
+### Limitations
+
+- **Pattern matching, not proof.** It misses:
+  - a secret with no telling name or format beside it (`Login("admin", "...")`);
+  - a bare `Key` name (the `Jwt:Key` in `appsettings.json`);
+  - vendor formats not listed above;
+  - unquoted INI values that look like identifiers;
+  - values built by concatenation;
+  - key or token values containing spaces;
+  - prose without quotes or "is/equals/set to" before the value;
+  - short or letters-only passwords in prose;
+  - numbers in tool arguments.
+- **Over-redaction is possible:** a JavaScript object property that holds a
+  variable (`password: pw`), or documentation examples written in a real
+  vendor format.
+- **Generated tests see only placeholders.** A test that asserts on a secret's
+  literal value will contain the placeholder and fail until edited.
+- **Outside this boundary**, and so not covered by T-077:
+  - LangGraph node state reported to chain callbacks. This only matters if
+    LangSmith tracing is switched on through environment variables; the app
+    configures no tracer.
+  - Other chain wrappers (`with_retry`, `prompt | model`), which the agents
+    do not use.
+  - Structured-output schemas from this repository.
+  - Base64 image and file payloads.
+  - The model's answers, application logs, and summaries saved to disk.
+- **Cost:** about 2 ms per KB of prompt on the development machine (about
+  30 ms for a 15 KB file, 120 ms for a 56 KB prompt), run on the agents' event
+  loop.
+
+### Checking what would be sent (no AI call)
+
+```powershell
+.venv\Scripts\python.exe -m utils.secret_redaction path\to\Db.cs path\to\appsettings.json
+```
+
+Prints the files as one request would carry them, with the counts on stderr.
+The files are not changed.
+
+### Tests
+
+```powershell
+.venv\Scripts\python.exe -m pytest test/other_tests/secret_redaction_test.py test/other_tests/request_redaction_test.py test/other_tests/llm_redaction_test.py test/other_tests/agent_redaction_test.py
+```
+
+These tests need no API key, network or model. Every secret is fake.
+Vendor-format fakes are assembled at run time, so the repository never
+contains a real-format token, which GitHub push protection would block.
+
+| File | What it checks |
+|---|---|
+| `secret_redaction_test.py` | Patterns and false positives, placeholder consistency, idempotence, safe reports, and speed on adversarial input. |
+| `request_redaction_test.py` | Message structures, roles, tool calls, metadata, isolation between concurrent requests, and refusal of unreadable content. |
+| `llm_redaction_test.py` | Every sync and async entry point, structured output, retries, token accounting and callbacks. Also a real `ChatOpenAI` request checked at the HTTP layer. |
+| `agent_redaction_test.py` | Each agent's real prompt code with secrets planted in source files, retrieved context, rules, generated tests and repair context. |
+
+### Remaining work
+
+- **T-078:** redact application logs (progress messages, error logs,
+  `last_run_log.json`) and the summaries, rules and tests saved to disk, and
+  consider recording the per-call counts in the run log.
+- **T-079:** broader verification with ten planted fake secrets across file
+  types, run through the pipeline, reporting what is missed and what is
+  over-redacted.
+
+T-077 alone does not complete US-034.
+
+### Packaged app
+
+The new modules are imported by `agent/llm.py`, so PyInstaller finds them and
+`releases/main.spec` needs no change. Rebuild the backend before `npm run dist`.
+
 ## Packaging the backend using Pyinstaller
 
 Package backend using main.spec found in releases. Copy and paste any needed programs in before going to the next step. Stuff like plantuml.jar

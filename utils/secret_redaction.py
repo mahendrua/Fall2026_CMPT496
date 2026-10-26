@@ -1167,7 +1167,7 @@ class SecretRedactor:
     the request.
     """
 
-    __slots__ = ("_placeholders", "_numbers", "_replaced", "_distinct", "_known", "_known_count")
+    __slots__ = ("_placeholders", "_numbers", "_replaced", "_distinct", "_known", "_known_count", "_found")
 
     def __init__(self):
         # secret -> (category, placeholder). Never leaves this object.
@@ -1178,6 +1178,9 @@ class SecretRedactor:
         self._distinct = {}
         self._known = None
         self._known_count = 0
+        # text -> what _find() found in it, so redacting a text this request
+        # already scanned does not search it again. Dies with the redactor.
+        self._found = {}
 
     def __repr__(self):
         return f"<SecretRedactor: {self.report()}>"
@@ -1196,14 +1199,14 @@ class SecretRedactor:
             self._reserve_numbers(text)
 
         for text in texts:
-            self._learn(_find(text))
+            self._learn(self._find(text))
 
     def redact(self, text):
         """text with every secret replaced by its placeholder."""
         text = _require_text(text)
         self._reserve_numbers(text)
 
-        hits = _find(text)
+        hits = self._find(text)
         self._learn(hits)
 
         out, pos = [], 0
@@ -1261,6 +1264,11 @@ class SecretRedactor:
         )
 
     # --- internals ----------------------------------------
+
+    def _find(self, text):
+        if text not in self._found:
+            self._found[text] = _find(text)
+        return self._found[text]
 
     def _reserve_numbers(self, text):
         """Number new placeholders after any already in text."""
@@ -1328,3 +1336,46 @@ def redact_text(text):
     """
     redactor = SecretRedactor()
     return redactor.redact(text), redactor.report()
+
+
+def main(argv=None):
+    """
+    python -m utils.secret_redaction FILE [FILE ...]
+
+    Prints the files as one AI request would carry them, secrets replaced,
+    with the counts on stderr. Nothing is sent anywhere and the files are not
+    changed. Reads stdin when no file is given.
+    """
+    import argparse
+    import sys
+    from pathlib import Path
+
+    parser = argparse.ArgumentParser(
+        prog="python -m utils.secret_redaction",
+        description="Show what files look like after secret redaction. Makes no AI call.",
+    )
+    parser.add_argument("files", nargs="*", help="files to read (default: stdin)")
+    args = parser.parse_args(argv)
+
+    names = args.files or ["<stdin>"]
+    texts = (
+        [Path(name).read_text(encoding="utf-8", errors="replace") for name in args.files]
+        or [sys.stdin.read()]
+    )
+
+    # One redactor: placeholders stay consistent across the files, as they
+    # would in one request.
+    redactor = SecretRedactor()
+    redactor.scan(*texts)
+
+    for name, text in zip(names, texts):
+        if len(texts) > 1:
+            print(f"===== {name}")
+        print(redactor.redact(text), end="" if text.endswith("\n") else "\n")
+
+    print(redactor.report(), file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

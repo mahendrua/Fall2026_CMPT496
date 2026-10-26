@@ -256,6 +256,54 @@ def test_token_usage_is_still_recorded():
     assert summary["models"] == ["fake-model"]
 
 
+def test_run_log_still_attributes_redacted_calls_to_their_graph_step(tmp_path):
+    from typing import TypedDict
+
+    from langgraph.graph import END, START, StateGraph
+
+    from backend.token_usage import track_command
+
+    model = protected(answers={"Answer": {"summary": "fine"}})
+
+    class State(TypedDict):
+        code: str
+
+    def judgement(state):
+        model.with_structured_output(Answer).invoke([("user", state["code"])])
+        list(model.stream([("user", state["code"])]))
+        return {}
+
+    async def refinement(state):
+        await model.with_structured_output(Answer).ainvoke([("user", state["code"])])
+        return {}
+
+    builder = StateGraph(State)
+    builder.add_node("judgement", judgement)
+    builder.add_node("refinement", refinement)
+    builder.add_edge(START, "judgement")
+    builder.add_edge("judgement", "refinement")
+    builder.add_edge("refinement", END)
+    graph = builder.compile()
+
+    recorder = RecordingCallbacks()
+    with track_command(tmp_path, "Shop", "generate_directory_summaries"):
+        with record_usage("generate_directory_summaries"):
+            asyncio.run(graph.ainvoke(
+                {"code": f'password = "{FAKE}"'},
+                config={"callbacks": [recorder], "metadata": {"caller": "kept"}},
+            ))
+
+    log = json.loads((tmp_path / "last_run_log.json").read_text(encoding="utf-8"))
+    assert log["totals"]["calls_by_step"] == {"judgement": 2, "refinement": 1}
+
+    # The caller's metadata and the step travel alongside the counts.
+    starts = [meta for kind, _, meta in recorder.events if kind == "chat_model_start"]
+    assert [m["langgraph_node"] for m in starts] == ["judgement", "judgement", "refinement"]
+    assert all(m["caller"] == "kept" for m in starts)
+    assert all(m[REDACTION_METADATA_KEY] == {"PASSWORD": 1} for m in starts)
+    assert FAKE not in model.sent_text()
+
+
 @pytest.fixture
 def no_waiting(monkeypatch):
     """Retries without the real back-off."""

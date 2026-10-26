@@ -829,6 +829,47 @@ def test_field_redaction_is_idempotent_and_refuses_non_text():
         redactor.redact_field("password", 12345)
 
 
+def test_a_scanned_text_is_not_searched_again(monkeypatch):
+    import utils.secret_redaction as module
+
+    searches = []
+    real_find = module._find
+    monkeypatch.setattr(module, "_find", lambda text: searches.append(text) or real_find(text))
+
+    redactor = SecretRedactor()
+    text = f'password = "{FAKE}"'
+    redactor.scan(text, "other text")
+    redactor.redact(text)
+    redactor.redact(text)
+
+    assert searches == [text, "other text"]
+
+    # A new request starts with nothing remembered.
+    SecretRedactor().redact(text)
+    assert searches == [text, "other text", text]
+
+
+def test_command_line_shows_redacted_files_without_changing_them(tmp_path, capsys):
+    from utils.secret_redaction import main
+
+    code = tmp_path / "Db.cs"
+    env = tmp_path / ".env"
+    code.write_text(f'string password = "{FAKE}";\n', encoding="utf-8")
+    env.write_text(f"DB_PASSWORD={FAKE}\nAPI_KEY={KEY}\n", encoding="utf-8")
+
+    assert main([str(code), str(env)]) == 0
+
+    out, err = capsys.readouterr()
+    assert out == (
+        f"===== {code}\n"
+        f'string password = "{P1}";\n'
+        f"===== {env}\n"
+        f"DB_PASSWORD={P1}\nAPI_KEY={placeholder(API_KEY)}\n"
+    )
+    assert err.strip() == "3 secret value(s) replaced (API_KEY x1, PASSWORD x2)"
+    assert code.read_text(encoding="utf-8") == f'string password = "{FAKE}";\n'
+
+
 def test_reports_add_up_across_requests():
     _, first = redact_text(f'password = "{FAKE}"\napi_key = "{KEY}"')
     _, second = redact_text(f'password = "{OTHER}"\npassword2 = "{FAKE}"')
