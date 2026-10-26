@@ -12,9 +12,9 @@ import chromadb
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from pathlib import Path
 from collections import deque
-import json
 from backend.progress_logging import progress
 from utils.chroma_utils import collection_name
+from utils.output_redaction import save_json
 
 # A summary the judge rejects is rewritten at most this many times.
 MAX_REFINEMENTS = 2
@@ -996,9 +996,9 @@ Show how the parts connect and the overall shape of the system, not just what ea
             safe_name = rel_name + ".json"
             full_path = os.path.join(codebase_subdir, safe_name)
         
-        # write summary into .JSON file
-        with open(full_path, "w", encoding='utf-8') as f:
-            f.write(directory_summary.model_dump_json(indent=2))
+        # write summary into .JSON file, cleaned of secrets (T-078): the
+        # model's answer, or the error that replaced it, can repeat one
+        save_json(full_path, directory_summary.model_dump(mode="json"), ensure_ascii=False)
         
         # move onto next directory
         if state["directories"]:
@@ -1045,10 +1045,9 @@ Show how the parts connect and the overall shape of the system, not just what ea
 
         output_path = os.path.join(rules_dir, "business_rules.json")
         accumulated = state.get("accumulated_business_rules", {})
-        serialized = {dir_path: rules.model_dump() for dir_path, rules in accumulated.items()}
+        serialized = {dir_path: rules.model_dump(mode="json") for dir_path, rules in accumulated.items()}
 
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(serialized, f, indent=2)
+        save_json(output_path, serialized)
 
         progress(f"Business rules written to {output_path}", 100, True)
         return {}

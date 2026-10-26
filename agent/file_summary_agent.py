@@ -13,12 +13,12 @@ from agent.llm import make_llm
 from langchain_core.messages import AIMessage
 import os
 import sys
-import json
 import asyncio
 from pathlib import Path
 from collections import deque
 from backend.progress_logging import progress
 from agent.crawl_config import ACCEPTABLE_EXTENSIONS, prune
+from utils.output_redaction import save_json
 
 BATCH_SIZE = 10
 MAX_CONCURRENCY = 10
@@ -253,8 +253,9 @@ class FileSummaryAgent:
             safe_name = f"{stem}__{count}.json"
             full_path = os.path.join(codebase_subdir, safe_name)
 
-            with open(full_path, "w", encoding="utf-8") as f:
-                f.write(summary.model_dump_json(indent=2))
+            # The model's answer, or the error that replaced it, can repeat
+            # a secret: only a cleaned copy is saved (T-078).
+            save_json(full_path, summary.model_dump(mode="json"), ensure_ascii=False)
         progress(
             "File summaries written successfully.",
             90
@@ -281,12 +282,11 @@ class FileSummaryAgent:
         output_path = os.path.join(br_dir, "business_rules.json")
 
         serializable = {
-            path: [rule.model_dump() for rule in rules]
+            path: [rule.model_dump(mode="json") for rule in rules]
             for path, rules in state["business_rules_by_file"].items()
         }
 
-        with open(output_path, "w", encoding="utf-8") as f:
-            json.dump(serializable, f, indent=2)
+        save_json(output_path, serializable)
 
         progress(
             "Business rules saved.",

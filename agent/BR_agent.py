@@ -27,6 +27,7 @@ from collections import defaultdict
 
 from backend.progress_logging import progress
 from utils.chroma_utils import collection_name
+from utils.output_redaction import save_json
 
 MAX_CONCURRENCY = 10
 DEFAULT_CODEBASE_K = 15
@@ -596,13 +597,13 @@ class BRAgent:
         validated = state.get("validated_rules", [])
         discarded = state.get("discarded_rules", [])
 
+        # Cleaned of secrets (T-078): the evidence quotes code, and a
+        # discard reason can quote the error that caused it.
         validated_path = os.path.join(codebase_subdir, "validated_rules.json")
-        with open(validated_path, "w", encoding="utf-8") as f:
-            json.dump([r.model_dump() for r in validated], f, indent=2)
+        save_json(validated_path, [r.model_dump(mode="json") for r in validated])
 
         discarded_path = os.path.join(codebase_subdir, "discarded_rules.json")
-        with open(discarded_path, "w", encoding="utf-8") as f:
-            json.dump([r.model_dump() for r in discarded], f, indent=2)
+        save_json(discarded_path, [r.model_dump(mode="json") for r in discarded])
 
         
         progress(f"Wrote {len(validated)} validated rules to {validated_path}\nWrote {len(discarded)} discarded rules to {discarded_path}", 98)
