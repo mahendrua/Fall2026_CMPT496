@@ -8,6 +8,7 @@ This file exposes commands to external callers
 through the CommandDispatcher.
 """
 
+import json
 import sys
 
 sys.stdout.reconfigure(
@@ -15,11 +16,21 @@ sys.stdout.reconfigure(
     line_buffering=True
 )
 
+if __name__ == "__main__":
+    # Before the rest of the backend is imported, so nothing it logs or
+    # prints reaches Electron unchecked for secrets (T-078). Not when
+    # imported, e.g. by tests, which keep their own streams.
+    from backend.log_redaction import guard_streams, install_log_redaction
+
+    install_log_redaction()
+    guard_streams()
+
 
 from backend.dispatcher import CommandDispatcher
 from backend.preview_collections import CollectionPreview
 
-from backend.progress_logging import configure_progress_logging, request_scope
+from backend.progress_logging import configure_progress_logging, request_scope, send_response
+from utils.output_redaction import secret_scope
 
 configure_progress_logging()
 
@@ -120,57 +131,64 @@ def preview_command(action: str, **kwargs):
 
 
 
-if __name__ == "__main__":
-    import json
+# ---------------------------------------------------------
+# Request loop
+# ---------------------------------------------------------
 
-    while True:
-        line = sys.stdin.readline()
-        if not line:
-            break
+def handle_request(line):
+    """Run one request line from the frontend and return its response."""
 
-        request_id = None
-        try:
-            request = json.loads(line)
-            request_id = request.get("request_id") if isinstance(request, dict) else None
+    request_id = None
+    try:
+        request = json.loads(line)
+        request_id = request.get("request_id") if isinstance(request, dict) else None
 
-            if request["type"] == "command":
-                with request_scope(request_id):
-                    result = format_response(
-                        execute_command(
-                            request["command"],
-                            request_id=request_id,
-                            **request.get("args", {})
-                        )
-                    )
-                if request_id is not None:
-                    result["request_id"] = request_id
-            elif request["type"] == "preview":
+        if request["type"] == "command":
+            with request_scope(request_id):
                 result = format_response(
-                    preview_command(
-                        request["action"],
+                    execute_command(
+                        request["command"],
+                        request_id=request_id,
                         **request.get("args", {})
                     )
                 )
-            else:
-                result = {
-                    "success": False,
-                    "error": f"Unknown request type: {request.get('type')}",
-                    **({"request_id": request_id} if request_id is not None else {})
-                }
+            if request_id is not None:
+                result["request_id"] = request_id
+        elif request["type"] == "preview":
+            result = format_response(
+                preview_command(
+                    request["action"],
+                    **request.get("args", {})
+                )
+            )
+        else:
+            result = {
+                "success": False,
+                "error": f"Unknown request type: {request.get('type')}",
+                **({"request_id": request_id} if request_id is not None else {})
+            }
 
-            print(
-                json.dumps(result, default=lambda o: list(o) if hasattr(o, '__iter__') else str(o)),
-                flush=True
-            )
-        except Exception as e:
-            print(
-                json.dumps(
-                    {
-                        "success": False,
-                        "error": str(e),
-                        **({"request_id": request_id} if request_id is not None else {})
-                    },
-                    default=lambda o: list(o) if hasattr(o, '__iter__') else str(o)
-                ),
-                flush=True
-            )
+        return result
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e),
+            **({"request_id": request_id} if request_id is not None else {})
+        }
+
+
+def serve(stdin):
+    """
+    Answer request lines until stdin closes, one JSON response line each.
+
+    Each request is its own secret scope: what it finds is remembered while
+    it runs, so its progress, errors and response are cleaned of it too, and
+    forgotten afterwards.
+    """
+    for line in iter(stdin.readline, ""):
+        with secret_scope():
+            send_response(handle_request(line))
+
+
+if __name__ == "__main__":
+    serve(sys.stdin)

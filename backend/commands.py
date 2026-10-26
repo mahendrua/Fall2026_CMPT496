@@ -60,6 +60,8 @@ from backend import consistency_review
 from src.build_database import build_database
 from src.build_database_JSON import build_database as build_summary_database
 
+from utils.output_redaction import safe_text, secret_scope
+
 from utils.uml_json_to_pdf import (
     build_report as uml_build_report,
     parse_args as uml_parse_args,
@@ -159,8 +161,11 @@ class Commands:
         start = time.perf_counter()
 
         # Times this command into last_run_log.json: the outermost command is
-        # the run, the commands it calls are its stages.
-        with track_command(
+        # the run, the commands it calls are its stages. The secret scope
+        # remembers the secrets the run finds, so its outputs and errors are
+        # cleaned of them even where they appear without context (T-078);
+        # stages share the run's scope.
+        with secret_scope(), track_command(
             self.app_dir,
             self.current_codebase_name,
             command_name,
@@ -206,7 +211,9 @@ class Commands:
                     "command": command_name,
                     "elapsed": round(elapsed, 2),
                     "individualStep": individualStep,
-                    "error": str(exc),
+                    # Cleaned here, inside the run's scope: the pipeline
+                    # passes it on as a step failure and a warning.
+                    "error": safe_text(str(exc)),
                     "error_code": status_code(exc),
                 }
         

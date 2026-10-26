@@ -46,6 +46,7 @@ PLANTED = (FAKE, OTHER, THIRD, GITHUB)
 
 def absent(text, *secrets):
     """Fail, without quoting them, if any planted secret is in text."""
+    __tracebackhide__ = True  # pytest would print text with the frame's arguments
     leaked = sum(secret in text for secret in secrets or PLANTED)
     if leaked:
         raise AssertionError(f"{leaked} planted secret(s) found in the output")
@@ -53,6 +54,7 @@ def absent(text, *secrets):
 
 def kept(text, secret):
     """Fail, without quoting it, unless secret is still in text (a documented limitation)."""
+    __tracebackhide__ = True  # pytest would print text with the frame's arguments
     if secret not in text:
         raise AssertionError("the value was expected to be left in place")
 
