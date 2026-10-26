@@ -5778,3 +5778,63 @@ body[data-theme="light"] .cr-tab.active { background: var(--bg-panel); color: va
   #codebasePipelinePage > h1 { font-size: 2rem; }
   #codebasePipelinePage > #pathInputContainer { gap: .5rem; padding: .55rem; }
 }
+
+/* Full-window FAQ workspace with scroll-safe centering for expanded answers. */
+#faqAndSupportPage {
+  box-sizing: border-box;
+  align-items: stretch;
+  justify-content: safe center;
+  width: 100%;
+  max-width: none;
+  min-height: 100vh;
+  min-height: 100dvh;
+  margin: 0;
+  padding: clamp(1.25rem, 5vh, 3.5rem) clamp(1rem, 5vw, 2rem);
+  overflow-y: auto;
+  background: var(--bg-app);
+  color: var(--text-primary);
+}
+
+#faqAndSupportPage > * {
+  width: min(100%, 44rem);
+  margin-inline: auto;
+}
+
+#faqAndSupportPage > h1 { text-align: center; }
+
+#faqAndSupportBtnContainer button {
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  background: var(--bg-panel);
+  box-shadow: none;
+  color: var(--text-secondary);
+}
+
+#faqAndSupportBtnContainer button:hover {
+  border-color: var(--border-active);
+  background: var(--accent-crimson-subtle);
+  color: var(--text-primary);
+}
+
+#faqAndSupportBtnContainer button.btn-inverted {
+  border-color: var(--border-active);
+  border-left: 3px solid var(--accent-crimson);
+  background: var(--accent-crimson-subtle);
+  color: var(--accent-crimson);
+  box-shadow: inset 0 0 0 1px rgba(229, 43, 56, .08);
+}
+
+body[data-theme="dark"] #faqAndSupportBtnContainer button.btn-inverted {
+  color: var(--accent-crimson-hover);
+}
+
+#faqAndSupportBtnContainer button:focus-visible {
+  outline: 2px solid var(--accent-crimson);
+  outline-offset: 3px;
+}
+
+@media (max-width: 480px) {
+  #faqAndSupportPage { gap: .8rem; padding: 1rem; }
+  #faqAndSupportBtnContainer { gap: .65rem; }
+  #faqAndSupportBtnContainer button { min-width: 0; flex: 1; }
+}
