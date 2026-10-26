@@ -10,7 +10,12 @@ import time
 import pytest
 
 from utils.secret_redaction import (
+    API_KEY,
+    AUTHORIZATION,
+    PASSWORD,
     PLACEHOLDER_RE,
+    PRIVATE_KEY,
+    TOKEN,
     RedactionReport,
     SecretRedactionError,
     SecretRedactor,
@@ -284,9 +289,12 @@ def test_redactors_do_not_share_secrets():
     "PasswordMinLength = 12;",
     'password_hint = "first pet"',
     'passwordHash = "not-checked-here"',
-    # Words that end in "pass"
+    # Words that end in "pass", and PASS as a test status
     'bypass = "Fake-Pass-111!"',
     'compass = "north-north-west"',
+    'console.log(ok ? "PASS" : "FAIL");',
+    'var colour = status switch { "PASS" => "green", _ => "red" };',
+    'label = (isAdmin ? "password" : "username")',
     # Code, not values
     "password: str",
     "password: SecretStr",
@@ -385,3 +393,321 @@ def test_long_input_finishes_quickly(text):
     started = time.perf_counter()
     redact_text(text)
     assert time.perf_counter() - started < 10
+
+
+# ---------------------------------------------------------------------------
+# API keys, tokens, authorization, connection strings, private keys
+# ---------------------------------------------------------------------------
+
+KEY = "Fake-Key-123456789"
+TOKEN_VALUE = "Fake-Token-123456789"
+BASIC = "ZmFrZXVzZXI6ZmFrZXBhc3M="  # base64 of fakeuser:fakepass
+
+# Vendor-format fakes are pieced together at run time so this file never
+# contains a string in a real token format: GitHub push protection would
+# refuse the commit, and scanners would report the repository.
+GITHUB = "gh" + "p_" + "Fa1ke" * 8
+GITHUB_PAT = "github" + "_pat_" + "Fa1ke" * 5
+GITLAB = "gl" + "pat-" + "Fa1ke" * 4
+SLACK = "xo" + "xb-" + "1234-5678-Fa1ke"
+NPM = "np" + "m_" + "Fa1ke" * 7 + "x"
+HUGGING_FACE = "h" + "f_" + "Fa1ke" * 7
+JWT = "ey" + "JhbGciOiJIUzI1NiJ9." + "ey" + "JzdWIiOiJmYWtlIn0." + "Fa1keSignature1"
+AWS = "AK" + "IA" + "FAKEFAKEFAKE1234"
+GOOGLE = "AI" + "za" + "Fa1ke" * 7
+STRIPE = "sk" + "_live_" + "Fa1ke" * 4
+STRIPE_PUBLISHABLE = "pk" + "_live_" + "Fa1ke" * 4
+OPENAI = "sk" + "-proj-" + "Fa1ke" * 4
+ANTHROPIC = "sk" + "-ant-api03-" + "Fa1ke" * 4
+SENDGRID = "S" + "G." + "Fa1ke" * 4 + "." + "Fa1ke" * 8
+
+
+def placeholder(category, number=1):
+    return f"[REDACTED_{category}_{number}]"
+
+
+@pytest.mark.parametrize("snippet, secret, category", [
+    # C#
+    (f'public const string ApiKey = "{KEY}";', KEY, API_KEY),
+    (f'private static readonly string ClientSecret = @"{KEY}";', KEY, API_KEY),
+    (f'options.SigningKey = "{KEY}";', KEY, API_KEY),
+    (f'var accessToken = "{TOKEN_VALUE}";', TOKEN_VALUE, TOKEN),
+    # Python
+    (f'API_KEY = "{KEY}"', KEY, API_KEY),
+    (f'SECRET_KEY = "{KEY}"', KEY, API_KEY),
+    (f"client = Client(api_key='{KEY}')", KEY, API_KEY),
+    (f'refresh_token: str = "{TOKEN_VALUE}"', TOKEN_VALUE, TOKEN),
+    (f'api_key = os.getenv("API_KEY", "{KEY}")', KEY, API_KEY),
+    # JavaScript / TypeScript
+    (f"const stripeSecretKey = '{KEY}';", KEY, API_KEY),
+    (f'const config = {{ authToken: "{TOKEN_VALUE}" }};', TOKEN_VALUE, TOKEN),
+    (f'const key = process.env.API_KEY || "{KEY}";', KEY, API_KEY),
+    # JSON
+    (f'{{"Stripe": {{"SecretKey": "{KEY}"}}}}', KEY, API_KEY),
+    (f'{{"access_token": "{TOKEN_VALUE}", "token_type": "bearer"}}', TOKEN_VALUE, TOKEN),
+    # YAML
+    (f"api_key: {KEY}", KEY, API_KEY),
+    (f"  client_secret: '{KEY}'", KEY, API_KEY),
+    (f"token: {TOKEN_VALUE}", TOKEN_VALUE, TOKEN),
+    # .env
+    (f"OPENAI_API_KEY={KEY}", KEY, API_KEY),
+    (f"AWS_SECRET_ACCESS_KEY={KEY}", KEY, API_KEY),
+    (f"export GITHUB_TOKEN={TOKEN_VALUE}", TOKEN_VALUE, TOKEN),
+    # Bare "token" and "secret" count when the value looks generated.
+    (f'token = "{TOKEN_VALUE}"', TOKEN_VALUE, TOKEN),
+    (f'secret = "{KEY}"', KEY, API_KEY),
+])
+def test_api_key_and_token_assignments(snippet, secret, category):
+    out, report = redact_text(snippet)
+
+    assert out == snippet.replace(secret, placeholder(category))
+    assert report.replaced == {category: 1}
+
+
+@pytest.mark.parametrize("secret, category", [
+    (GITHUB, TOKEN),
+    (GITHUB_PAT, TOKEN),
+    (GITLAB, TOKEN),
+    (SLACK, TOKEN),
+    (NPM, TOKEN),
+    (HUGGING_FACE, TOKEN),
+    (JWT, TOKEN),
+    (AWS, API_KEY),
+    (GOOGLE, API_KEY),
+    (STRIPE, API_KEY),
+    (OPENAI, API_KEY),
+    (ANTHROPIC, API_KEY),
+    (SENDGRID, API_KEY),
+], ids=[
+    "github", "github-pat", "gitlab", "slack", "npm", "hugging-face", "jwt",
+    "aws", "google", "stripe", "openai", "anthropic", "sendgrid",
+])
+def test_vendor_formats_are_found_without_a_telling_name(secret, category):
+    # In a comment, a list and a URL: nothing nearby says "key" or "token".
+    snippet = (
+        f"// left over from debugging: {secret}\n"
+        f'var values = new[] {{ "{secret}" }};\n'
+        f"https://example.com/hook/{secret}\n"
+    )
+
+    out, report = redact_text(snippet)
+
+    assert out == snippet.replace(secret, placeholder(category))
+    assert report.replaced == {category: 3}
+    assert report.distinct == {category: 1}
+
+
+@pytest.mark.parametrize("snippet, secret, category", [
+    (f"Authorization: Bearer {TOKEN_VALUE}", TOKEN_VALUE, AUTHORIZATION),
+    (f"Proxy-Authorization: Basic {BASIC}", BASIC, AUTHORIZATION),
+    (f'curl -H "Authorization: Token {TOKEN_VALUE}" https://api.example.com', TOKEN_VALUE, AUTHORIZATION),
+    (f'client.DefaultRequestHeaders.Add("Authorization", "Bearer {TOKEN_VALUE}");', TOKEN_VALUE, AUTHORIZATION),
+    (f'headers = {{"Authorization": "Basic {BASIC}"}}', BASIC, AUTHORIZATION),
+    (f"headers['Authorization'] = 'Bearer {TOKEN_VALUE}'", TOKEN_VALUE, AUTHORIZATION),
+    (f'new AuthenticationHeaderValue("Bearer", "{TOKEN_VALUE}")', TOKEN_VALUE, AUTHORIZATION),
+    (f'curl -H "X-Api-Key: {KEY}" https://api.example.com', KEY, API_KEY),
+    (f'request.Headers.Add("Ocp-Apim-Subscription-Key", "{KEY}");', KEY, API_KEY),
+    (f"X-Auth-Token: {TOKEN_VALUE}", TOKEN_VALUE, TOKEN),
+    (f'var credential = new NetworkCredential("ann", "{FAKE}");', FAKE, PASSWORD),
+    (f'requests.get(url, auth=("ann", "{FAKE}"))', FAKE, PASSWORD),
+    (f"session.auth = HTTPBasicAuth('ann', '{FAKE}')", FAKE, PASSWORD),
+    (f"curl -u ann:{FAKE} https://api.example.com", FAKE, PASSWORD),
+])
+def test_authorization_credentials(snippet, secret, category):
+    out, report = redact_text(snippet)
+
+    assert out == snippet.replace(secret, placeholder(category))
+    assert report.replaced == {category: 1}
+
+
+def test_aws_credential_pair_redacts_both_parts():
+    snippet = f'new BasicAWSCredentials("{AWS}", "{KEY}")'
+
+    out, report = redact_text(snippet)
+
+    assert out == (
+        f'new BasicAWSCredentials("{placeholder(API_KEY, 1)}", "{placeholder(API_KEY, 2)}")'
+    )
+    assert report.distinct == {API_KEY: 2}
+
+
+@pytest.mark.parametrize("snippet, secret, category", [
+    # SQL Server
+    (f'"Server=db;Database=Shop;User Id=sa;Password={FAKE};"', FAKE, PASSWORD),
+    (f'"Data Source=db;Initial Catalog=Shop;User ID=sa;Password={FAKE}"', FAKE, PASSWORD),
+    # ODBC with a braced value that contains ';'
+    ('"Driver={SQL Server};Server=db;Uid=sa;Pwd={Fake;Pass111};"', "Fake;Pass111", PASSWORD),
+    # Npgsql with a quoted value
+    ("\"Host=db;Port=5432;Username=app;Password='Fake;Pass111'\"", "Fake;Pass111", PASSWORD),
+    # MySQL, in appsettings.json
+    (f'{{"ConnectionStrings": {{"Default": "server=db;uid=app;pwd={FAKE};database=shop"}}}}', FAKE, PASSWORD),
+    # Azure Storage and Service Bus
+    (f'"DefaultEndpointsProtocol=https;AccountName=fakeacct;AccountKey={BASIC};EndpointSuffix=core.windows.net"', BASIC, API_KEY),
+    (f'"Endpoint=sb://fake.servicebus.windows.net/;SharedAccessKeyName=Root;SharedAccessKey={BASIC}"', BASIC, API_KEY),
+    # Passwords in URLs
+    (f"DATABASE_URL=postgres://app:{FAKE}@db:5432/shop", FAKE, PASSWORD),
+    (f'client = MongoClient("mongodb+srv://app:{FAKE}@cluster0.example.net/shop")', FAKE, PASSWORD),
+    (f"redis://:{FAKE}@cache:6379/0", FAKE, PASSWORD),
+    # Secrets in query strings
+    (f"https://api.example.com/v1/orders?user=ann&api_key={KEY}&page=2", KEY, API_KEY),
+    (f"https://example.com/callback?access_token={TOKEN_VALUE}", TOKEN_VALUE, TOKEN),
+    (f"https://acct.blob.core.windows.net/c/f.txt?sv=2022-11-02&sig={BASIC}", BASIC, TOKEN),
+])
+def test_connection_string_credentials(snippet, secret, category):
+    out, report = redact_text(snippet)
+
+    assert out == snippet.replace(secret, placeholder(category), 1)
+    assert report.replaced == {category: 1}
+
+
+def test_private_key_body_is_replaced_and_markers_kept():
+    body = "MIIEFAKEFAKEFAKEFAKE\nFAKEFAKEFAKEFAKE==\n"
+    pem = f"-----BEGIN RSA PRIVATE KEY-----\n{body}-----END RSA PRIVATE KEY-----\n"
+
+    out, report = redact_text(pem)
+
+    assert out == (
+        "-----BEGIN RSA PRIVATE KEY-----\n"
+        f"{placeholder(PRIVATE_KEY)}\n"
+        "-----END RSA PRIVATE KEY-----\n"
+    )
+    assert report.replaced == {PRIVATE_KEY: 1}
+
+
+def test_private_key_in_a_json_string_with_escaped_newlines():
+    # A cloud service-account file: the key is one JSON string with \n escapes.
+    snippet = (
+        r'{"type": "service_account", "private_key": "-----BEGIN PRIVATE KEY-----'
+        r'\nMIIEFAKEFAKEFAKEFAKE\nFAKEFAKE==\n-----END PRIVATE KEY-----\n"}'
+    )
+
+    out, _ = redact_text(snippet)
+
+    assert out == (
+        r'{"type": "service_account", "private_key": "-----BEGIN PRIVATE KEY-----'
+        + r"\n" + placeholder(PRIVATE_KEY) + r'\n-----END PRIVATE KEY-----\n"}'
+    )
+
+
+def test_same_secret_keeps_one_placeholder_across_kinds_of_context():
+    snippet = (
+        f"DB_PASSWORD={FAKE}\n"
+        f'"Server=db;User Id=sa;Password={FAKE};"\n'
+        f"postgres://app:{FAKE}@db/shop\n"
+    )
+
+    out, report = redact_text(snippet)
+
+    assert out == snippet.replace(FAKE, P1)
+    assert report.replaced == {PASSWORD: 3}
+    assert report.distinct == {PASSWORD: 1}
+
+
+def test_report_counts_every_category_without_values():
+    snippet = (
+        f'string password = "{FAKE}";\n'
+        f'string apiKey = "{KEY}";\n'
+        f"// {GITHUB}\n"
+        f"Authorization: Bearer {TOKEN_VALUE}\n"
+        "-----BEGIN PRIVATE KEY-----\nMIIEFAKEFAKEFAKEFAKE\n-----END PRIVATE KEY-----\n"
+        f'"Server=db;Uid=sa;Pwd={OTHER};"\n'
+        f'string sameKeyAgain = "{KEY}";\n'
+    )
+
+    redactor = SecretRedactor()
+    out = redactor.redact(snippet)
+    report = redactor.report()
+
+    assert report.replaced == {
+        API_KEY: 2, AUTHORIZATION: 1, PASSWORD: 2, PRIVATE_KEY: 1, TOKEN: 1,
+    }
+    assert report.distinct == {
+        API_KEY: 1, AUTHORIZATION: 1, PASSWORD: 2, PRIVATE_KEY: 1, TOKEN: 1,
+    }
+    assert report.total == 7
+    assert str(report) == (
+        "7 secret value(s) replaced "
+        "(API_KEY x2, AUTHORIZATION x1, PASSWORD x2, PRIVATE_KEY x1, TOKEN x1)"
+    )
+
+    for secret in (FAKE, OTHER, KEY, GITHUB, TOKEN_VALUE, "MIIEFAKE"):
+        assert secret not in out
+        assert secret not in str(report)
+        assert secret not in repr(report)
+        assert secret not in repr(redactor)
+
+
+@pytest.mark.parametrize("snippet", [
+    # "key" alone is not a secret
+    'string cacheKey = "user:42:profile";',
+    'var primaryKey = "OrderId";',
+    'sortKey = "createdAt123"',
+    'var key = "orders:2024:summary";',
+    'Configuration["Jwt:Key"]',
+    # Labels and header names
+    'const apiKeyHeader = "X-Api-Key";',
+    'ApiKey = "X-Api-Key"',
+    'tokenType = "Bearer"',
+    # Parser and framework tokens
+    "CancellationToken token = default;",
+    'token = "IDENTIFIER"',
+    'nextToken = "END_OF_FILE"',
+    'currentToken = "("',
+    "token: string;",
+    "accessToken: AccessToken",
+    # Secret names and flags that are not secrets
+    'secretName = "db-creds"',
+    "secret: my-db-secret",
+    'isSecret = "false"',
+    # File paths under key names
+    'privateKey = "keys/app.pem"',
+    'var signingKey = File.ReadAllText(@"C:\\keys\\signing.key");',
+    # Lookups, templates and stand-ins
+    'api_key = os.environ["API_KEY"]',
+    "const apiKey = process.env.API_KEY;",
+    'api_key = "${API_KEY}"',
+    "API_KEY=$API_KEY",
+    'apiKey: "<your-api-key>"',
+    "API_KEY=YOUR_API_KEY",
+    'token: "{{ github_token }}"',
+    "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}",
+    "api_key=api_key,",
+    # Connection strings without a credential, or with one built in code
+    '"Server=db;Database=Shop;Integrated Security=true;"',
+    '"Server=db;Password=" + pwd + ";"',
+    "conn = 'Server=db;Uid=sa;Pwd=' + pw + ';'",
+    '$"Server={host};Database=Shop;Password={pwd};"',
+    'f"Host={host};Password={settings.password};"',
+    'string.Format("Server={0};Password={1};", host, pwd)',
+    "password=pw;",
+    # URLs without credentials, or with a documentation stand-in
+    "https://example.com:8080/path?page=2&sort=name",
+    "postgres://user:password@localhost/db",
+    "git@github.com:org/repo.git",
+    "https://example.com/search?token=abc",
+    # Authorization with no literal credential
+    "Authorization: Bearer ${TOKEN}",
+    "Authorization: Bearer <token>",
+    'Authorization = "Bearer " + token;',
+    'headers["Authorization"] = $"Bearer {token}";',
+    "The Authorization header is required.",
+    "Authorization: required",
+    '[Authorize(Roles = "Admin")]',
+    # Header names in code: annotations, variables, lists of names
+    "authorization: Optional[str] = None",
+    'auth_headers = {"api-key": self.api_key}',
+    'SENSITIVE_HEADERS = {"api-key", "authorization"}',
+    'client = OpenAI(base_url=url, api_key="lm-studio")',
+    'client_args={"proxy": "socks5://user:pass@host:port"}',
+    # Look a little like keys, but are not secrets
+    'class="sk-fading-circle-spinner-small"',
+    f'stripe.publishableKey = "{STRIPE_PUBLISHABLE}"',
+    'var id = Guid.Parse("3f2504e0-4f89-11d3-9a0c-0305e82c3301");',
+    'digest = "sha256:3f2504e04f8911d39a0c0305e82c3301"',
+    'src = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="',
+])
+def test_non_secret_near_secret_words_is_left_alone(snippet):
+    out, report = redact_text(snippet)
+
+    assert out == snippet
+    assert report.total == 0
