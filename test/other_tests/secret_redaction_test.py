@@ -711,3 +711,62 @@ def test_non_secret_near_secret_words_is_left_alone(snippet):
 
     assert out == snippet
     assert report.total == 0
+
+
+# ---------------------------------------------------------------------------
+# Named fields (structured data such as tool-call arguments)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("name, value, expected", [
+    ("db_password", FAKE, P1),
+    ("apiKey", KEY, placeholder(API_KEY)),
+    ("access_token", TOKEN_VALUE, placeholder(TOKEN)),
+    ("Authorization", f"Bearer {TOKEN_VALUE}", f"Bearer {placeholder(AUTHORIZATION)}"),
+    ("authorization", BASIC, placeholder(AUTHORIZATION)),
+    ("password", f"  {FAKE}\n", f"  {P1}\n"),
+    # The field says nothing, so the value is read as ordinary text.
+    ("note", FAKE, FAKE),
+    ("query", f'password = "{FAKE}"', f'password = "{P1}"'),
+    ("name", "ann", "ann"),
+    # The field says secret, but the value does not look like one.
+    ("password", "${DB_PASSWORD}", "${DB_PASSWORD}"),
+    ("password", "", ""),
+    ("token", "IDENTIFIER", "IDENTIFIER"),
+    ("Authorization", "Bearer", "Bearer"),
+    ("api_key", "lm-studio", "lm-studio"),
+])
+def test_field_name_decides_whether_its_value_is_secret(name, value, expected):
+    redactor = SecretRedactor()
+
+    assert redactor.redact_field(name, value) == expected
+
+
+def test_secret_learned_from_a_field_is_replaced_in_free_text():
+    redactor = SecretRedactor()
+    redactor.scan_field("db_password", FAKE)
+    redactor.scan_field("note", f"Login fails with {FAKE}")
+
+    assert redactor.redact_field("note", f"Login fails with {FAKE}") == f"Login fails with {P1}"
+    assert redactor.redact_field("db_password", FAKE) == P1
+    assert redactor.report().replaced == {PASSWORD: 2}
+
+
+def test_field_redaction_is_idempotent_and_refuses_non_text():
+    redactor = SecretRedactor()
+
+    assert redactor.redact_field("password", P1) == P1
+    assert redactor.report().total == 0
+
+    with pytest.raises(SecretRedactionError):
+        redactor.redact_field("password", 12345)
+
+
+def test_reports_add_up_across_requests():
+    _, first = redact_text(f'password = "{FAKE}"\napi_key = "{KEY}"')
+    _, second = redact_text(f'password = "{OTHER}"\npassword2 = "{FAKE}"')
+
+    total = first + second
+
+    assert total.replaced == {API_KEY: 1, PASSWORD: 3}
+    assert total.distinct == {API_KEY: 1, PASSWORD: 3}
+    assert RedactionReport({}, {}) + first == first

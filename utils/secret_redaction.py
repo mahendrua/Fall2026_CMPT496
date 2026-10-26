@@ -23,6 +23,10 @@ One SecretRedactor serves one outgoing request:
     safe = [redactor.redact(system_prompt), redactor.redact(user_prompt)]
     redactor.report()                             # counts per category only
 
+Structured data uses scan_field()/redact_field() instead, so the name of the
+field holding a value can mark it a secret: {"db_password": "..."} in tool
+arguments. agent/request_redaction.py walks chat messages this way.
+
 The same secret gets the same placeholder everywhere in that request. The
 secret-to-placeholder mapping lives only on that object. It is never saved,
 logged or shared, so two requests running at once cannot see each other's
@@ -1008,6 +1012,45 @@ def _require_text(text):
     return text
 
 
+_SCHEME_PREFIX = re.compile(rf"(?:{_alternation(_AUTH_SCHEMES)})[ \t]+", re.IGNORECASE)
+
+
+def _field_secret(name, value):
+    """
+    (start, end, category) of the secret in value when the field holding it
+    names it one, else None.
+
+    For structured data such as tool-call arguments, {"password": "..."},
+    where the text rules would only see the bare value. Surrounding
+    whitespace and an Authorization scheme ("Bearer ") stay outside the span.
+    """
+    if not isinstance(name, str) or not name:
+        return None
+
+    start, end = len(value) - len(value.lstrip()), len(value.rstrip())
+
+    if name.lower() in ("authorization", "proxy-authorization"):
+        scheme = _SCHEME_PREFIX.match(value, start, end)
+        if scheme:
+            start = scheme.end()
+
+        core = value[start:end]
+        if core.lower() in _AUTH_SCHEMES or not _key_value_ok(core, AUTHORIZATION, bool(scheme)):
+            return None
+
+        return start, end, AUTHORIZATION
+
+    found = _classify(name)
+    if found is None:
+        return None
+
+    category, word, strong = found
+    if not _value_ok(category, word, strong, value[start:end]):
+        return None
+
+    return start, end, category
+
+
 # ---------------------------------------------------------
 # Public API
 # ---------------------------------------------------------
@@ -1025,6 +1068,12 @@ class RedactionReport:
     @property
     def total(self):
         return sum(self.replaced.values())
+
+    def __add__(self, other):
+        """Both reports' counts together, e.g. for the prompts of one batch."""
+        replaced = Counter(self.replaced) + Counter(other.replaced)
+        distinct = Counter(self.distinct) + Counter(other.distinct)
+        return RedactionReport(dict(sorted(replaced.items())), dict(sorted(distinct.items())))
 
     def __str__(self):
         if not self.total:
@@ -1093,6 +1142,40 @@ class SecretRedactor:
 
         out.append(self._propagate(text[pos:]))
         return "".join(out)
+
+    def scan_field(self, name, value):
+        """scan() for a value held in a named field, e.g. a tool-call argument."""
+        value = _require_text(value)
+        self._reserve_numbers(value)
+
+        span = _field_secret(name, value)
+
+        if span is None:
+            self.scan(value)
+        else:
+            start, end, category = span
+            self._placeholder_for(value[start:end], category)
+
+    def redact_field(self, name, value):
+        """
+        redact() for a value held in a named field.
+
+        {"db_password": "..."} has no telling name inside the value itself,
+        so the field name decides. Values whose field says nothing are
+        redacted as ordinary text.
+        """
+        value = _require_text(value)
+        self._reserve_numbers(value)
+
+        span = _field_secret(name, value)
+
+        if span is None:
+            return self.redact(value)
+
+        start, end, category = span
+        secret = value[start:end]
+        self._placeholder_for(secret, category)
+        return value[:start] + self._swap(secret) + value[end:]
 
     def report(self):
         """Counts by category of what this redactor replaced so far."""
