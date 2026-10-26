@@ -31,6 +31,10 @@ The input is never changed; a redacted copy is returned. Anything this
 module does not know how to inspect (an unknown message class, bytes, a
 custom object inside a content block) raises SecretRedactionError instead
 of being passed through unchecked.
+
+Inside utils.output_redaction.secret_scope(), what each request's redactor
+found is also kept for the rest of the run, in memory, so the answers and
+errors that come back can be cleaned of it too (T-078).
 """
 
 import re
@@ -53,6 +57,7 @@ from langchain_core.messages import (
 )
 from langchain_core.prompt_values import ChatPromptValue, StringPromptValue
 
+from utils.output_redaction import remember
 from utils.secret_redaction import RedactionReport, SecretRedactionError, SecretRedactor
 
 
@@ -219,6 +224,7 @@ def _redact_request(walk):
 
     walk(learn)
     redacted = walk(redactor.redact_field)
+    remember(redactor)
     return redacted, redactor.report()
 
 

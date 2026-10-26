@@ -32,6 +32,10 @@ secret-to-placeholder mapping lives only on that object. It is never saved,
 logged or shared, so two requests running at once cannot see each other's
 values. Text that has already been redacted comes back unchanged.
 
+KnownSecrets carries what one run has found from redactor to redactor, so a
+secret found with its context can also be replaced where an answer or an
+error repeats it without one (T-078; utils/output_redaction.py scopes it).
+
 Categories say what the secret is, not where it was found: a password in a
 connection string is a PASSWORD.
 
@@ -143,6 +147,7 @@ vendor format.
 """
 
 import re
+import threading
 from collections import Counter
 from dataclasses import dataclass
 
@@ -1167,11 +1172,17 @@ class SecretRedactor:
     the request.
     """
 
-    __slots__ = ("_placeholders", "_numbers", "_replaced", "_distinct", "_known", "_known_count", "_found")
+    __slots__ = (
+        "_placeholders", "_known_only", "_numbers", "_replaced", "_distinct",
+        "_known", "_known_count", "_found",
+    )
 
     def __init__(self):
         # secret -> (category, placeholder). Never leaves this object.
         self._placeholders = {}
+        # secret -> category, taught by KnownSecrets: replaced like a learned
+        # secret, but numbered only once it is, so unused ones leave no gaps.
+        self._known_only = {}
         # Highest placeholder number used so far, per category.
         self._numbers = Counter()
         self._replaced = Counter()
@@ -1285,10 +1296,14 @@ class SecretRedactor:
             self._numbers[category] += 1
             placeholder = f"[REDACTED_{category}_{self._numbers[category]}]"
             self._placeholders[value] = (category, placeholder)
+            self._known_only.pop(value, None)
 
         return self._placeholders[value][1]
 
     def _swap(self, value):
+        if value not in self._placeholders:
+            self._placeholder_for(value, self._known_only[value])
+
         category, placeholder = self._placeholders[value]
         self._replaced[category] += 1
         self._distinct.setdefault(category, set()).add(placeholder)
@@ -1296,9 +1311,16 @@ class SecretRedactor:
 
     def _known_pattern(self):
         """Every learned secret that may be replaced without context, longest first."""
-        if self._known_count != len(self._placeholders):
+        # The two dicts never share a value, and a value only ever moves from
+        # _known_only to _placeholders, so their combined size changes
+        # exactly when the set of values does.
+        size = len(self._placeholders) + len(self._known_only)
+
+        if self._known_count != size:
             values = sorted(
-                (v for v in self._placeholders if _propagates(v)), key=len, reverse=True
+                (v for v in (*self._placeholders, *self._known_only) if _propagates(v)),
+                key=len,
+                reverse=True,
             )
             self._known = (
                 re.compile(
@@ -1306,7 +1328,7 @@ class SecretRedactor:
                 )
                 if values else None
             )
-            self._known_count = len(self._placeholders)
+            self._known_count = size
 
         return self._known
 
@@ -1326,6 +1348,64 @@ class SecretRedactor:
 
         out.append(pattern.sub(lambda m: self._swap(m.group(0)), piece[pos:]))
         return "".join(out)
+
+
+class KnownSecrets:
+    """
+    The secrets one run has found so far, for cleaning what the run outputs
+    (T-078): a model answer, an error message or a copied excerpt can repeat
+    a secret without the "password =" that identified it.
+
+    Only values long and mixed enough to be replaced on their own are kept,
+    the same rule a SecretRedactor applies within one request, so an ordinary
+    word is never blanked out. They stay in memory on this object and pass
+    only into other SecretRedactors; nothing here saves, logs or returns
+    them. One object serves one run (utils/output_redaction.py scopes it),
+    so concurrent runs never share one. Thread-safe: a run's model calls
+    finish on several threads.
+    """
+
+    __slots__ = ("_values", "_lock")
+
+    def __init__(self):
+        # secret -> category. Never leaves this object except into a redactor.
+        self._values = {}
+        self._lock = threading.Lock()
+
+    def __len__(self):
+        with self._lock:
+            return len(self._values)
+
+    def __repr__(self):
+        return f"<KnownSecrets: {len(self)} value(s)>"
+
+    def learn(self, redactor):
+        """Keep each secret redactor has found that may be replaced without context."""
+        found = [
+            (value, category)
+            for value, (category, _) in list(redactor._placeholders.items())
+            if _propagates(value)
+        ]
+
+        with self._lock:
+            for value, category in found:
+                self._values.setdefault(value, category)
+
+    def teach(self, redactor):
+        """
+        Let redactor replace these secrets wherever they appear. Each gets a
+        placeholder only when it is actually replaced, numbered after the
+        placeholders redactor has already seen or given out, so scan the
+        text first.
+        """
+        with self._lock:
+            values = dict(self._values)
+
+        redactor._known_only.update(
+            (value, category)
+            for value, category in values.items()
+            if value not in redactor._placeholders
+        )
 
 
 def redact_text(text):
