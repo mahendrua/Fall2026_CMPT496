@@ -3559,16 +3559,83 @@ function renderCollectionPreview(
 // ==========================================
 
 
-function toggleTheme() {
-  const newTheme =
-    document.body.dataset.theme === "dark"
-      ? "light"
-      : "dark";
+function setTheme(theme, persist = true) {
+    if (theme !== "light" && theme !== "dark") return;
 
-  document.body.dataset.theme = newTheme;
+    document.body.dataset.theme = theme;
+    document.querySelectorAll("[data-theme-choice]").forEach(option => {
+        option.setAttribute("aria-checked", String(option.dataset.themeChoice === theme));
+    });
 
-  localStorage.setItem("theme", newTheme);
+    if (persist) {
+        try {
+            localStorage.setItem("theme", theme);
+        } catch (error) {
+            console.warn("Could not save the selected theme locally:", error);
+        }
+    }
 }
+
+function initializeThemeMenu() {
+    const button = document.getElementById("themeMenuButton");
+    const menu = document.getElementById("themeMenu");
+    const options = [...menu.querySelectorAll("[data-theme-choice]")];
+
+    const closeMenu = (returnFocus = false) => {
+        menu.classList.add("hidden");
+        button.setAttribute("aria-expanded", "false");
+        if (returnFocus) button.focus();
+    };
+
+    let savedTheme = "dark";
+    try {
+        const stored = localStorage.getItem("theme");
+        if (stored === "light" || stored === "dark") savedTheme = stored;
+    } catch (error) {
+        console.warn("Could not read the saved theme:", error);
+    }
+    setTheme(savedTheme, false);
+
+    button.addEventListener("click", () => {
+        const opening = menu.classList.contains("hidden");
+        menu.classList.toggle("hidden", !opening);
+        button.setAttribute("aria-expanded", String(opening));
+        if (opening) options.find(option => option.getAttribute("aria-checked") === "true")?.focus();
+    });
+
+    options.forEach(option => option.addEventListener("click", () => {
+        setTheme(option.dataset.themeChoice);
+        closeMenu(true);
+    }));
+
+    document.addEventListener("pointerdown", event => {
+        if (!menu.contains(event.target) && !button.contains(event.target) && !menu.classList.contains("hidden")) {
+            closeMenu();
+        }
+    });
+
+    document.addEventListener("keydown", event => {
+        if (menu.classList.contains("hidden")) return;
+        if (event.key === "Escape") {
+            event.preventDefault();
+            closeMenu(true);
+            return;
+        }
+
+        const activeIndex = options.indexOf(document.activeElement);
+        let nextIndex = activeIndex;
+        if (event.key === "ArrowDown") nextIndex = (activeIndex + 1 + options.length) % options.length;
+        else if (event.key === "ArrowUp") nextIndex = (activeIndex - 1 + options.length) % options.length;
+        else if (event.key === "Home") nextIndex = 0;
+        else if (event.key === "End") nextIndex = options.length - 1;
+        else return;
+
+        event.preventDefault();
+        options[nextIndex].focus();
+    });
+}
+
+initializeThemeMenu();
 
 function setApiKeyPending(pending) {
 

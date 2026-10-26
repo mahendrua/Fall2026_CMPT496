@@ -11,7 +11,14 @@
     <!-- HOME PAGE -->
     <div id="homePage" class="page active">
         <header class="home-header">
-            <div class="home-brand-mark" aria-hidden="true">C</div>
+            <div class="home-theme-control">
+                <button class="home-brand-mark" id="themeMenuButton" type="button"
+                    aria-label="Choose color theme" aria-haspopup="menu" aria-expanded="false">C</button>
+                <div class="theme-menu hidden" id="themeMenu" role="menu" aria-label="Color theme">
+                    <button class="theme-menu-option" id="themeLightOption" type="button" role="menuitemradio" aria-checked="false" data-theme-choice="light">Light</button>
+                    <button class="theme-menu-option" id="themeDarkOption" type="button" role="menuitemradio" aria-checked="true" data-theme-choice="dark">Dark</button>
+                </div>
+            </div>
             <div class="home-brand-copy">
                 <p class="home-eyebrow">CODEBASE WORKSPACE</p>
                 <h1>Checkpoint</h1>
