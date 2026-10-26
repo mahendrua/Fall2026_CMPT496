@@ -381,6 +381,8 @@ LONG_INPUTS = {
     "quoted-keys": '"password' * 25_000,
     "prose-line": "password: " + "ab " * 60_000,
     "unclosed-backtick": "password = `" + "a\\" * 60_000,
+    "unclosed-escaped-quote": 'password = \\"' + "a\\" * 60_000,
+    "prose-repeats": "the token is " * 30_000,
 }
 
 
@@ -707,6 +709,72 @@ def test_report_counts_every_category_without_values():
     'src = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="',
 ])
 def test_non_secret_near_secret_words_is_left_alone(snippet):
+    out, report = redact_text(snippet)
+
+    assert out == snippet
+    assert report.total == 0
+
+
+# ---------------------------------------------------------------------------
+# Code inside JSON strings, and secrets quoted in prose
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("snippet, secret, category", [
+    # A saved business rule's evidence, as JSON
+    (
+        '{"evidence": {"src/Db.cs": ["private const string DbPassword = \\"' + FAKE + '\\";"]}}',
+        FAKE, PASSWORD,
+    ),
+    # C# building a JSON body
+    ('var body = "{\\"user\\":\\"ann\\",\\"password\\":\\"' + FAKE + '\\"}";', FAKE, PASSWORD),
+    ('var body = "{\\"api_key\\": \\"' + KEY + '\\"}";', KEY, API_KEY),
+])
+def test_code_inside_a_json_string_is_redacted(snippet, secret, category):
+    out, report = redact_text(snippet)
+
+    assert out == snippet.replace(secret, placeholder(category))
+    assert report.replaced == {category: 1}
+
+
+@pytest.mark.parametrize("snippet, secret, category", [
+    # README
+    (f"The default admin password is {FAKE} until you change it.", FAKE, PASSWORD),
+    (f"Log in as admin with password `{FAKE}`.", FAKE, PASSWORD),
+    # File summary
+    (f"Connects to the database using the hard-coded password '{FAKE}'.", FAKE, PASSWORD),
+    (f'Sends requests with the API key "{KEY}".', KEY, API_KEY),
+    (f"The service password was changed to {FAKE} last week.", FAKE, PASSWORD),
+    # Business rule
+    (f"Login succeeds only when the password equals {FAKE}.", FAKE, PASSWORD),
+    (f"The access token is set to {TOKEN_VALUE} for the test tenant.", TOKEN_VALUE, TOKEN),
+    # Comment
+    (f"// TODO: rotate -- the bot token is {TOKEN_VALUE}", TOKEN_VALUE, TOKEN),
+])
+def test_secret_quoted_in_prose_is_redacted(snippet, secret, category):
+    out, report = redact_text(snippet)
+
+    assert out == snippet.replace(secret, placeholder(category))
+    assert report.replaced == {category: 1}
+
+
+@pytest.mark.parametrize("snippet", [
+    "The password is required and must be write-only.",
+    "Throws when the password is null.",
+    "The password is hashed with PBKDF2 before it is stored.",
+    "Returns an access token of type Bearer.",
+    "The API key is read from appsettings.json.",
+    "The secret is stored in Azure Key Vault (see https://vault.example.com/x1).",
+    "The token is <your-token>.",
+    "The password is ${DB_PASSWORD}.",
+    "The token is valid for 3600 seconds.",
+    "Each password of length 12 or more is accepted.",
+    "password = DEFAULT_PW2",
+    'json = "{\\"password\\":\\"\\"}"',
+    # Limitation: an unquoted value right after the name, with no "is",
+    # reads too much like ordinary prose ("password SHA256-hashed").
+    f"Sends requests with the API key {KEY}.",
+])
+def test_ordinary_sentences_about_secrets_are_left_alone(snippet):
     out, report = redact_text(snippet)
 
     assert out == snippet

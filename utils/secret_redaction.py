@@ -88,6 +88,17 @@ PRIVATE_KEY
     The body of a -----BEGIN ... PRIVATE KEY----- block. The BEGIN and END
     lines stay.
 
+Code inside JSON strings
+    Escaped quotes count as quotes: "{\"password\": \"...\"}" in C#, and the
+    code evidence of a business rule saved as JSON.
+
+Prose
+    READMEs, comments, summaries and business rules: "the admin password is
+    ...", "the access token was changed to ...", "the password equals ...",
+    "uses the API key '...'". Only values of 8 or more characters with
+    letters plus digits or symbols such as ! @ # count, so "the password is
+    required" and "the token is valid" stay.
+
 Left alone
 ----------
 Environment-variable and config lookups (os.getenv("DB_PASSWORD"),
@@ -123,7 +134,9 @@ misses:
   of under 21 characters made only of letters, dots, dashes and underscores;
 - an unquoted INI value that looks like an identifier (password = letmein);
 - a key, token or connection-string value that is built by concatenation,
-  or a key or token value containing spaces (authToken = "Bearer ...").
+  or a key or token value containing spaces (authToken = "Bearer ...");
+- in prose, a value with no quotes and no "is"/"equals"/"set to" before it
+  ("uses the API key ..."), and short or letters-only passwords.
 It can over-redact a variable in a JavaScript object written one property
 per line (password: pw), and documentation examples written in a real
 vendor format.
@@ -408,17 +421,20 @@ def _name(words):
     )
 
 
-# A quoted value. The group that matched says how it was quoted.
+# A quoted value. The group that matched says how it was quoted. \"...\" is
+# code that sits inside a JSON or C# string itself: the evidence in a saved
+# business rule, or var json = "{\"password\": \"...\"}".
 _LITERAL = r"""
     (?:
         (?P<vpre>\$@|@\$|@)"(?P<verbatim>(?:[^"]|"")*)"
+      | \\"(?P<escaped>(?:(?!\\")[^\r\n])*)\\"
       | (?P<dpre>[rbuf$]{0,2})"(?P<dq>(?:[^"\\\r\n]|\\.)*)"
       | (?P<spre>[rbuf]{0,2})'(?P<sq>(?:[^'\\\r\n]|\\.)*)'
       | `(?P<bq>(?:[^`\\]|\\.)*)`
     )
 """
 
-_LITERAL_GROUPS = ("verbatim", "dq", "sq", "bq")
+_LITERAL_GROUPS = ("verbatim", "escaped", "dq", "sq", "bq")
 
 
 # name = "value", name: 'value', "name": "value", ["name"] = @"value" ...
@@ -431,7 +447,7 @@ _ASSIGNMENT = re.compile(
     rf"""
     (?:
         (?<![\w$@.\-])(?P<name>{_name(_SECRET_WORDS)})
-      | (?<!\?)(?<!\?[ ])(?P<kq>["'])(?P<qname>[^"'\r\n]{{0,200}}?(?:{_alternation(_SECRET_WORDS)})(?:[_\-]?\d{{1,3}})?)(?P=kq)\]?
+      | (?<!\?)(?<!\?[ ])(?P<kq>["'])(?P<qname>[^"'\\\r\n]{{0,200}}?(?:{_alternation(_SECRET_WORDS)})(?:[_\-]?\d{{1,3}})?)\\?(?P=kq)\]?
     )
     (?:[ \t]*\{{[ \t]*get;[^}}\r\n]*\}})?
     (?:[ \t]*:[ \t]*[A-Za-z_][\w.]*(?:\[[\w., ]*\])?\??(?=[ \t]*=[^=>]))?
@@ -590,6 +606,27 @@ _QUERY_PARAMETER = re.compile(
 # Query parameters that are credentials without a secret word in the name:
 # an Azure SAS or AWS presigned-URL signature.
 _SIGNATURE_PARAMETERS = {"sig", "signature", "x-amz-signature"}
+
+# Prose, as READMEs, comments, summaries and business rules quote secrets:
+# "the default admin password is ...", "uses the hard-coded token '...'",
+# "login succeeds only when the password equals ...". Code forms (=, :) are
+# left to the rules above, which know which values are code.
+_PROSE_SECRET = re.compile(
+    r"""
+    \b(?P<name>pass(?:word|phrase|wd)|pwd|api[ _\-]?key|access[ _\-]?key|secret[ _\-]?key
+      |client[ _\-]?secret|secret|(?:(?:access|auth|bearer|api|personal[ ]access)[ _\-]?)?token)\b
+    (?:
+        [ \t]+(?:(?:is|was)(?:[ ]+(?:set|changed|equal)[ ]+to)?|equals|of|set[ ]+to|as)[ \t]+
+        (?:(?P<cq>["'`])(?P<cquoted>[^\s"'`]{1,200})(?P=cq)|(?P<bare>[^\s"'`]{1,200}))
+      | [ \t]+(?P<dq>["'`])(?P<quoted>[^\s"'`]{1,200})(?P=dq)
+    )
+    """,
+    re.VERBOSE | re.IGNORECASE,
+)
+
+# Symbols that, with letters, make a prose value look like a password.
+# Hyphens, underscores and dots alone do not: "write-only", "read_only".
+_PROSE_SYMBOLS = set("!#$%&*+=?@^~|")
 
 _PRIVATE_KEY_BLOCK = re.compile(
     r"-----BEGIN (?P<label>(?:[A-Z0-9]+ )*)PRIVATE KEY(?P<block>(?: BLOCK)?)-----"
@@ -867,6 +904,41 @@ def _query_parameter(match):
     return match.start("value"), match.end("value"), value, category
 
 
+def _prose_secret(match):
+    found = _classify(re.sub(r"[ ]", "_", match.group("name")))
+    if found is None:
+        return None
+
+    category, _, strong = found
+    group = _first_group(match, ("cquoted", "bare", "quoted"))
+    value = match.group(group)
+
+    # "The password is Fake-Pass-111." -- the full stop ends the sentence.
+    if group == "bare":
+        value = value.rstrip(".,;:)]")
+
+    if (
+        len(value) < MIN_PROPAGATED_LENGTH
+        or "://" in value
+        or _CODE_CHARACTERS & set(value)
+        or _is_stand_in(value)
+        or _FILE_PATH_RE.match(value)
+    ):
+        return None
+
+    has_letter = any(c.isalpha() for c in value)
+    has_digit = any(c.isdigit() for c in value)
+
+    if not has_letter or not (has_digit or _PROSE_SYMBOLS & set(value)):
+        return None
+
+    if not strong and not has_digit:
+        return None
+
+    start = match.start(group)
+    return start, start + len(value), value, category
+
+
 # Whitespace or an escaped line break around a private key's body.
 _PADDING = re.compile(r"\s|\\[rn]")
 
@@ -919,6 +991,7 @@ _RULES = (
     (_ASSIGNMENT, _assignment),
     (_CONFIG_LINE, _config_line),
     (_PASSWORD_FLAG, _password_flag),
+    (_PROSE_SECRET, _prose_secret),
 )
 
 
