@@ -12,9 +12,6 @@ import json
 import sys
 from pathlib import Path
 
-import chromadb
-from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
-
 from backend.progress_logging import progress
 from utils.chroma_utils import collection_name as build_collection_name
 
@@ -33,6 +30,216 @@ def format_parameters(parameters: list[dict] | None) -> str:
         ptype = param.get("type") or "unknown"
         formatted.append(f"{direction} {name}: {ptype}")
     return ", ".join(formatted)
+
+
+def records_from_file_summary(
+    data: dict,
+    seen_ids: set[str] | None = None,
+) -> tuple[list[str], list[str], list[dict]]:
+    """
+    Flatten one FileSummaryOutput JSON object into Chroma index records.
+
+    IDs, documents, and metadata match the previous inline loop in
+    build_database(). Pass a shared seen_ids set to keep cross-file
+    deduplication when indexing a directory.
+    """
+    if seen_ids is None:
+        seen_ids = set()
+
+    ids: list[str] = []
+    documents: list[str] = []
+    metadatas: list[dict] = []
+
+    src_path = data.get("path", "unknown")
+    summary = data.get("summary", "")
+    dependencies = data.get("dependencies") or []
+    functions = data.get("functions") or []
+    types = data.get("types") or []
+    relationships = data.get("relationships") or []
+    external_relationships = data.get("external_relationships") or []
+    relationship_plantuml = data.get("relationship_plantuml", "")
+
+    # 1. File-level node
+    f_id = f"file:{src_path}"
+    if f_id not in seen_ids:
+        seen_ids.add(f_id)
+        ids.append(f_id)
+        documents.append(
+            f"File Path: {src_path}\n"
+            f"Global Summary: {summary}\n"
+            f"Dependencies: {', '.join(dependencies) if dependencies else 'None'}\n"
+            f"Number of top-level functions: {len(functions)}\n"
+            f"Number of types: {len(types)}\n"
+            f"Number of in-file relationships: {len(relationships)}\n"
+            f"Number of external relationships: {len(external_relationships)}\n"
+            f"Relationship PlantUML:\n{relationship_plantuml}"
+        )
+        metadatas.append({
+            "type": "file",
+            "path": src_path,
+        })
+
+    # 2. Top-level functions
+    for func in functions:
+        name = func.get("name", "unknown")
+        description = func.get("description", "")
+        return_type = func.get("return_type") or "None"
+        parameters = format_parameters(func.get("parameters"))
+        calls = ", ".join(func.get("calls") or []) or "None"
+        visibility = func.get("visibility") or "unknown"
+
+        func_id = f"func:{src_path}:{name}"
+        if func_id not in seen_ids:
+            seen_ids.add(func_id)
+            ids.append(func_id)
+            documents.append(
+                f"Top-level function '{name}' in {src_path}.\n"
+                f"Description: {description}\n"
+                f"Visibility: {visibility}\n"
+                f"Return type: {return_type}\n"
+                f"Parameters: {parameters}\n"
+                f"Calls: {calls}"
+            )
+            metadatas.append({
+                "type": "function",
+                "name": name,
+                "path": src_path,
+            })
+
+    # 3. Types (class / enum / interface / struct)
+    for type_obj in types:
+        type_name = type_obj.get("name", "unknown")
+        type_kind = type_obj.get("kind", "unknown")
+        type_description = type_obj.get("description", "")
+        inherits_from = ", ".join(type_obj.get("inherits_from") or []) or "None"
+        enum_values = ", ".join(type_obj.get("enum_values") or []) or "None"
+        plantuml = type_obj.get("plantuml", "")
+        properties = type_obj.get("properties") or []
+        methods = type_obj.get("methods") or []
+
+        type_id = f"type:{src_path}:{type_kind}:{type_name}"
+        if type_id not in seen_ids:
+            seen_ids.add(type_id)
+            ids.append(type_id)
+            documents.append(
+                f"Type '{type_name}' ({type_kind}) in {src_path}.\n"
+                f"Description: {type_description}\n"
+                f"Inherits from: {inherits_from}\n"
+                f"Enum values: {enum_values}\n"
+                f"Properties count: {len(properties)}\n"
+                f"Methods count: {len(methods)}\n"
+                f"PlantUML:\n{plantuml}"
+            )
+            metadatas.append({
+                "type": "type",
+                "name": type_name,
+                "kind": type_kind,
+                "path": src_path,
+            })
+
+        # 4. Type properties
+        for prop in properties:
+            prop_name = prop.get("name", "unknown")
+            prop_type = prop.get("type") or "unknown"
+            prop_description = prop.get("description", "")
+            prop_visibility = prop.get("visibility") or "unknown"
+            prop_static = prop.get("is_static", False)
+
+            prop_id = f"property:{src_path}:{type_name}:{prop_name}"
+            if prop_id not in seen_ids:
+                seen_ids.add(prop_id)
+                ids.append(prop_id)
+                documents.append(
+                    f"Property '{prop_name}' belonging to {type_kind} '{type_name}' in {src_path}.\n"
+                    f"Description: {prop_description}\n"
+                    f"Type: {prop_type}\n"
+                    f"Visibility: {prop_visibility}\n"
+                    f"Static: {prop_static}"
+                )
+                metadatas.append({
+                    "type": "property",
+                    "name": prop_name,
+                    "parent": type_name,
+                    "parent_kind": type_kind,
+                    "path": src_path,
+                })
+
+        # 5. Type methods / constructors
+        for method in methods:
+            method_name = method.get("name", "unknown")
+            method_description = method.get("description", "")
+            method_visibility = method.get("visibility") or "unknown"
+            method_return_type = method.get("return_type") or "None"
+            method_parameters = format_parameters(method.get("parameters"))
+            is_static = method.get("is_static", False)
+            is_constructor = method.get("is_constructor", False)
+
+            method_id = f"method:{src_path}:{type_name}:{method_name}"
+            if method_id not in seen_ids:
+                seen_ids.add(method_id)
+                ids.append(method_id)
+                documents.append(
+                    f"Method '{method_name}' belonging to {type_kind} '{type_name}' in {src_path}.\n"
+                    f"Description: {method_description}\n"
+                    f"Visibility: {method_visibility}\n"
+                    f"Return type: {method_return_type}\n"
+                    f"Parameters: {method_parameters}\n"
+                    f"Static: {is_static}\n"
+                    f"Constructor: {is_constructor}"
+                )
+                metadatas.append({
+                    "type": "method",
+                    "name": method_name,
+                    "parent": type_name,
+                    "parent_kind": type_kind,
+                    "path": src_path,
+                })
+
+    # 6. Relationships
+    for rel in relationships:
+        source = rel.get("source", "unknown")
+        target = rel.get("target", "unknown")
+        rel_type = rel.get("relationship_type", "unknown")
+
+        rel_id = f"relationship:{src_path}:{source}:{rel_type}:{target}"
+        if rel_id not in seen_ids:
+            seen_ids.add(rel_id)
+            ids.append(rel_id)
+            documents.append(
+                f"In-file relationship in {src_path}: "
+                f"{source} {rel_type} {target}."
+            )
+            metadatas.append({
+                "type": "relationship",
+                "source": source,
+                "target": target,
+                "relationship_type": rel_type,
+                "path": src_path,
+            })
+
+    # 7. External relationships
+    for rel in external_relationships:
+        source = rel.get("source", "unknown")
+        target = rel.get("target", "unknown")
+        rel_type = rel.get("relationship_type", "unknown")
+
+        rel_id = f"external_relationship:{src_path}:{source}:{rel_type}:{target}"
+        if rel_id not in seen_ids:
+            seen_ids.add(rel_id)
+            ids.append(rel_id)
+            documents.append(
+                f"External relationship in {src_path}: "
+                f"{source} {rel_type} external type {target}."
+            )
+            metadatas.append({
+                "type": "external_relationship",
+                "source": source,
+                "target": target,
+                "relationship_type": rel_type,
+                "path": src_path,
+            })
+
+    return ids, documents, metadatas
 
 
 def build_database(codebase_name: str) -> None:
@@ -56,6 +263,9 @@ def build_database(codebase_name: str) -> None:
     @param codebase_name str: The name of the codebase folder to index.
     @return None
     """
+    import chromadb
+    from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+
     if getattr(sys, 'frozen', False):
         base_dir = Path(sys.executable).parent
     else:
@@ -128,196 +338,13 @@ def build_database(codebase_name: str) -> None:
         with open(file_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        src_path = data.get("path", "unknown")
-        summary = data.get("summary", "")
-        dependencies = data.get("dependencies") or []
-        functions = data.get("functions") or []
-        types = data.get("types") or []
-        relationships = data.get("relationships") or []
-        external_relationships = data.get("external_relationships") or []
-        relationship_plantuml = data.get("relationship_plantuml", "")
-
-        # 1. File-level node
-        f_id = f"file:{src_path}"
-        if f_id not in seen_ids:
-            seen_ids.add(f_id)
-            ids.append(f_id)
-            documents.append(
-                f"File Path: {src_path}\n"
-                f"Global Summary: {summary}\n"
-                f"Dependencies: {', '.join(dependencies) if dependencies else 'None'}\n"
-                f"Number of top-level functions: {len(functions)}\n"
-                f"Number of types: {len(types)}\n"
-                f"Number of in-file relationships: {len(relationships)}\n"
-                f"Number of external relationships: {len(external_relationships)}\n"
-                f"Relationship PlantUML:\n{relationship_plantuml}"
-            )
-            metadatas.append({
-                "type": "file",
-                "path": src_path,
-            })
-
-        # 2. Top-level functions
-        for func in functions:
-            name = func.get("name", "unknown")
-            description = func.get("description", "")
-            return_type = func.get("return_type") or "None"
-            parameters = format_parameters(func.get("parameters"))
-            calls = ", ".join(func.get("calls") or []) or "None"
-            visibility = func.get("visibility") or "unknown"
-
-            func_id = f"func:{src_path}:{name}"
-            if func_id not in seen_ids:
-                seen_ids.add(func_id)
-                ids.append(func_id)
-                documents.append(
-                    f"Top-level function '{name}' in {src_path}.\n"
-                    f"Description: {description}\n"
-                    f"Visibility: {visibility}\n"
-                    f"Return type: {return_type}\n"
-                    f"Parameters: {parameters}\n"
-                    f"Calls: {calls}"
-                )
-                metadatas.append({
-                    "type": "function",
-                    "name": name,
-                    "path": src_path,
-                })
-
-        # 3. Types (class / enum / interface / struct)
-        for type_obj in types:
-            type_name = type_obj.get("name", "unknown")
-            type_kind = type_obj.get("kind", "unknown")
-            type_description = type_obj.get("description", "")
-            inherits_from = ", ".join(type_obj.get("inherits_from") or []) or "None"
-            enum_values = ", ".join(type_obj.get("enum_values") or []) or "None"
-            plantuml = type_obj.get("plantuml", "")
-            properties = type_obj.get("properties") or []
-            methods = type_obj.get("methods") or []
-
-            type_id = f"type:{src_path}:{type_kind}:{type_name}"
-            if type_id not in seen_ids:
-                seen_ids.add(type_id)
-                ids.append(type_id)
-                documents.append(
-                    f"Type '{type_name}' ({type_kind}) in {src_path}.\n"
-                    f"Description: {type_description}\n"
-                    f"Inherits from: {inherits_from}\n"
-                    f"Enum values: {enum_values}\n"
-                    f"Properties count: {len(properties)}\n"
-                    f"Methods count: {len(methods)}\n"
-                    f"PlantUML:\n{plantuml}"
-                )
-                metadatas.append({
-                    "type": "type",
-                    "name": type_name,
-                    "kind": type_kind,
-                    "path": src_path,
-                })
-
-            # 4. Type properties
-            for prop in properties:
-                prop_name = prop.get("name", "unknown")
-                prop_type = prop.get("type") or "unknown"
-                prop_description = prop.get("description", "")
-                prop_visibility = prop.get("visibility") or "unknown"
-                prop_static = prop.get("is_static", False)
-
-                prop_id = f"property:{src_path}:{type_name}:{prop_name}"
-                if prop_id not in seen_ids:
-                    seen_ids.add(prop_id)
-                    ids.append(prop_id)
-                    documents.append(
-                        f"Property '{prop_name}' belonging to {type_kind} '{type_name}' in {src_path}.\n"
-                        f"Description: {prop_description}\n"
-                        f"Type: {prop_type}\n"
-                        f"Visibility: {prop_visibility}\n"
-                        f"Static: {prop_static}"
-                    )
-                    metadatas.append({
-                        "type": "property",
-                        "name": prop_name,
-                        "parent": type_name,
-                        "parent_kind": type_kind,
-                        "path": src_path,
-                    })
-
-            # 5. Type methods / constructors
-            for method in methods:
-                method_name = method.get("name", "unknown")
-                method_description = method.get("description", "")
-                method_visibility = method.get("visibility") or "unknown"
-                method_return_type = method.get("return_type") or "None"
-                method_parameters = format_parameters(method.get("parameters"))
-                is_static = method.get("is_static", False)
-                is_constructor = method.get("is_constructor", False)
-
-                method_id = f"method:{src_path}:{type_name}:{method_name}"
-                if method_id not in seen_ids:
-                    seen_ids.add(method_id)
-                    ids.append(method_id)
-                    documents.append(
-                        f"Method '{method_name}' belonging to {type_kind} '{type_name}' in {src_path}.\n"
-                        f"Description: {method_description}\n"
-                        f"Visibility: {method_visibility}\n"
-                        f"Return type: {method_return_type}\n"
-                        f"Parameters: {method_parameters}\n"
-                        f"Static: {is_static}\n"
-                        f"Constructor: {is_constructor}"
-                    )
-                    metadatas.append({
-                        "type": "method",
-                        "name": method_name,
-                        "parent": type_name,
-                        "parent_kind": type_kind,
-                        "path": src_path,
-                    })
-
-        # 6. Relationships
-        for rel in relationships:
-            source = rel.get("source", "unknown")
-            target = rel.get("target", "unknown")
-            rel_type = rel.get("relationship_type", "unknown")
-
-            rel_id = f"relationship:{src_path}:{source}:{rel_type}:{target}"
-            if rel_id not in seen_ids:
-                seen_ids.add(rel_id)
-                ids.append(rel_id)
-                documents.append(
-                    f"In-file relationship in {src_path}: "
-                    f"{source} {rel_type} {target}."
-                )
-                metadatas.append({
-                    "type": "relationship",
-                    "source": source,
-                    "target": target,
-                    "relationship_type": rel_type,
-                    "path": src_path,
-                })
-
-        # 7. External relationships
-        for rel in external_relationships:
-            source = rel.get("source", "unknown")
-            target = rel.get("target", "unknown")
-            rel_type = rel.get("relationship_type", "unknown")
-
-            rel_id = f"external_relationship:{src_path}:{source}:{rel_type}:{target}"
-            if rel_id not in seen_ids:
-                seen_ids.add(rel_id)
-                ids.append(rel_id)
-                documents.append(
-                    f"External relationship in {src_path}: "
-                    f"{source} {rel_type} external type {target}."
-                )
-                metadatas.append({
-                    "type": "external_relationship",
-                    "source": source,
-                    "target": target,
-                    "relationship_type": rel_type,
-                    "path": src_path,
-                })
-
-    
+        file_ids, file_documents, file_metadatas = records_from_file_summary(
+            data,
+            seen_ids,
+        )
+        ids.extend(file_ids)
+        documents.extend(file_documents)
+        metadatas.extend(file_metadatas)
 
     if ids:
         progress(

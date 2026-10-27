@@ -14,6 +14,7 @@ from agent.structured_output.BR_output import (
 )
 from agent.structured_output.file_summary_output import BusinessRule
 from agent.BR_input_loader import merge_rule_candidates
+from agent.br_condensation_safety import apply_condenser_safety
 from langgraph.graph import StateGraph, START, END
 from agent.llm import make_llm
 import os
@@ -28,9 +29,9 @@ from collections import defaultdict
 from backend.progress_logging import progress
 from utils.chroma_utils import collection_name
 
-MAX_CONCURRENCY = 10
-DEFAULT_CODEBASE_K = 15
-DEFAULT_FILE_SUMMARY_K = 5
+MAX_CONCURRENCY = 3
+DEFAULT_CODEBASE_K = 8
+DEFAULT_FILE_SUMMARY_K = 3
 MAX_CODEBASE_K = 30
 MAX_FILE_SUMMARY_K = 10
 
@@ -299,8 +300,22 @@ class BRAgent:
             if mapped is None:
                 progress(f"Condenser returned an incomplete source mapping for {dir_name}; keeping its rules uncondensed.")
                 logger.warning(f"Condenser returned an incomplete source mapping for {dir_name}; keeping its rules uncondensed.")
-                mapped = group
-            condensed_by_dir[dir_name] = mapped
+                condensed_by_dir[dir_name] = group
+                continue
+
+            safe = apply_condenser_safety(group, condensed_outputs)
+            if safe is None:
+                progress(
+                    f"Condenser assigned overlapping or duplicate source numbers "
+                    f"for {dir_name}; keeping its rules uncondensed."
+                )
+                logger.warning(
+                    f"Condenser assigned overlapping or duplicate source numbers "
+                    f"for {dir_name}; keeping its rules uncondensed."
+                )
+                condensed_by_dir[dir_name] = group
+                continue
+            condensed_by_dir[dir_name] = safe
 
         # Assign sequential IDs across all groups in sorted directory order
         all_condensed: list[CondensedRule] = []
@@ -733,7 +748,11 @@ async def _condense_group(structured_llm, directory: str, rules: list) -> tuple[
     try:
         rule_list = "\n".join(f"{i+1}. {r.rule}" for i, r in enumerate(rules))
 
-        system_message = """You are a Senior Software Architect. Your task is to condense a list of business rules by merging rules that are semantically similar or redundant."""
+        system_message = (
+            "You are a Senior Software Architect. Condense business rules only when "
+            "they are genuine paraphrases of the same independently testable requirement. "
+            "When uncertain, keep rules separate."
+        )
 
         prompt = f"""Directory: {directory}
 
@@ -741,31 +760,30 @@ Business rules to condense:
 {rule_list}
 
 MERGING GUIDELINES:
-- Merge rules that express the same constraint or policy in different words.
-- Merge rules that are specific instances of a more general pattern. When several rules each describe a similar aspect of the codebase's behaviour but for different cases, combine them into one general rule that captures the shared intent.
-- When merging, produce a single clear statement that preserves the meaning of all merged rules. Do not lose important specifics unless they are redundant.
-- Do NOT merge rules that govern different aspects of the system, even if they sound superficially similar.
-- Do NOT invent new rules that are not supported by the originals.
-- Do NOT discard a rule unless it is fully covered by another rule in the list.
-- Rules that are already unique and distinct should be kept as-is.
+- Merge genuine paraphrases only when they express the same requirement.
+- Do NOT merge different thresholds, numeric constants, percentages, formulas, precision or rounding requirements, inequalities, conditions, exceptions, or input/output constraints.
+- Do NOT merge a general rule with a more specific independently testable requirement.
+- Do NOT replace multiple distinct rules with a vague generalization, even if the generalization lists every original number or condition.
+- Do NOT invent conditions or rules. Preserve the source semantics of each original.
+- If you are uncertain whether two rules are equivalent, keep them separate.
+- Do NOT discard a rule. Every original must appear in exactly one condensed output.
 
 SOURCE RULE NUMBERS:
 - For each condensed rule, set source_rule_numbers to the numbers of every input rule it covers. A rule kept as-is lists only its own number.
-- Every input rule number must appear in at least one condensed rule.
+- Each original input index must appear exactly once across the condensed outputs.
 
-POSITIVE EXAMPLE — rules that SHOULD be merged:
+POSITIVE EXAMPLE — rules that SHOULD be merged (same requirement, different wording):
 Input:
-1. A number can be converted into its written French representation.
-2. A number can be converted into its written Arabic representation.
-3. A number can be converted into its written Spanish representation.
+1. Orders need a customer.
+2. Every order must have a customer.
 Output:
-1. A number can be converted into written representations in various languages. (source_rule_numbers: [1, 2, 3])
+1. Every order must have a customer. (source_rule_numbers: [1, 2])
 
-NEGATIVE EXAMPLE — rules that should NOT be merged:
+NEGATIVE EXAMPLE — rules that should NOT be merged (different numeric thresholds):
 Input:
-1. Order total must be non-negative.
-2. An order must contain at least one item to be processed.
-These both relate to order validation, but they enforce different constraints (value range vs. item count). They must remain separate.
+1. A person must be at least 18 years old.
+2. A person must be at least 21 years old.
+These are independently testable requirements. Keep them as two condensed rules, each listing only its own source number. Do not write a single rule such as "a person must meet a minimum age" or "a person must be at least 18 or 21".
 
 Return the condensed list of business rules."""
 

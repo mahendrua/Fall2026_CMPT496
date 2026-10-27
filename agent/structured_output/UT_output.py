@@ -4,8 +4,11 @@
 @details Includes models for condensed validated rules with evidence and unit tests.
 """
 
+from typing import Literal
 from pydantic import BaseModel, Field, ConfigDict
 from agent.structured_output.BR_output import RuleProvenance
+
+TestMode = Literal["function", "script"]
 
 class Explanation(BaseModel):
     """
@@ -38,3 +41,11 @@ class UnitTest(BaseModel):
     source_directory: str = Field(..., description="The directory this test pertains to.")
     source_file_paths: list[str] = Field(default_factory=list, description="File paths from which this test was originally derived.")
     unit_test: str = Field(..., description = "Corresponding Unit Test generated for a validated business rule")
+    test_mode: TestMode = Field(
+        "function",
+        description=(
+            "Trusted generation mode. function: import-safe modules may be imported. "
+            "script: run the file as a subprocess. Set by Checkpoint from Tree-sitter, "
+            "not by the LLM."
+        ),
+    )

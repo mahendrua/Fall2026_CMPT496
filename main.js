@@ -1326,7 +1326,7 @@ function startPythonBackend(preserveErrors = false) {
 
         const pythonPath = isWindows
             ? path.join(__dirname, ".venv", "Scripts", "python.exe")
-            : "python3";
+            : path.join(__dirname, ".venv", "bin", "python");
 
         const scriptPath = path.join(__dirname, "main.py");
 
