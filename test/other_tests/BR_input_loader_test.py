@@ -133,13 +133,46 @@ def test_nested_directory_and_key_fallback(root, app_dir):
     assert result.candidates[0].source_directory == "src/Models"
 
 
-def test_differing_source_file_is_kept(root, app_dir):
-    key = win(root / "src" / "A.cs")
+@pytest.mark.parametrize("key", [
+    "ConsoleTableTest.cs",                  # LLM wrote back only the file name
+    "Tests/ConsoleTableTest.cs",            # LLM wrote back a partial path
+    "src\\Tests\\ConsoleTableTest.cs",      # LLM wrote back the right relative path
+])
+def test_source_file_decides_path_over_llm_written_key(root, app_dir, key):
+    # FileSummaryAgent keys the output by the LLM's path but sets source_file from the real one.
+    real = win(root / "src" / "Tests" / "ConsoleTableTest.cs")
+    result = load(root, app_dir, file_data={key: [file_rule("Rule.", real)]})
+
+    c = result.candidates[0]
+    assert c.source_directory == "src/Tests"
+    assert c.source_file_paths == ["src/Tests/ConsoleTableTest.cs"]
+
+
+def test_source_file_from_another_machine(root, app_dir):
     result = load(root, app_dir, file_data={
-        key: [file_rule("Rule.", win(root / "src" / "B.cs"))],
+        "Order.cs": [file_rule("Rule.", f"D:\\Elsewhere\\{CODEBASE}\\src\\Order.cs")],
     })
 
-    assert result.candidates[0].source_file_paths == ["src/A.cs", "src/B.cs"]
+    assert result.candidates[0].source_file_paths == ["src/Order.cs"]
+
+
+def test_key_used_when_source_file_missing(root, app_dir):
+    result = load(root, app_dir, file_data={
+        win(root / "src" / "A.cs"): [file_rule("No source.", None), {"rule": "Field absent."}],
+    })
+
+    assert [(c.source_directory, c.source_file_paths) for c in result.candidates] == [
+        ("src", ["src/A.cs"]), ("src", ["src/A.cs"]),
+    ]
+
+
+def test_rules_under_one_key_keep_their_own_source_file(root, app_dir):
+    result = load(root, app_dir, file_data={
+        "Shared.cs": [file_rule("A rule.", win(root / "src" / "Shared.cs")),
+                      file_rule("B rule.", win(root / "Shared.cs"))],
+    })
+
+    assert [(c.rule, c.source_directory) for c in result.candidates] == [("A rule.", "src"), ("B rule.", ".")]
 
 
 def test_duplicates_remain_separate(root, app_dir):

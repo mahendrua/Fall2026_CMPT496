@@ -10,9 +10,11 @@ logger = logging.getLogger(__name__)
 from agent.states.BR_agent_state import BRGraphState
 from agent.structured_output.BR_output import (
     CondensedRule, ValidatedRule, DiscardedRule,
-    CondenserOutput, ValidatorOutput,
+    CondenserOutput, ValidatorOutput, RuleCandidate,
 )
 from agent.structured_output.file_summary_output import BusinessRule
+from agent.BR_input_loader import merge_rule_candidates
+from agent.br_condensation_safety import apply_condenser_safety
 from langgraph.graph import StateGraph, START, END
 from agent.llm import make_llm
 import os
@@ -27,9 +29,9 @@ from collections import defaultdict
 from backend.progress_logging import progress
 from utils.chroma_utils import collection_name
 
-MAX_CONCURRENCY = 10
-DEFAULT_CODEBASE_K = 15
-DEFAULT_FILE_SUMMARY_K = 5
+MAX_CONCURRENCY = 3
+DEFAULT_CODEBASE_K = 8
+DEFAULT_FILE_SUMMARY_K = 3
 MAX_CODEBASE_K = 30
 MAX_FILE_SUMMARY_K = 10
 
@@ -94,15 +96,56 @@ class BRAgent:
 
         return builder.compile()
 
-    def run(self, input_rules: dict[str, list[BusinessRule]], codebase_name: str, output_dir=None):
+    def run(self, input_rules: list[RuleCandidate] | dict[str, list[BusinessRule]], codebase_name: str, output_dir=None):
         """
         @brief Executes the BRAgent workflow.
-        @param input_rules Dictionary of business rules from G1/G2. Keys are file or directory paths,
-               values are lists of BusinessRule objects.
+        @param input_rules Rule candidates from load_rule_candidates()/deduplicate_rule_candidates().
+               The older form, a dictionary of file paths to lists of BusinessRule objects, is still
+               accepted and converted with the original path-to-directory logic.
         @param codebase_name Name of the target codebase, used to look up the correct ChromaDB collections.
         @return Final state of the graph after execution.
+        @details With no input rules, the vector databases are not loaded and no LLM is called;
+                 the writer still writes empty validated and discarded rule lists.
         """
 
+        if isinstance(input_rules, dict):
+            candidates = self._candidates_from_rules_by_file(input_rules, codebase_name)
+        else:
+            candidates = list(input_rules)
+
+        if candidates:
+            code_collection, summary_collection = self._load_collections(codebase_name)
+        else:
+            progress("No business rules to validate.", 15)
+            code_collection, summary_collection = None, None
+
+        initial_state = {
+            "input_rules": candidates,
+            "current_rules": [],
+            "validated_rules": [],
+            "discarded_rules": [],
+            "rule_contexts": {},
+            "codebase_k": DEFAULT_CODEBASE_K,
+            "file_summary_k": DEFAULT_FILE_SUMMARY_K,
+            "code_collection": code_collection,
+            "summary_collection": summary_collection,
+            "codebase_name": codebase_name,
+            "output_directory": os.path.join(output_dir or ".", "agent", "BR_agent_output")
+        }
+
+        self._loop = asyncio.new_event_loop()
+        try:
+            return self.graph.invoke(initial_state)
+        finally:
+            self._loop.close()
+            self._loop = None
+
+    def _load_collections(self, codebase_name: str):
+        """
+        @brief Opens the code and summary ChromaDB collections for a codebase.
+        @param codebase_name Name of the target codebase.
+        @return Tuple of (code_collection, summary_collection).
+        """
         progress(
         "Loading business rule validation resources...",
         10
@@ -131,63 +174,19 @@ class BRAgent:
             "Vector databases loaded",
             15
         )
-        initial_state = {
-            "input_rules": input_rules,
-            "current_rules": [],
-            "validated_rules": [],
-            "discarded_rules": [],
-            "rule_contexts": {},
-            "codebase_k": DEFAULT_CODEBASE_K,
-            "file_summary_k": DEFAULT_FILE_SUMMARY_K,
-            "code_collection": code_collection,
-            "summary_collection": summary_collection,
-            "codebase_name": codebase_name,
-            "output_directory": os.path.join(output_dir or ".", "agent", "BR_agent_output")
-        }
+        return code_collection, summary_collection
 
-        self._loop = asyncio.new_event_loop()
-        try:
-            return self.graph.invoke(initial_state)
-        finally:
-            self._loop.close()
-            self._loop = None
-
-    def condenser_node(self, state: BRGraphState) -> BRGraphState:
+    def _candidates_from_rules_by_file(self, input_rules: dict[str, list[BusinessRule]], codebase_name: str) -> list[RuleCandidate]:
         """
-        @brief Condenses duplicate or near-duplicate business rules from G1/G2 output.
-
-        @details
-        Groups input rules by directory (derived from file path keys, made relative to codebase root).
-        For each directory group with more than one rule, prompts the LLM (with CondenserOutput
-        structured output) to identify and merge duplicates or near-duplicates.
-        Single-rule groups are passed through without an LLM call.
-        LLM calls are batched concurrently across directory groups for speed.
-        IDs are assigned sequentially after all results are collected, in sorted directory order.
-        Each CondensedRule carries all source file paths from its directory group.
-        Runs exactly once at the start of the graph.
-
-        @param state Current workflow state containing input_rules and codebase_name.
-        @return Updated state with current_rules and rule_contexts populated.
+        @brief Converts the older {file_path: [BusinessRule]} input into rule candidates.
+        @details Keeps the original directory derivation for this input form: the directory of
+                 each file key, starting at the codebase name if it appears in the path.
+                 Each rule's source file is its own key.
+        @param input_rules Dictionary of file paths to lists of BusinessRule objects.
+        @param codebase_name Name of the target codebase.
+        @return List of RuleCandidate objects with origin "file".
         """
-
-        progress(
-            "Condensing business rules...",
-            25
-        )
-        input_rules = state["input_rules"]
-        codebase_name = state["codebase_name"]
-
-        # Handle empty input
-        if not input_rules:
-            return {
-                "current_rules": [],
-                "rule_contexts": {},
-            }
-
-        # Group rules by relative directory
-        # Keys in input_rules are file paths; derive directory relative to codebase root
-        dir_groups: dict[str, dict] = defaultdict(lambda: {"rules": [], "file_paths": set()})
-
+        candidates = []
         for file_path, rules in input_rules.items():
             abs_dir = os.path.dirname(file_path)
 
@@ -210,20 +209,58 @@ class BRAgent:
             except (ValueError, TypeError):
                 rel_dir = abs_dir if abs_dir else "."
 
-            dir_groups[rel_dir]["file_paths"].add(file_path)
-            dir_groups[rel_dir]["rules"].extend(rules)
+            for rule in rules:
+                candidates.append(RuleCandidate(
+                    rule=rule.rule,
+                    source_directory=rel_dir,
+                    source_file_paths=[file_path],
+                    origin="file",
+                ))
+        return candidates
 
-        # Filter out groups with no rules
-        dir_groups = {k: v for k, v in dir_groups.items() if v["rules"]}
+    def condenser_node(self, state: BRGraphState) -> BRGraphState:
+        """
+        @brief Condenses duplicate or near-duplicate business rules from G1/G2 output.
+
+        @details
+        Groups input rule candidates by their source_directory (already normalized relative
+        to the codebase root, "." for the root). For each directory group with more than one
+        rule, prompts the LLM (with CondenserOutput structured output) to identify and merge
+        duplicates or near-duplicates; each condensed rule names the input rules it covers.
+        Single-rule groups are passed through without an LLM call.
+        LLM calls are batched concurrently across directory groups for speed.
+        IDs are assigned sequentially after all results are collected, in sorted directory order.
+        Each CondensedRule carries only the source files and provenance of the input rules it
+        covers. If the LLM call fails, or its source numbers are invalid or leave an input rule
+        uncovered, that group's rules are passed through uncondensed.
+        Runs exactly once at the start of the graph.
+
+        @param state Current workflow state containing input_rules.
+        @return Updated state with current_rules and rule_contexts populated.
+        """
+
+        progress(
+            "Condensing business rules...",
+            25
+        )
+        input_rules: list[RuleCandidate] = state["input_rules"]
+
+        # Handle empty input
+        if not input_rules:
+            return {
+                "current_rules": [],
+                "rule_contexts": {},
+            }
+
+        # Group rules by their normalized source directory
+        dir_groups: dict[str, list[RuleCandidate]] = defaultdict(list)
+        for candidate in input_rules:
+            dir_groups[candidate.source_directory].append(candidate)
 
         # Separate single-rule groups (no LLM call needed) from multi-rule groups
-        single_rule_groups = {}
-        multi_rule_groups = {}
-        for dir_name, group in dir_groups.items():
-            if len(group["rules"]) == 1:
-                single_rule_groups[dir_name] = group
-            else:
-                multi_rule_groups[dir_name] = group
+        multi_rule_groups = {
+            dir_name: group for dir_name, group in dir_groups.items() if len(group) > 1
+        }
 
         # Batch async LLM calls for multi-rule groups
         structured_llm = self.llm.with_structured_output(CondenserOutput)
@@ -236,7 +273,7 @@ class BRAgent:
                     return await _condense_group(
                         structured_llm,
                         directory,
-                        multi_rule_groups[directory]["rules"]
+                        multi_rule_groups[directory]
                     )
             return await asyncio.gather(
                 *(guarded(d) for d in sorted_multi_dirs)
@@ -247,47 +284,56 @@ class BRAgent:
         else:
             results = []
 
-        # Build condensed rule results keyed by directory (preserving sorted order)
+        # Build condensed candidates keyed by directory
         # results[i] corresponds to sorted_multi_dirs[i]
-        condensed_by_dir: dict[str, list[str]] = {}
-        for dir_name, (returned_dir, condensed_strings, err) in zip(sorted_multi_dirs, results):
+        condensed_by_dir: dict[str, list[RuleCandidate]] = {}
+        for dir_name, (returned_dir, condensed_outputs, err) in zip(sorted_multi_dirs, results):
+            group = multi_rule_groups[dir_name]
             if err is not None:
                 # On error, pass through original rules uncondensed
                 progress((f"Condensation error for {dir_name}: {err}"))
                 logger.error(f"Condensation error for {dir_name}: {err}")
-                condensed_strings = [r.rule for r in multi_rule_groups[dir_name]["rules"]]
-            condensed_by_dir[dir_name] = condensed_strings
+                condensed_by_dir[dir_name] = group
+                continue
+
+            mapped = _map_condensed_rules(group, condensed_outputs)
+            if mapped is None:
+                progress(f"Condenser returned an incomplete source mapping for {dir_name}; keeping its rules uncondensed.")
+                logger.warning(f"Condenser returned an incomplete source mapping for {dir_name}; keeping its rules uncondensed.")
+                condensed_by_dir[dir_name] = group
+                continue
+
+            safe = apply_condenser_safety(group, condensed_outputs)
+            if safe is None:
+                progress(
+                    f"Condenser assigned overlapping or duplicate source numbers "
+                    f"for {dir_name}; keeping its rules uncondensed."
+                )
+                logger.warning(
+                    f"Condenser assigned overlapping or duplicate source numbers "
+                    f"for {dir_name}; keeping its rules uncondensed."
+                )
+                condensed_by_dir[dir_name] = group
+                continue
+            condensed_by_dir[dir_name] = safe
 
         # Assign sequential IDs across all groups in sorted directory order
         all_condensed: list[CondensedRule] = []
         rule_id = 1
 
         for dir_name in sorted(dir_groups.keys()):
-            group = dir_groups[dir_name]
-            file_paths = sorted(group["file_paths"])
-
-            if dir_name in single_rule_groups:
-                # Single rule — pass through without LLM
-                rule_text = group["rules"][0].rule
+            # Multi-rule groups use condensed results; single-rule groups pass through
+            for candidate in condensed_by_dir.get(dir_name, dir_groups[dir_name]):
                 all_condensed.append(CondensedRule(
                     id=rule_id,
-                    rule=rule_text,
+                    rule=candidate.rule,
                     source_directory=dir_name,
-                    source_file_paths=file_paths,
+                    source_file_paths=list(candidate.source_file_paths),
+                    provenance=[p.model_copy(deep=True) for p in candidate.provenance],
                 ))
                 rule_id += 1
-            else:
-                # Multi-rule group — use LLM-condensed results
-                for rule_text in condensed_by_dir[dir_name]:
-                    all_condensed.append(CondensedRule(
-                        id=rule_id,
-                        rule=rule_text,
-                        source_directory=dir_name,
-                        source_file_paths=file_paths,
-                    ))
-                    rule_id += 1
 
-        progress(f"Condensed {sum(len(g['rules']) for g in dir_groups.values())} input rules "
+        progress(f"Condensed {len(input_rules)} input rules "
                     f"into {len(all_condensed)} condensed rules across {len(dir_groups)} directory groups.",
                     35)
 
@@ -481,7 +527,9 @@ class BRAgent:
                     id=rule.id,
                     rule=rule.rule,
                     source_directory=rule.source_directory,
+                    source_file_paths=rule.source_file_paths,
                     reason=f"Validation failed with error: {err}",
+                    provenance=rule.provenance,
                 ))
                 continue
 
@@ -492,6 +540,7 @@ class BRAgent:
                     source_directory=rule.source_directory,
                     source_file_paths=rule.source_file_paths,
                     explanation=output.explanation,
+                    provenance=rule.provenance,
                 ))
             elif output.decision == "discard":
                 new_discarded.append(DiscardedRule(
@@ -500,6 +549,7 @@ class BRAgent:
                     source_directory=rule.source_directory,
                     source_file_paths=rule.source_file_paths,
                     reason=output.discard_reason or "No reason provided.",
+                    provenance=rule.provenance,
                 ))
             elif output.decision == "need_more_context":
                 if is_final_pass:
@@ -509,6 +559,7 @@ class BRAgent:
                         source_directory=rule.source_directory,
                         source_file_paths=rule.source_file_paths,
                         reason="Insufficient evidence after maximum context retrieval.",
+                        provenance=rule.provenance,
                     ))
                 else:
                     needs_context.append(rule)
@@ -661,18 +712,47 @@ class BRAgent:
         )
 
 
-async def _condense_group(structured_llm, directory: str, rules: list) -> tuple[str, list[str], Exception | None]:
+def _map_condensed_rules(group: list[RuleCandidate], outputs: list) -> list[RuleCandidate] | None:
+    """
+    @brief Turns condenser LLM output into candidates that carry the provenance of the inputs they cover.
+    @param group The input candidates, in the numbered order sent to the LLM.
+    @param outputs List of CondenserRuleOutput returned by the LLM.
+    @return New candidates in output order, or None if the mapping cannot be trusted: no outputs,
+            an empty rule, a missing or out-of-range source number, or an input rule left uncovered.
+    """
+    if not outputs:
+        return None
+
+    mapped = []
+    covered = set()
+    for output in outputs:
+        numbers = list(dict.fromkeys(output.source_rule_numbers))
+        if not output.rule.strip() or not numbers or any(n < 1 or n > len(group) for n in numbers):
+            return None
+        covered.update(numbers)
+        mapped.append(merge_rule_candidates([group[n - 1] for n in numbers], rule=output.rule))
+
+    if len(covered) != len(group):
+        return None
+    return mapped
+
+
+async def _condense_group(structured_llm, directory: str, rules: list) -> tuple[str, list, Exception | None]:
     """
     @brief Async helper that prompts the LLM to condense a single directory group of business rules.
     @param structured_llm LLM configured with CondenserOutput structured output.
     @param directory The relative directory name for this group.
-    @param rules List of BusinessRule objects to condense.
-    @return Tuple of (directory, list of condensed rule strings, error or None).
+    @param rules List of RuleCandidate objects to condense.
+    @return Tuple of (directory, list of CondenserRuleOutput, error or None).
     """
     try:
         rule_list = "\n".join(f"{i+1}. {r.rule}" for i, r in enumerate(rules))
 
-        system_message = """You are a Senior Software Architect. Your task is to condense a list of business rules by merging rules that are semantically similar or redundant."""
+        system_message = (
+            "You are a Senior Software Architect. Condense business rules only when "
+            "they are genuine paraphrases of the same independently testable requirement. "
+            "When uncertain, keep rules separate."
+        )
 
         prompt = f"""Directory: {directory}
 
@@ -680,27 +760,30 @@ Business rules to condense:
 {rule_list}
 
 MERGING GUIDELINES:
-- Merge rules that express the same constraint or policy in different words.
-- Merge rules that are specific instances of a more general pattern. When several rules each describe a similar aspect of the codebase's behaviour but for different cases, combine them into one general rule that captures the shared intent.
-- When merging, produce a single clear statement that preserves the meaning of all merged rules. Do not lose important specifics unless they are redundant.
-- Do NOT merge rules that govern different aspects of the system, even if they sound superficially similar.
-- Do NOT invent new rules that are not supported by the originals.
-- Do NOT discard a rule unless it is fully covered by another rule in the list.
-- Rules that are already unique and distinct should be kept as-is.
+- Merge genuine paraphrases only when they express the same requirement.
+- Do NOT merge different thresholds, numeric constants, percentages, formulas, precision or rounding requirements, inequalities, conditions, exceptions, or input/output constraints.
+- Do NOT merge a general rule with a more specific independently testable requirement.
+- Do NOT replace multiple distinct rules with a vague generalization, even if the generalization lists every original number or condition.
+- Do NOT invent conditions or rules. Preserve the source semantics of each original.
+- If you are uncertain whether two rules are equivalent, keep them separate.
+- Do NOT discard a rule. Every original must appear in exactly one condensed output.
 
-POSITIVE EXAMPLE — rules that SHOULD be merged:
+SOURCE RULE NUMBERS:
+- For each condensed rule, set source_rule_numbers to the numbers of every input rule it covers. A rule kept as-is lists only its own number.
+- Each original input index must appear exactly once across the condensed outputs.
+
+POSITIVE EXAMPLE — rules that SHOULD be merged (same requirement, different wording):
 Input:
-1. A number can be converted into its written French representation.
-2. A number can be converted into its written Arabic representation.
-3. A number can be converted into its written Spanish representation.
+1. Orders need a customer.
+2. Every order must have a customer.
 Output:
-1. A number can be converted into written representations in various languages.
+1. Every order must have a customer. (source_rule_numbers: [1, 2])
 
-NEGATIVE EXAMPLE — rules that should NOT be merged:
+NEGATIVE EXAMPLE — rules that should NOT be merged (different numeric thresholds):
 Input:
-1. Order total must be non-negative.
-2. An order must contain at least one item to be processed.
-These both relate to order validation, but they enforce different constraints (value range vs. item count). They must remain separate.
+1. A person must be at least 18 years old.
+2. A person must be at least 21 years old.
+These are independently testable requirements. Keep them as two condensed rules, each listing only its own source number. Do not write a single rule such as "a person must meet a minimum age" or "a person must be at least 18 or 21".
 
 Return the condensed list of business rules."""
 

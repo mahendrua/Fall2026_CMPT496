@@ -10,7 +10,22 @@ from tree_sitter import Parser, Tree, Node, Query, QueryCursor
 from pathlib import Path
 from dataclasses import dataclass
 import os
+import sys
 from agent.crawl_config import prune
+
+# Consecutive Python module-level statements are packed until either bound
+# is exceeded, then a new module_body chunk starts at the next statement.
+MODULE_BODY_MAX_LINES = 200
+MODULE_BODY_MAX_CHARS = 8000
+
+_PYTHON_MODULE_SKIP_TYPES = frozenset({
+    "import_statement",
+    "import_from_statement",
+    "future_import_statement",
+    "function_definition",
+    "class_definition",
+    "decorated_definition",
+})
 
 # Create language dictionary to associate file extensions with tree-sitter
 # language packs and desired S-expression queries for chunk extraction.
@@ -41,6 +56,19 @@ LANGUAGE_DICT = {
         "property_type": "pair",
         "import_query": "(import_statement) @import",
         "namespace_query": "" # JS has no namespaces, so this is left empty
+    },
+    ".py": {
+        "name": "python",
+        "query": """
+            (function_definition name: (identifier) @name) @chunk
+        """,
+        "container_type": "class_definition",
+        "property_type": None,
+        "import_query": """
+            (import_statement) @import
+            (import_from_statement) @import
+        """,
+        "namespace_query": ""
     }
 }
 
@@ -76,8 +104,8 @@ def parse_file(filepath: Path, parser: Parser, language: str) -> CodeBundle:
     if not filepath.exists():
         raise FileNotFoundError(f"Source file not found: {filepath}")
     
-    # Parse file
-    print(f"Parsing: {filepath}")
+    # Parse file. Stdout is reserved for Checkpoint's JSON protocol.
+    print(f"Parsing: {filepath}", file=sys.stderr)
     code_bytes = filepath.read_bytes()
     ast = parser.parse(code_bytes)
 
@@ -162,8 +190,15 @@ def get_chunks(bundle: CodeBundle) -> list[dict]:
     if not isinstance(bundle.language, str):
         raise TypeError(f"Expected 'bundle.language' to be a string, got {type(bundle.language).__name__}")
     
-    ext = bundle.path.suffix
+    ext = bundle.path.suffix.lower()
     config = LANGUAGE_DICT.get(ext)
+
+    if bundle.tree.root_node.has_error:
+        print(
+            f"Skipping {bundle.path}: source contains syntax errors.",
+            file=sys.stderr,
+        )
+        return []
 
     # Validate that the file extension is supported
     if not config: 
@@ -199,9 +234,13 @@ def get_chunks(bundle: CodeBundle) -> list[dict]:
             code_text = bundle.content[chunk_node.start_byte:chunk_node.end_byte].decode("utf-8")
             
             # Handle Property Grouping
-            if chunk_node.type == config["property_type"]:
+            if (
+                config["property_type"] is not None
+                and chunk_node.type == config["property_type"]
+            ):
                 if parent_container not in grouped_properties:
                     grouped_properties[parent_container] = []
+                
                 grouped_properties[parent_container].append(code_text)
                 continue
 
@@ -236,7 +275,111 @@ def get_chunks(bundle: CodeBundle) -> list[dict]:
         }
         chunks.append(chunk)
 
+    if ext == ".py":
+        chunks.extend(
+            _python_module_body_chunks(
+                bundle,
+                file_namespace=file_namespace,
+                file_imports=file_imports,
+            )
+        )
+
     return chunks
+
+
+def _node_line_span(node: Node) -> tuple[int, int]:
+    return node.start_point[0] + 1, node.end_point[0] + 1
+
+
+def _module_group_metrics(content: bytes, nodes: list[Node]) -> tuple[int, int, str]:
+    start = nodes[0].start_byte
+    end = nodes[-1].end_byte
+    code = content[start:end].decode("utf-8")
+    start_line, _ = _node_line_span(nodes[0])
+    _, end_line = _node_line_span(nodes[-1])
+    return end_line - start_line + 1, len(code), code
+
+
+def _module_group_is_oversized(content: bytes, nodes: list[Node]) -> bool:
+    lines, chars, _ = _module_group_metrics(content, nodes)
+    return lines > MODULE_BODY_MAX_LINES or chars > MODULE_BODY_MAX_CHARS
+
+
+def _python_module_statement_runs(root: Node) -> list[list[Node]]:
+    """Group adjacent executable module-level nodes; skip defs/classes/imports."""
+    runs: list[list[Node]] = []
+    current: list[Node] = []
+    for child in root.named_children:
+        if child.type in _PYTHON_MODULE_SKIP_TYPES:
+            if current:
+                runs.append(current)
+                current = []
+            continue
+        current.append(child)
+    if current:
+        runs.append(current)
+    return runs
+
+
+def _python_module_body_chunks(
+    bundle: CodeBundle,
+    file_namespace: str,
+    file_imports: str,
+) -> list[dict]:
+    """
+    Index executable top-level Python statements as module_body chunks.
+
+    A single statement larger than the size bound is emitted in full with a
+    warning. Syntax is never truncated. Consecutive statements are split only
+    at statement boundaries.
+    """
+    chunks = []
+    body_index = 0
+
+    def emit(nodes: list[Node], oversized: bool = False) -> None:
+        nonlocal body_index
+        body_index += 1
+        lines, chars, code = _module_group_metrics(bundle.content, nodes)
+        start_line, _ = _node_line_span(nodes[0])
+        _, end_line = _node_line_span(nodes[-1])
+        if oversized:
+            print(
+                f"Emitting oversized module_body in {bundle.path} "
+                f"({lines} lines, {chars} characters) without truncating.",
+                file=sys.stderr,
+            )
+        name = "__module__" if body_index == 1 else f"__module__#{body_index}"
+        chunks.append({
+            "name": name,
+            "code": code,
+            "container": "Global",
+            "file": str(bundle.path),
+            "type": "module_body",
+            "start_line": start_line,
+            "end_line": end_line,
+            "language": bundle.language,
+            "namespace": file_namespace,
+            "imports": file_imports,
+        })
+
+    for run in _python_module_statement_runs(bundle.tree.root_node):
+        current: list[Node] = []
+        for node in run:
+            trial = current + [node]
+            if current and _module_group_is_oversized(bundle.content, trial):
+                emit(current)
+                current = [node]
+            else:
+                current = trial
+            if current and _module_group_is_oversized(bundle.content, current):
+                emit(current, oversized=True)
+                current = []
+        if current:
+            emit(current)
+
+    return chunks
+
+
 def get_container_name(node: Node, container_type: str) -> str:
     """!
     @brief Identifies the parent container name for a given AST node.

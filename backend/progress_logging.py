@@ -1,15 +1,39 @@
 import json
 import logging
+from contextlib import contextmanager
+from contextvars import ContextVar
 logger = logging.getLogger(__name__)
+
+_request_id = ContextVar("checkpoint_request_id", default=None)
+
+
+@contextmanager
+def request_scope(request_id):
+    token = _request_id.set(request_id)
+    try:
+        yield
+    finally:
+        _request_id.reset(token)
+
+
+def current_request_id():
+    return _request_id.get()
+
+
+def _include_request_id(data):
+    request_id = current_request_id()
+    if request_id is not None:
+        data["request_id"] = request_id
+    return data
 
 
 class FrontendProgressHandler(logging.Handler):
     def emit(self, record):
         print(
-            json.dumps({
+            json.dumps(_include_request_id({
                 "type": "progress",
                 "stage": record.getMessage()
-            }),
+            })),
             flush=True,
         )
 
@@ -40,19 +64,30 @@ def progress(message, percent=None, step_complete=False):
     if step_complete:
         data["step_complete"] = True
 
+    _include_request_id(data)
 
     print(
         json.dumps(data),
         flush=True
     )
 
-def pipeline_progress(stage, percent):
+def pipeline_progress(stage, percent, step_percent=True):
+    """
+    Announce a pipeline stage. percent places the stage on the pipeline bar.
+    step_percent=False says the stage reports no percentage of its own, so
+    the step bar should not show one.
+    """
+
+    data = {
+        "type": "pipeline_progress",
+        "stage": stage,
+        "progress": percent
+    }
+
+    if not step_percent:
+        data["step_percent"] = False
 
     print(
-        json.dumps({
-            "type": "pipeline_progress",
-            "stage": stage,
-            "progress": percent
-        }),
+        json.dumps(_include_request_id(data)),
         flush=True
     )

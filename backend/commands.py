@@ -7,6 +7,7 @@ Each public method represents a command that can be dispatched from
 dispatcher.py and called by the frontend.
 """
 
+import contextlib
 import logging
 import sys
 sys.stdout.reconfigure(
@@ -16,7 +17,6 @@ sys.stdout.reconfigure(
 import os
 import subprocess
 from xml.parsers.expat import errors
-import chromadb
 import json
 import time
 import requests
@@ -50,9 +50,12 @@ from agent.gui_test_agent import GuiTestAgent
 from agent.directory_agent import DirectoryAgent
 from agent.file_summary_agent import FileSummaryAgent
 from agent.llm import verify_llm_key
-from agent.structured_output.file_summary_output import BusinessRule
+from agent.BR_input_loader import load_rule_candidates, deduplicate_rule_candidates
 from agent.structured_output.UT_output import ValidatedRule
 from agent.structured_output.UTV_output import UnitTest
+from agent.consistency_checker import run_consistency_check
+from agent.consistency_store import ConsistencyStoreError
+from backend import consistency_review
 
 from src.build_database import build_database
 from src.build_database_JSON import build_database as build_summary_database
@@ -92,6 +95,8 @@ def test_run_result(test_run, **extra):
 
     return result
 
+from backend.run_report import write_run_report
+from backend.mutation_testing import run as run_mutation_testing, TIME_LIMIT_MINUTES
 from backend.token_estimate import estimate_pipeline
 from backend.token_usage import (
     record_usage,
@@ -249,6 +254,124 @@ class Commands:
         return {"success": True, "run_usage": data}
 
     # -----------------------------------------------------
+    # Consistency Review Commands
+    # -----------------------------------------------------
+    # Read saved results and save review decisions for the Consistency Review
+    # screen. Like get_run_usage they are outside _run_command (viewing is not
+    # a run), and none of them creates or calls a model.
+
+    def get_consistency_result(self, codebase: str = "", scope: str = "full"):
+        """Return the saved full or selected consistency check for a codebase."""
+        return self._consistency_call(
+            lambda: {"review": consistency_review.load_for_review(codebase, scope, self.app_dir)}
+        )
+
+    def save_consistency_review(
+        self,
+        codebase: str = "",
+        scope: str = "full",
+        check_id: str = "",
+        finding_id: str = "",
+        status: str = "",
+        note: str = None,
+    ):
+        """Save a review status and optional note for one finding of the result being reviewed."""
+        return self._consistency_call(
+            lambda: {"saved": consistency_review.save_review(
+                codebase, scope, check_id, finding_id, status, note, self.app_dir,
+            )}
+        )
+
+    def get_consistency_targets(self, codebase: str = ""):
+        """List the source files a consistency check can cover, with what was generated for each."""
+        return self._consistency_call(
+            lambda: {"targets": consistency_review.list_targets(codebase, self.app_dir)}
+        )
+
+    def get_consistency_methods(self, codebase: str = "", path: str = ""):
+        """List the methods of one source file that a check can be limited to."""
+        return self._consistency_call(
+            lambda: {"methods": consistency_review.list_methods(codebase, path, self.app_dir)}
+        )
+
+    def get_consistency_artifact(
+        self,
+        codebase: str = "",
+        scope: str = "full",
+        check_id: str = "",
+        finding_id: str = "",
+        artifact_index: int = -1,
+    ):
+        """Return the current state and content of one artifact a finding refers to."""
+        return self._consistency_call(
+            lambda: {"artifact": consistency_review.read_artifact(
+                codebase, scope, check_id, finding_id, artifact_index, self.app_dir,
+            )}
+        )
+
+    def _consistency_review_stage(self, codebase_path, outputs_before):
+        """
+        The full pipeline's Consistency Review stage: its own stage in the
+        pipeline's run (run ID, usage and timing), whole-codebase scope, and
+        only this run's outputs. Not the independent check_consistency command.
+        """
+
+        def task():
+            progress("Checking consistency of the outputs this run generated...")
+            return consistency_review.review_pipeline_outputs(
+                codebase_path, self.app_dir, outputs_before, run_consistency_check,
+            )
+
+        return self._run_command("consistency_review", task, individualStep=False)
+
+    def check_consistency(
+        self,
+        codebase: str = "",
+        scope: str = "full",
+        targets: list = None,
+        individualStep=True,
+    ):
+        """
+        Run a Consistency Review check now, for the whole codebase or selected
+        files (optionally one method each), and save its result.
+
+        Uses the outputs already on disk: nothing is regenerated and no
+        pipeline step runs. The request is validated before anything is
+        logged, and the checker only creates a model for comparisons that
+        have artifacts to compare, so missing outputs cost no call. It runs
+        as its own command, so its run ID, AI calls, tokens and timing go to
+        the run log like any other step.
+        """
+        try:
+            root, checked_targets = consistency_review.prepare_check(codebase, scope, targets)
+        except (consistency_review.ReviewRequestError, ConsistencyStoreError) as exc:
+            return {
+                "success": False,
+                "command": "check_consistency",
+                "individualStep": individualStep,
+                "error": str(exc),
+            }
+
+        def task():
+            what = "the whole codebase" if checked_targets is None else (
+                f"{len(checked_targets)} selected file{'s' if len(checked_targets) != 1 else ''}"
+            )
+            progress(f"Checking consistency of {what} in {root.name}...")
+            result = run_consistency_check(root, targets=checked_targets, app_dir=self.app_dir, save=True)
+            return consistency_review.check_summary(result)
+
+        return self._run_command("check_consistency", task, individualStep=individualStep)
+
+    @staticmethod
+    def _consistency_call(task):
+        try:
+            return {"success": True, **task()}
+        except (consistency_review.ReviewRequestError, ConsistencyStoreError) as exc:
+            return {"success": False, "error": str(exc)}
+        except OSError as exc:
+            return {"success": False, "error": f"Could not read the saved result: {exc}"}
+
+    # -----------------------------------------------------
     # Calibration Commands
     # -----------------------------------------------------
 
@@ -384,10 +507,19 @@ class Commands:
         self,
         codebase: str,
         rules_path: str = None,
-        individualStep = True
+        individualStep = True,
+        directory_rules_path: str = None,
     ):
         """
         Validate generated business rules.
+
+        Loads file-level and folder-level rules, merges exact
+        duplicates, then validates them with the BR agent.
+
+        With no paths given, the default file and directory agent
+        outputs are used; whichever exists is validated and a missing
+        one is returned as a warning. If either path is given, only
+        the given inputs are loaded, and each must exist.
 
         Refactor of old:
             run_br()
@@ -396,49 +528,49 @@ class Commands:
         codebase_path = Path(codebase)
         codebase_name = codebase_path.name
 
-        if rules_path is None:
-            rules_path = (
-                self.app_dir
-                / "agent"
-                / "file_summary_agent_output"
-                / codebase_name
-                / "business_rules"
-                / "business_rules.json"
-            )
-
-        rules_path = Path(rules_path)
+        # A custom path means a custom invocation: do not mix in
+        # default outputs for the input that was not given.
+        custom = rules_path is not None or directory_rules_path is not None
+        skip = False if custom else None
 
         def task():
 
             progress("Validating business rules...")
 
-            if not rules_path.exists():
-                raise FileNotFoundError(
-                    f"Business rules not found: {rules_path}"
-                )
+            inputs = load_rule_candidates(
+                codebase_path,
+                rules_path if rules_path is not None else skip,
+                directory_rules_path if directory_rules_path is not None else skip,
+                app_dir=self.app_dir,
+            )
 
-            with open(
-                rules_path,
-                "r",
-                encoding="utf-8"
-            ) as file:
+            candidates = deduplicate_rule_candidates(inputs.candidates)
 
-                raw_rules = json.load(file)
-
-
-            input_rules = {
-                path: [
-                    BusinessRule(**rule)
-                    for rule in rules
-                ]
-                for path, rules in raw_rules.items()
-            }
-
+            progress(
+                f"Loaded {len(inputs.candidates)} business rules "
+                f"({len(candidates)} after merging exact duplicates)."
+            )
 
             BRAgent().run(
-                input_rules,
+                candidates,
                 codebase_name
             )
+
+            result = {
+                "message": (
+                    f"Business rule validation finished for {len(candidates)} "
+                    f"rule{'' if len(candidates) == 1 else 's'}"
+                ),
+            }
+
+            if inputs.missing_inputs:
+                result["warning"] = "\n".join(
+                    f"No {kind}-level business rules were found at {path}, "
+                    "so only the other rules were validated."
+                    for kind, path in inputs.missing_inputs.items()
+                )
+
+            return result
 
 
         return self._run_command(
@@ -584,7 +716,7 @@ class Commands:
 
             if not test_path.exists():
                 raise FileNotFoundError(
-                    f"Validated rules not found: {test_path}"
+                    f"Generated unit tests not found: {test_path}"
                 )
 
 
@@ -708,6 +840,70 @@ class Commands:
             task,
             individualStep=individualStep,
         )
+
+    # -----------------------------------------------------
+    # Mutation Testing
+    # -----------------------------------------------------
+
+    def run_mutation_tests(
+        self,
+        codebase: str,
+        time_limit_minutes: float = None,
+        individualStep=True
+    ):
+        """
+        Measure how many small code changes the generated unit tests catch
+        (Stryker.NET), per rule. See backend/mutation_testing.py.
+
+        Not part of full_pipeline: it takes minutes and needs Stryker.NET
+        installed. Makes no AI calls. When it could not measure (Stryker
+        missing, no passing tests, out of time) the step still succeeds and
+        says why in a warning, like the test steps.
+        """
+
+        codebase_path = Path(codebase)
+
+        def task():
+
+            progress("Running mutation testing...")
+
+            report = run_mutation_testing(
+                codebase_path,
+                self.app_dir,
+                time_limit_minutes=time_limit_minutes or TIME_LIMIT_MINUTES,
+            )
+
+            result = {
+                "message": report["message"],
+                "status": report["status"],
+                "mutation_report": report.get("report_path"),
+            }
+
+            if report["status"] != "finished":
+                result["warning"] = report["message"]
+
+            return result
+
+        result = self._run_command(
+            "run_mutation_tests",
+            task,
+            individualStep=individualStep,
+        )
+
+        # Rebuild the run report so it shows the new numbers. Like after the
+        # full pipeline, a report problem only adds a warning.
+        if result["success"]:
+            report = write_run_report(codebase_path, self.app_dir)
+            summary = result["result"]
+
+            if report["path"]:
+                summary["run_report"] = report["path"]
+            else:
+                note = f"The run report could not be updated: {report['error']}"
+                summary["warning"] = "\n\n".join(filter(None, [summary.get("warning"), note]))
+
+        return result
+
     # -----------------------------------------------------
     # UML Commands
     # -----------------------------------------------------
@@ -748,8 +944,13 @@ class Commands:
             ]
 
 
+            # uml_json_to_pdf prints "PDF written to: ..." for its own
+            # terminal use. The app reads stdout as one JSON message per
+            # line and rejects anything else ("Malformed response from
+            # Python backend"), so send its prints to stderr instead.
             try:
-                skipped = uml_build_report(uml_parse_args())
+                with contextlib.redirect_stdout(sys.stderr):
+                    skipped = uml_build_report(uml_parse_args())
 
             finally:
                 sys.argv = old_argv
@@ -877,7 +1078,12 @@ class Commands:
             return {**base, "success": False, "error": "No model name provided."}
 
         try:
-            check = verify_llm_key(provider, model.strip(), api_key.strip())
+            check = verify_llm_key(
+                provider,
+                model.strip(),
+                api_key.strip(),
+                timeout=self.VALIDATION_TIMEOUT_SECONDS,
+            )
         except Exception as exc:
             return {**base, "success": False, "error": str(exc)}
 
@@ -974,6 +1180,12 @@ class Commands:
 
             1. Full Codebase Analysis Pipeline
 
+        After the generation steps, a Consistency Review stage checks the
+        whole codebase against the outputs this run wrote and saves the result
+        (View Insights -> Consistency Review). A mismatch is a finding, and an
+        incomplete or failed review is reported, but neither fails the
+        pipeline or touches what was generated. A failed generation step stops
+        the pipeline before the review, as before.
         """
 
         codebase_path = Path(codebase)
@@ -1026,6 +1238,10 @@ class Commands:
 
             steps = []
 
+            # What the review stage could read before this run wrote anything,
+            # so it can tell this run's outputs from leftovers.
+            outputs_before = consistency_review.snapshot_outputs(codebase_name, self.app_dir)
+
             pipeline_progress("Building database...", 5)
             steps.append( self._require_success(self.build_database(str(codebase_path), False)))
 
@@ -1063,8 +1279,14 @@ class Commands:
                     failed
                 )
 
+            # Not through _require_success: a review problem must not fail a
+            # run whose generation succeeded.
+            pipeline_progress("Checking consistency...", 97, step_percent=False)
+            review = self._consistency_review_stage(codebase_path, outputs_before)
+
             summary = {
                 "steps": steps,
+                "consistency_review": review,
                 "message": "Full pipeline completed",
             }
 
@@ -1077,6 +1299,14 @@ class Commands:
                 and step["result"].get("warning")
             ]
 
+            if not review["success"]:
+                warnings.append(
+                    "The Consistency Review stage did not finish: "
+                    f"{review.get('error', 'unknown error')}. Everything generated before it was kept."
+                )
+            elif review["result"].get("warning"):
+                warnings.append(review["result"]["warning"])
+
             if warnings:
                 summary["warning"] = "\n\n".join(warnings)
 
@@ -1084,8 +1314,25 @@ class Commands:
             return summary
 
 
-        return self._run_command(
+        result = self._run_command(
             "full_pipeline",
             task,
             individualStep=True,
         )
+
+        # US-049: one readable report for the run; the Complete screen's
+        # "Open Report" button opens it from the path in run_report.
+        # Built after _run_command so the run log is finished and the report
+        # shows the final numbers. It makes no AI calls, and a report problem
+        # only adds a warning: the run itself has already succeeded.
+        if result["success"]:
+            report = write_run_report(codebase_path, self.app_dir)
+            summary = result["result"]
+
+            if report["path"]:
+                summary["run_report"] = report["path"]
+            else:
+                note = f"The run report could not be written: {report['error']}"
+                summary["warning"] = "\n\n".join(filter(None, [summary.get("warning"), note]))
+
+        return result

@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, shell, dialog, Menu } = require('electron');
 const { spawn } = require('child_process');
+const { randomUUID } = require('node:crypto');
 const path = require('path');
 const fs = require("fs");
 const dotenv = require("dotenv");
@@ -15,11 +16,13 @@ const {
     listGuiTestReports,
     saveGuiTestReport
 } = require("./guiTestReports");
+const { CommandRequestTracker } = require("./command_requests");
 
 
 let pythonProcess = null;
 let mainWindow = null;
 let restartBackendAfterCancel = false;
+const backendRequests = new CommandRequestTracker();
 // Directory the backend actually writes its output to (userData when packaged).
 let backendOutputDir = __dirname;
 let guiTestRunner = null;
@@ -613,6 +616,7 @@ ipcMain.handle(
 
         errors.push({
             time: new Date().toISOString().slice(0, 19),
+            ...(error?.request_id ? { request_id: error.request_id } : {}),
             command: error?.command || "unknown",
             code: error?.code || null,
             message: error?.message || "Unknown error"
@@ -650,25 +654,80 @@ ipcMain.handle(
 // SEND COMMAND TO PYTHON BACKEND
 // ----------------------------------------------------
 
+function publishBackendResponse(response) {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send("backend-response", response);
+    }
+}
+
+function failPendingBackendRequests(error, extra = {}) {
+    for (const failure of backendRequests.failAll(error, extra)) {
+        publishBackendResponse(failure.response);
+    }
+}
+
+function failOldestBackendRequest(error) {
+    const request = backendRequests.firstPending();
+    if (!request) return;
+
+    const failure = backendRequests.fail(request.requestId, error);
+    if (failure) publishBackendResponse(failure.response);
+}
+
+function handleBackendLine(line) {
+    let response;
+    try {
+        response = JSON.parse(line);
+    } catch (error) {
+        console.error("Backend response parse error:", error.message);
+        failOldestBackendRequest("Malformed response from Python backend.");
+        return;
+    }
+
+    if (!response || typeof response !== "object" || Array.isArray(response)) {
+        failOldestBackendRequest("Malformed response from Python backend.");
+        return;
+    }
+
+    if (typeof response.request_id !== "string" || !response.request_id) {
+        failOldestBackendRequest("Backend response did not include a request ID.");
+        return;
+    }
+
+    const result = backendRequests.handle(response);
+    if (!result.matched) return;
+    publishBackendResponse(result.response);
+}
+
 ipcMain.handle(
     "execute-command",
     async (event, request) => {
 
+        const requestId = typeof request?.request_id === "string" && request.request_id
+            ? request.request_id
+            : randomUUID();
 
-        if (!pythonProcess) {
+        if (!pythonProcess || !pythonProcess.stdin?.writable) {
 
             return {
-                success:false,
-                error:"Python backend is not running"
+                request_id: requestId,
+                success: false,
+                error: "Python backend is not running"
             };
 
         }
 
+        try {
+            backendRequests.register(requestId, request.command);
+        } catch (error) {
+            return { request_id: requestId, success: false, error: error.message };
+        }
 
         const payload =
             JSON.stringify({
 
                 type:"command",
+                request_id: requestId,
 
                 command:
                     request.command,
@@ -678,15 +737,22 @@ ipcMain.handle(
 
             });
 
-
-
-        pythonProcess.stdin.write(
-            payload + "\n"
-        );
+        try {
+            pythonProcess.stdin.write(payload + "\n", (error) => {
+                if (!error) return;
+                const failure = backendRequests.fail(requestId, error.message);
+                if (failure) publishBackendResponse(failure.response);
+            });
+        } catch (error) {
+            const failure = backendRequests.fail(requestId, error.message);
+            if (failure) publishBackendResponse(failure.response);
+            return { request_id: requestId, accepted: false, success: false, error: error.message };
+        }
 
 
         return {
-            success:true
+            request_id: requestId,
+            accepted: true
         };
 
     }
@@ -694,16 +760,20 @@ ipcMain.handle(
 
 ipcMain.handle(
     "cancel-command",
-    async () => {
+    async (event, requestId) => {
         if (!pythonProcess) {
-            return { success: false, error: "No backend command is running" };
+            return { request_id: requestId, success: false, error: "No backend command is running" };
+        }
+
+        if (requestId && !backendRequests.get(requestId)) {
+            return { request_id: requestId, success: false, error: "The command is no longer running" };
         }
 
         const processToCancel = pythonProcess;
         restartBackendAfterCancel = true;
 
         return new Promise((resolve) => {
-            processToCancel.once("close", () => resolve({ success: true }));
+            processToCancel.once("close", () => resolve({ success: true, request_id: requestId }));
             processToCancel.kill();
         });
     }
@@ -1030,6 +1100,49 @@ ipcMain.handle(
         }
     }
 );
+
+ipcMain.handle("get-business-rules", async (_event, request) => {
+    const codebaseName = path.basename(String(request?.codebasePath || ""));
+    if (!codebaseName || codebaseName === "." || codebaseName === ".." || codebaseName === path.sep) {
+        return { success: false, error: "No codebase selected" };
+    }
+
+    const folder = path.join(backendOutputDir, "agent", "BR_agent_output", codebaseName);
+    const readRules = (filename) => {
+        const file = path.join(folder, filename);
+        if (!fs.existsSync(file)) {
+            return { exists: false, loaded: false, count: null, rules: [] };
+        }
+        try {
+            const entries = JSON.parse(fs.readFileSync(file, "utf8"));
+            if (!Array.isArray(entries)) {
+                return { exists: true, loaded: false, count: null, rules: [], error: "Expected a JSON array." };
+            }
+            return {
+                exists: true,
+                loaded: true,
+                count: entries.length,
+                rules: entries.map((entry) => ({
+                    text: typeof entry === "string"
+                        ? entry
+                        : (typeof entry?.rule === "string" && entry.rule) || "No rule text recorded",
+                    source: typeof entry?.source_directory === "string"
+                        ? entry.source_directory.trim()
+                        : ""
+                }))
+            };
+        } catch (error) {
+            return { exists: true, loaded: false, count: null, rules: [], error: `Could not read ${filename}: ${error.message}` };
+        }
+    };
+
+    return {
+        success: true,
+        codebase: codebaseName,
+        validated: readRules("validated_rules.json"),
+        discarded: readRules("discarded_rules.json")
+    };
+});
 
 
 
@@ -1478,6 +1591,157 @@ ipcMain.handle("export-gui-testing-report-pdf", async (event, reportId) => {
 });
 
 // ----------------------------------------------------
+// RUN REPORT (US-049)
+// ----------------------------------------------------
+// The backend writes one self-contained HTML report after a full run, to
+// run_reports/<codebase>/run_report.html. It opens in its own window with no
+// access to Node or the backend. Only a run_report.html inside the backend's
+// run_reports folder is opened, so the renderer cannot use this to open any
+// other file.
+
+const REPORT_NAME = "run_report.html";
+let reportWindow = null;
+
+function reportsDir() {
+    return path.resolve(backendOutputDir, "run_reports");
+}
+
+function isRunReport(file) {
+    const fold = (p) => process.platform === "win32" ? p.toLowerCase() : p;
+    return path.basename(file) === REPORT_NAME &&
+        fold(file).startsWith(fold(reportsDir() + path.sep)) &&
+        fs.existsSync(file);
+}
+
+async function showReportWindow(file) {
+
+    if (!reportWindow || reportWindow.isDestroyed()) {
+
+        reportWindow = new BrowserWindow({
+            width: 1300,
+            height: 900,
+            icon: path.join(__dirname, "assets", "checkpoint.ico"),
+            autoHideMenuBar: true,
+            webPreferences: {
+                nodeIntegration: false,
+                contextIsolation: true,
+                sandbox: true
+            }
+        });
+
+        // Links in the report only move within the page; keep everything else out.
+        reportWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+        reportWindow.webContents.on("will-navigate", (navigation) => navigation.preventDefault());
+
+        reportWindow.webContents.on("before-input-event", (e, input) => {
+            if (input.key === "F12") {
+                reportWindow.webContents.toggleDevTools();
+            }
+        });
+
+        reportWindow.on("closed", () => {
+            reportWindow = null;
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                if (mainWindow.isMinimized()) mainWindow.restore();
+                mainWindow.show();
+                mainWindow.focus();
+            }
+        });
+    }
+
+    await reportWindow.loadFile(file);
+    reportWindow.show();
+    reportWindow.focus();
+}
+
+// From the Complete screen, right after a full run.
+ipcMain.handle("open-report", async (event, reportPath) => {
+
+    const file = path.resolve(String(reportPath || ""));
+
+    if (!isRunReport(file)) {
+        return {
+            success: false,
+            error: "The run report was not found. Run the full pipeline to make one."
+        };
+    }
+
+    await showReportWindow(file);
+    return { success: true };
+});
+
+// View Insights embeds only the saved report for its explicitly selected codebase.
+// The renderer places this HTML in a sandboxed iframe; it never enters the app DOM.
+ipcMain.handle("get-run-report-html", async (_event, codebaseName) => {
+
+    const folder = path.basename(String(codebaseName || "").trim());
+    if (!folder || folder === "." || folder === "..") {
+        return { success: false, error: "Select a codebase to view its run report." };
+    }
+
+    const file = path.join(reportsDir(), folder, REPORT_NAME);
+    if (!isRunReport(file)) {
+        return {
+            success: false,
+            error: `No run report is available for ${folder}. Run the full pipeline on this codebase to create one.`
+        };
+    }
+
+    try {
+        return {
+            success: true,
+            codebase: folder,
+            html: fs.readFileSync(file, "utf8")
+        };
+    } catch (error) {
+        console.error("Could not read the selected codebase run report:", error);
+        return { success: false, error: `Could not read the run report for ${folder}.` };
+    }
+});
+
+// From View Insights, any time later: the selected codebase's report, or
+// when none is selected, the most recently written report.
+ipcMain.handle("open-latest-report", async (event, codebaseName) => {
+
+    let file = null;
+
+    if (codebaseName) {
+        file = path.join(reportsDir(), path.basename(String(codebaseName)), REPORT_NAME);
+
+        if (!isRunReport(file)) {
+            return {
+                success: false,
+                error: `No run report for ${codebaseName} yet. Run the full pipeline on it to make one.`
+            };
+        }
+    } else {
+        let folders = [];
+        try {
+            folders = fs.readdirSync(reportsDir());
+        } catch (error) {
+            // No report has been written yet.
+        }
+
+        const reports = folders
+            .map((folder) => path.join(reportsDir(), folder, REPORT_NAME))
+            .filter(isRunReport)
+            .sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
+
+        if (!reports.length) {
+            return {
+                success: false,
+                error: "No run report yet. Run the full pipeline to make one."
+            };
+        }
+
+        file = reports[0];
+    }
+
+    await showReportWindow(file);
+    return { success: true, codebase: path.basename(path.dirname(file)) };
+});
+
+// ----------------------------------------------------
 // START PYTHON BACKEND
 // ----------------------------------------------------
 
@@ -1531,7 +1795,7 @@ function startPythonBackend(preserveErrors = false) {
 
         const pythonPath = isWindows
             ? path.join(__dirname, ".venv", "Scripts", "python.exe")
-            : "python3";
+            : path.join(__dirname, ".venv", "bin", "python");
 
         const scriptPath = path.join(__dirname, "main.py");
 
@@ -1571,27 +1835,7 @@ function startPythonBackend(preserveErrors = false) {
                 continue;
 
 
-            try {
-
-                const parsed = JSON.parse(line);
-
-                mainWindow.webContents.send(
-                    "backend-response",
-                    parsed
-                );
-
-
-            }
-            catch(error) {
-
-                console.log(
-                    "Backend parse error:",
-                    error.message
-                );
-
-                console.log(line);
-
-            }
+            handleBackendLine(line);
 
         }
 
@@ -1608,6 +1852,7 @@ function startPythonBackend(preserveErrors = false) {
 
         console.error("Failed to start backend:");
         console.error(err);
+        failPendingBackendRequests(`Python backend failed: ${err.message}`);
 
     });
 
@@ -1617,22 +1862,13 @@ function startPythonBackend(preserveErrors = false) {
 
         if (restartBackendAfterCancel) {
             restartBackendAfterCancel = false;
+            failPendingBackendRequests("Operation cancelled by user.", { cancelled: true });
             pythonProcess = null;
             startPythonBackend(true);
             return;
         }
 
-        if (code !== 0 && mainWindow && !mainWindow.isDestroyed()) {
-
-            mainWindow.webContents.send(
-                "backend-response",
-                {
-                    success: false,
-                    error: `Backend exited unexpectedly (code ${code}).`
-                }
-            );
-
-        }
+        failPendingBackendRequests(`Backend exited unexpectedly (code ${code}).`);
 
         pythonProcess = null;
 

@@ -12,20 +12,22 @@ contextBridge.exposeInMainWorld(
 
         executeCommand: (
             command,
-            args = {}
+            args = {},
+            requestId
         ) => {
 
             return ipcRenderer.invoke(
                 "execute-command",
                 {
                     command,
-                    args
+                    args,
+                    request_id: requestId
                 }
             );
 
         },
 
-    cancelCommand: () => ipcRenderer.invoke("cancel-command"),
+    cancelCommand: (requestId) => ipcRenderer.invoke("cancel-command", requestId),
 
         getErrorLog: () => ipcRenderer.invoke("get-error-log"),
 
@@ -83,6 +85,11 @@ contextBridge.exposeInMainWorld(
             );
         },
 
+        getBusinessRules: (codebasePath) => ipcRenderer.invoke(
+            "get-business-rules",
+            { codebasePath }
+        ),
+
         setAPIKey: (
             key
         ) => {
@@ -104,6 +111,13 @@ contextBridge.exposeInMainWorld(
         exitApp: () => {
             return ipcRenderer.invoke("exit-app");
         },
+
+        // Run report (US-049): opens run_reports/<codebase>/run_report.html in its own window.
+        openReport: (reportPath) => ipcRenderer.invoke("open-report", reportPath),
+        // The selected codebase's report, or the newest one when none is selected.
+        openLatestReport: (codebaseName) => ipcRenderer.invoke("open-latest-report", codebaseName),
+        // Saved report HTML for the selected codebase, rendered by the UI in a sandboxed iframe.
+        getRunReportHtml: (codebaseName) => ipcRenderer.invoke("get-run-report-html", codebaseName),
 
 
         // ==================================
