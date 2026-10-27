@@ -7,8 +7,29 @@ logger = logging.getLogger(__name__)
 import chromadb
 import sys
 from pathlib import Path
-from utils.tree_parse import *
+from utils.tree_parse import LANGUAGE_DICT, get_chunks, parse_dir
 from utils.chroma_utils import collection_name
+
+
+def empty_code_index_message(source_dir, parsed_bundle_count: int) -> str:
+    """
+    Explain why code indexing produced no Chroma rows.
+
+    Distinguishes an empty directory (or only unsupported extensions) from
+    parsed files that contained no indexable functions, methods, or module
+    bodies.
+    """
+    supported = ", ".join(sorted(LANGUAGE_DICT.keys()))
+    if parsed_bundle_count == 0:
+        return (
+            f"No code files detected in '{source_dir}'. "
+            f"Supported code files are {supported}."
+        )
+    return (
+        f"No indexable code chunks found in '{source_dir}'. "
+        "Parsed files contained no supported methods, functions, "
+        "or module-level statements."
+    )
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from backend.progress_logging import progress
 
@@ -131,10 +152,7 @@ def build_database(source_path: str) -> None:
         sys.exit(1)
 
     if not ids:
-        message = (
-            f"No code files detected in '{source_dir}'. "
-            "Supported code files are .cs and .js."
-        )
+        message = empty_code_index_message(source_dir, len(bundles))
         logger.info(message)
         raise ValueError(message)
 

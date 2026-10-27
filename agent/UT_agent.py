@@ -6,24 +6,41 @@ generates unit tests, writes the results to JSON, then builds, repairs and runs 
 """
 import logging
 logger = logging.getLogger(__name__)
-from agent.states.UT_agent_state import UTGraphState
-from agent.structured_output.UT_output import (
-    ValidatedRule, UnitTest
-)
-from langgraph.graph import StateGraph, START, END
-from agent.llm import make_llm
+import asyncio
+import json
 import os
 import sys
-import json
-import asyncio
-import chromadb
-from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
-from pathlib import Path
 from collections import defaultdict
+from pathlib import Path
+
+import chromadb
 from backend.progress_logging import progress
+from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
+from langgraph.graph import END, START, StateGraph
 from utils.chroma_utils import collection_name
+
+from agent.llm import make_llm
+from agent.states.UT_agent_state import UTGraphState
+from agent.structured_output.UT_output import UnitTest, ValidatedRule
 from agent.test_harness import (
-    MAX_TEST_OUTPUT_TOKENS, check_tests, make_cases, make_fixer, write_results
+    MAX_TEST_OUTPUT_TOKENS,
+    check_tests as check_csharp_tests,
+    make_cases as make_csharp_cases,
+    make_fixer,
+    write_results as write_csharp_results,
+)
+from agent.python_test_harness import (
+    check_tests as check_python_tests,
+    generation_context_texts,
+    persist_python_generated_tests,
+    trusted_python_test_mode,
+    trusted_script_source_paths,
+    make_cases as make_python_cases,
+    write_results as write_python_results,
+)
+from agent.testing_language import (
+    detect_test_language,
+    unit_test_generation_instructions
 )
 
 MAX_CONCURRENCY = 10
@@ -89,7 +106,7 @@ class UTAgent:
 
         return builder.compile()
 
-    def run(self, validated_rules: dict[str, list[ValidatedRule]], codebase_name: str, codebase_path: str):
+    def run(self, validated_rules: list[ValidatedRule], codebase_name: str, codebase_path: str):
         """
         @brief Executes the UTAgent workflow.
         @param input_rules Dictionary of validated business rules from BR_agent output. Keys are file or directory paths,
@@ -101,6 +118,13 @@ class UTAgent:
             "Running unit test generation pipeline...",
             10
         )
+
+        target_language = detect_test_language(
+            [rule.source_file_paths for rule in validated_rules],
+            codebase_path=codebase_path,
+        )
+        progress(f"Selected {target_language} unit-test workflow.", 25)
+
         if getattr(sys, 'frozen', False):
             base_dir = Path(sys.executable).parent
         else:
@@ -127,6 +151,7 @@ class UTAgent:
         )
 
         initial_state = {
+            "target_language": target_language,
             "validated_rules": validated_rules,
             "unit_tests": [],
             "rule_contexts": {},
@@ -276,6 +301,7 @@ class UTAgent:
             return {"unit_tests": []}
 
         rule_contexts = state.get("rule_contexts", {})
+        target_language = state["target_language"]
         structured_llm = self.llm.with_structured_output(UnitTest)
 
         async def run_batch():
@@ -283,7 +309,21 @@ class UTAgent:
             async def guarded(rule: ValidatedRule):
                 async with sem:
                     ctx = rule_contexts.get(str(rule.id), {"code_context": [], "summary_context": []})
-                    return await _generate_single_test(structured_llm, rule, ctx["code_context"], ctx["summary_context"])
+                    test_mode = "function"
+                    if target_language == "python":
+                        test_mode = trusted_python_test_mode(
+                            rule.source_file_paths,
+                            state.get("codebase_path"),
+                        )
+                    return await _generate_single_test(
+                        structured_llm,
+                        rule,
+                        ctx["code_context"],
+                        ctx["summary_context"],
+                        target_language,
+                        test_mode,
+                        state.get("codebase_path"),
+                    )
             return await asyncio.gather(*(guarded(r) for r in validated_rules))
 
         results = self._loop.run_until_complete(run_batch())
@@ -301,7 +341,21 @@ class UTAgent:
                 logger.error(f"Unit test generation error for rule {rule.id}: {err}")
                 continue
             test_imports.update(output.imports)
-            unit_tests.append(UnitTest(imports=output.imports, unit_test=output.unit_test, id=rule.id, rule=rule.rule, source_directory = rule.source_directory, source_file_paths = rule.source_file_paths))
+            test_mode = "function"
+            if target_language == "python":
+                test_mode = trusted_python_test_mode(
+                    rule.source_file_paths,
+                    state.get("codebase_path"),
+                )
+            unit_tests.append(UnitTest(
+                imports=output.imports,
+                unit_test=output.unit_test,
+                id=rule.id,
+                rule=rule.rule,
+                source_directory=rule.source_directory,
+                source_file_paths=rule.source_file_paths,
+                test_mode=test_mode,
+            ))
 
         progress(
             f"Validated {len(unit_tests)} generated unit tests.",
@@ -318,8 +372,8 @@ class UTAgent:
         under {output_directory}/{codebase_name}/. Creates directories if needed.
         Runs exactly once at the end of the graph.
 
-        @param state Current workflow state containing validated_rules.
-        @return Empty dict (terminal node).
+        @param state Current workflow state containing generated unit tests.
+        @return Python runs replace unit_tests with accepted tests only; C# returns {}.
         """
         progress(
             "Writing generated unit tests...",
@@ -331,13 +385,28 @@ class UTAgent:
         codebase_subdir = os.path.join(base_output_dir, codebase_name)
         os.makedirs(codebase_subdir, exist_ok=True)
         unit_tests = state.get("unit_tests", [])
-        if unit_tests:
+        persistable = unit_tests
+        if state.get("target_language") == "python":
+            persistable, oversized = persist_python_generated_tests(
+                codebase_subdir,
+                unit_tests,
+            )
+            dropped_path = os.path.join(codebase_subdir, "dropped_generated_tests.json")
+            if oversized:
+                progress(
+                    f"Rejected {len(oversized)} oversized Python tests before "
+                    f"unit_tests.json ({dropped_path})."
+                )
+            else:
+                progress(f"Wrote empty oversized-test report to {dropped_path}.")
+        if persistable:
             unit_tests_path_json = os.path.join(codebase_subdir, "unit_tests.json")
             unit_tests_path_txt = os.path.join(codebase_subdir, "unit_tests.txt")
-            with open(unit_tests_path_json, "w", encoding="utf-8") as f:
-                json.dump([u.model_dump() for u in unit_tests], f, indent=2)
+            if state.get("target_language") != "python":
+                with open(unit_tests_path_json, "w", encoding="utf-8") as f:
+                    json.dump([u.model_dump() for u in persistable], f, indent=2)
             with open(unit_tests_path_txt, "w", encoding="utf-8") as file:
-                for test in unit_tests:
+                for test in persistable:
                     # Write imports first (if any), then the unit test method
                     if getattr(test, "imports", None):
                         try:
@@ -345,7 +414,9 @@ class UTAgent:
                         except Exception:
                             pass
                     file.write(test.unit_test + "\n\n")
-            progress(f"Wrote {len(unit_tests)} unit tests to {unit_tests_path_json} and {unit_tests_path_txt}", 98)
+            progress(f"Wrote {len(persistable)} unit tests to {unit_tests_path_json} and {unit_tests_path_txt}", 98)
+        if state.get("target_language") == "python":
+            return {"unit_tests": persistable}
         return {}
 
     def runner_node(self, state: UTGraphState) -> UTGraphState:
@@ -370,34 +441,73 @@ class UTAgent:
         codebase_dir = os.path.join(base_output_dir, codebase_name)
         rule_contexts = state.get("rule_contexts", {})
 
-        cases, rejected = make_cases(
-            "UT",
-            [(test.id, test) for test in state.get("unit_tests", [])],
-            body_of=lambda test: test.unit_test,
-            imports_of=lambda test: test.imports,
-        )
+        test_items = [
+            (test.id, test)
+            for test in state.get("unit_tests", [])
+        ]
 
-        def context_for(case):
-            ctx = rule_contexts.get(str(case.source.id), {})
-            return "\n\n".join(ctx.get("code_context", []))
+        if state["target_language"] == "python":
+            cases, rejected = make_python_cases(
+                "UT",
+                test_items,
+                body_of=lambda test: test.unit_test,
+                imports_of=lambda test: test.imports,
+                codebase_path=codebase_path,
+            )
 
-        test_run = check_tests(
-            "Unit",
-            "UT",
-            cases,
-            rejected,
-            codebase_path,
-            codebase_name,
-            codebase_dir,
-            fix=make_fixer(self.llm, context_for),
-            loop=self._loop,
-        )
+            test_run = check_python_tests(
+                "Unit",
+                "UT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_dir,
+            )
 
-        write_results(
-            test_run,
-            codebase_dir,
-            lambda case: dict(case.source.model_dump(), imports=case.imports, unit_test=case.body),
-        )
+            write_python_results(
+                test_run,
+                codebase_dir,
+                lambda case: dict(
+                    case.source.model_dump(),
+                    imports=case.imports,
+                    unit_test=case.body,
+                ),
+            )
+
+        else:
+            cases, rejected = make_csharp_cases(
+                "UT",
+                test_items,
+                body_of=lambda test: test.unit_test,
+                imports_of=lambda test: test.imports,
+            )
+
+            def context_for(case):
+                ctx = rule_contexts.get(str(case.source.id), {})
+                return "\n\n".join(ctx.get("code_context", []))
+
+            test_run = check_csharp_tests(
+                "Unit",
+                "UT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_dir,
+                fix=make_fixer(self.llm, context_for),
+                loop=self._loop,
+            )
+
+            write_csharp_results(
+                test_run,
+                codebase_dir,
+                lambda case: dict(
+                    case.source.model_dump(),
+                    imports=case.imports,
+                    unit_test=case.body,
+                ),
+            )
 
         progress(test_run.message(), 100, True)
         return {"test_run": test_run}
@@ -494,18 +604,48 @@ async def _generate_single_test(
     rule: ValidatedRule,
     code_context: list[str],
     summary_context: list[str],
+    target_language: str,
+    test_mode: str = "function",
+    codebase_path: str | None = None,
 ) -> tuple:
     try:
-        code_text = "\n\n".join(code_context) if code_context else "NO CONTEXT PROVIDED"
-        summary_text = "\n\n".join(summary_context) if summary_context else "NO CONTEXT PROVIDED"
+        code_text, summary_text = generation_context_texts(
+            target_language,
+            code_context,
+            summary_context,
+        )
+
+        framework_instructions = unit_test_generation_instructions(
+            target_language,
+            test_mode=test_mode,
+        )
+        relative_sources = []
+        if target_language == "python" and test_mode == "script":
+            relative_sources = trusted_script_source_paths(
+                rule.source_file_paths,
+                codebase_path,
+            )
 
         system_message = (
             "You are a Senior Software Architect and expert Automated Test Engineer. "
-            "Your sole objective is to output a syntactically flawless, concrete unit test method and its corresponding imports"
+            "Your sole objective is to output a syntactically flawless, concrete unit test and its corresponding imports "
             "based strictly on an extracted business rule and the corresponding codebase architecture contexts provided."
         )
 
         prompt = f"""
+
+            #### TARGET LANGUAGE
+            {target_language}
+
+            #### TEST MODE
+            {test_mode}
+
+            #### TRUSTED SOURCE PATHS (codebase-relative when known)
+            {", ".join(relative_sources) if relative_sources else "(none; do not invent a script path)"}
+
+            #### FRAMEWORK-SPECIFIC RULES
+            {framework_instructions}
+
             #### BUSINESS RULE TO TEST:
             - ID: {rule.id}
             - RULE STATEMENT: {rule.rule}
@@ -521,18 +661,16 @@ async def _generate_single_test(
 ### [REQUIRED TASK]
 ---
 1. Analyze the provided Source Code and File Summaries to locate how the business rule is systematically enforced.
-2. Generate exactly one realistic, structurally sound, executable unit test method.
-3. Generate the full import code statements required for the unit test method to function. 
-4. Match the exact programming language, naming conventions, and recommended testing framework for that language (Example: Xunit for C#).
+2. Generate exactly one realistic, structurally sound, executable unit test.
+3. Generate the full import code statements required for the unit test to function. 
+4. Match the exact programming language, naming conventions, and recommended testing framework for that language (Example: Xunit for C#, pytest for Python).
 
 ### [STRICT EXECUTION CONSTRAINTS - DO NOT VIOLATE]
 ---
 - **FULL IMPORTS:** The import statement must be full and complete and with correct syntax in the target programming language. (Example: C# statement = using **import**;) (Example: JavaScript statement = import **import**;)
-- **IMPORTS STRUCTURE:** Return any required import/using statements in the structured output field `imports` as an array of strings (one statement per entry). Do not include import lines inside the `unit_test` field; `unit_test` must contain only the method block.
+- **IMPORTS STRUCTURE:** Return any required import/using statements in the structured output field `imports` as an array of strings (one statement per entry). Do not include import lines inside the `unit_test` field; `unit_test` must contain only the test code.
 - **NO DUPLICATION:** Create a completely unique method name that describes this rule. Do not copy an existing test title.
 - **NO INVENTIONS:** Do not hallucinate or invent helper classes, mock interfaces, or functions that are absent from the provided context. Use the exact signatures present.
-- **PUBLIC API ONLY:** The test lives in a separate test project, so it can only use public types and members. Anything internal or private will not compile, even if it appears in the context.
-- **XUNIT ONLY:** Only xUnit is installed in the test project. Use [Fact]/[Theory] and Assert.*; do not use Moq, FluentAssertions, Xunit.SkippableFact or any other test package, even if the codebase's own tests do.
 - **NO TEXT EXTRACTION:** The test must contain functioning assertions that exercise the rule logic—do not just repeat the text of the rule in a comment or string.
 - **FORMATTING:** Use standard Unix line breaks (\\n) and canonical indentation to format the generated method code perfectly. Do not use (\\\\n)
 

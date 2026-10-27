@@ -9,6 +9,10 @@ logger = logging.getLogger(__name__)
 from agent.states.file_summary_agent_state import FileGraphState
 from langgraph.graph import StateGraph, START, END
 from agent.structured_output.file_summary_output import FileSummaryOutput
+from agent.file_summary_grounding import (
+    filter_business_rules_against_source,
+    validate_file_summary_against_source,
+)
 from agent.llm import make_llm
 from langchain_core.messages import AIMessage
 import os
@@ -20,8 +24,8 @@ from collections import deque
 from backend.progress_logging import progress
 from agent.crawl_config import ACCEPTABLE_EXTENSIONS, prune
 
-BATCH_SIZE = 10
-MAX_CONCURRENCY = 10
+BATCH_SIZE = 4
+MAX_CONCURRENCY = 3
 
 class FileSummaryAgent:
     """
@@ -54,14 +58,13 @@ class FileSummaryAgent:
         @return None
         """
         progress("Initializing file summary agent...", 5)
+
         if llm is not None:
             self.llm = llm
-            self.structured_llm = self.llm.with_structured_output(FileSummaryOutput)
-            self.graph = self.build_graph()
         else:
             self.llm = make_llm()
-            self.structured_llm = self.llm.with_structured_output(FileSummaryOutput)
-            self.graph = self.build_graph()
+        self.structured_llm = self.llm.with_structured_output(FileSummaryOutput)
+        self.graph = self.build_graph()
 
 
     def build_graph(self):
@@ -294,10 +297,27 @@ class FileSummaryAgent:
         )
         return {}
 
+def _source_text_is_blank(contents: str) -> bool:
+    """
+    True when the decoded file has no source after a leading UTF-8 BOM
+    and surrounding whitespace. str.strip() does not remove U+FEFF.
+    """
+    return not contents.removeprefix("\ufeff").strip()
+
+
+def _empty_file_summary(file_path: str) -> FileSummaryOutput:
+    return FileSummaryOutput(
+        path=file_path,
+        summary="Empty source file.",
+    )
+
+
 async def _summarize_one(structured_llm, file_path: str):
     progress(f'Summarizing: {file_path}')
     try:
         contents = Path(file_path).read_text(encoding="utf-8", errors="replace")
+        if _source_text_is_blank(contents):
+            return file_path, _empty_file_summary(file_path), None
         messages = [
             (
                 "system",
@@ -378,6 +398,22 @@ A business rule is a constraint, policy, threshold, validation, access control c
 These are development-process rules, not product business rules. If a file contains only infrastructure or DevOps configuration (e.g., CI/CD YAML, build scripts, deployment manifests), return an empty business rules list.
 
 Rules:
+- Treat domain-specific constants, conversion formulas, format-selection conditions,
+  ranges, thresholds, and input/output constraints as business rules when they
+  determine how the program behaves.
+- Describe requirements as behaviors observed in the current
+  implementation, not as universal requirements for all
+  possible implementations.
+- Do not assume implementation-specific constants, coordinates,
+  names, or design choices are instructor-defined requirements.
+- When the original specification is unavailable, do not claim
+  that an extracted rule is required by the assignment.
+- Do not return an empty business-rule list merely because the code is made of
+  small pure functions or does not raise exceptions.
+- If the file defines domain behaviour through numeric constants or conditional
+  transformations, extract a separate concise rule for each distinct behaviour.
+- Return an empty list only when the file truly contains no domain constraint,
+  policy, calculation rule, validation rule, or behavioural requirement.
 - Only extract rules supported by code you can see. Do not speculate about cross-file behavior.
 - For each rule, provide a concise statement of the business rule
 - If no business rules are evident, return an empty list.
@@ -426,6 +462,10 @@ Code:
         ]
         out = await structured_llm.ainvoke(messages)
         if isinstance(out, FileSummaryOutput):
+            out.path = file_path
+            out = validate_file_summary_against_source(out, file_path, contents)
+            out = filter_business_rules_against_source(out, file_path, contents)
+
             for rule in out.business_rules:
                 rule.source_file = file_path
         return file_path, out, None
@@ -457,4 +497,3 @@ if __name__ == "__main__":
     agent = FileSummaryAgent()
     agent.run(directory_path)
     progress("FileSummaryAgent has completed its task!", 100, True)
-    

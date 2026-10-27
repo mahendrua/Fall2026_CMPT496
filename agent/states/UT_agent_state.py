@@ -14,6 +14,10 @@ class UTGraphState(TypedDict):
     """
     @brief Represents the shared state passed between nodes in the UT Agent workflow graph.
 
+    @var target_language
+        The programming language of the target codebase being analyzed. Used for
+        unit test generation and validation.
+    
     @var validated_rules
         Accumulating list of rules that passed validation with supporting evidence.
         Uses an additive reducer so each validator invocation appends without
@@ -60,6 +64,7 @@ class UTGraphState(TypedDict):
         TestRun from agent/test_harness.py: which unit tests were kept, repaired,
         dropped, passed and failed. Set by the runner node.
     """
+    target_language: str
     validated_rules: dict[str, list[ValidatedRule]]
     unit_tests: list[UnitTest]
     rule_contexts: dict[int, dict]

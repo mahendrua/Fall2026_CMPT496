@@ -169,6 +169,7 @@ const PROVIDER_MODELS = {
 
 let cachedKeys = [];
 let pendingKey = null;
+let pendingVerifyRequestId = null;
 
 function fillModelSuggestions(provider) {
     const list = document.getElementById("modelSuggestions");
@@ -599,6 +600,9 @@ async function runBackendCommand(command,args={}){
 
     const request = commandRequests.begin(command);
     activeRequestId = request.requestId;
+    if (command === "verify_api_key") {
+        pendingVerifyRequestId = request.requestId;
+    }
 
     try {
         const acknowledgement = await window.electronAPI.executeCommand(
@@ -610,7 +614,7 @@ async function runBackendCommand(command,args={}){
         if (acknowledgement?.accepted === true && acknowledgement.request_id === request.requestId) {
             commandRequests.accept(request.requestId);
         } else {
-            handleBackendResponse({
+            await handleBackendResponse({
                 ...acknowledgement,
                 request_id: request.requestId,
                 command,
@@ -621,7 +625,7 @@ async function runBackendCommand(command,args={}){
 
         return acknowledgement;
     } catch (error) {
-        handleBackendResponse({
+        await handleBackendResponse({
             request_id: request.requestId,
             command,
             success: false,
@@ -3161,7 +3165,7 @@ updateHomeCodebaseSummary(selectedCodebasePath);
 // Backend Response Handler
 // ============================================
 
-window.electronAPI.onBackendResponse(async (response) => {
+async function handleBackendResponse(response) {
 
     console.log("ACTIVE REQUEST:", activeRequestId);
     console.log("RESPONSE:", response);
@@ -3196,12 +3200,21 @@ window.electronAPI.onBackendResponse(async (response) => {
 
         if (correlated?.matched && settleDirectRequest(correlated)) return;
         if (!correlated?.matched) return;
-        if (correlated.request.requestId !== activeRequestId) return;
         if (correlated.terminal) {
-            activeCommand = correlated.request.command;
-            activeRequestId = null;
             response = correlated.response;
+            const isActive = correlated.request.requestId === activeRequestId;
+            if (correlated.request.command === "verify_api_key") {
+                if (isActive) activeRequestId = null;
+                activeCommand = correlated.request.command;
+            } else if (!isActive) {
+                return;
+            } else {
+                activeCommand = correlated.request.command;
+                activeRequestId = null;
+            }
         } else if (response.accepted === true) {
+            return;
+        } else if (correlated.request.requestId !== activeRequestId) {
             return;
         }
     }
@@ -3215,21 +3228,33 @@ window.electronAPI.onBackendResponse(async (response) => {
     // rejected key stays on the API page with an explanation instead of
     // being dumped into the error popup.
     if (response.command === "verify_api_key") {
+        const outcome = ApiKeyVerify.consumeVerificationResponse(
+            {
+                pendingRequestId: pendingVerifyRequestId,
+                pendingKey,
+                buttonPending: true
+            },
+            response
+        );
 
-        setApiKeyPending(false);
-        activeCommand = null;
-
-        if (!response.success) {
-            showApiKeyError(response.error || "Could not verify the API key.");
-            pendingKey = null;
+        if (!outcome.matches) {
             return;
         }
 
-        const check = response.result || {};
+        pendingVerifyRequestId = outcome.next.pendingRequestId;
+        setApiKeyPending(false);
+        activeCommand = null;
 
-        if (check.status === "rejected") {
-            showApiKeyError(check.message);
+        if (!outcome.save) {
             pendingKey = null;
+            if (!response.success) {
+                showApiKeyError(response.error || "Could not verify the API key.");
+                return;
+            }
+            const check = response.result || {};
+            showApiKeyError(
+                check.message || "Could not verify the API key."
+            );
             return;
         }
 
@@ -3244,13 +3269,7 @@ window.electronAPI.onBackendResponse(async (response) => {
         document.getElementById('apiKeyInput').value = "";
         document.getElementById('apiKeyLabel').value = "";
         await refreshApiKeyList();
-
-        if (check.status === "unverified") {
-            showApiKeyError(check.message);
-        } else {
-            showApiKeySuccess(check.message);
-        }
-
+        showApiKeySuccess((response.result || {}).message);
         return;
     }
 
@@ -3567,7 +3586,9 @@ window.electronAPI.onBackendResponse(async (response) => {
         }
     }
 
-});
+}
+
+window.electronAPI.onBackendResponse(handleBackendResponse);
 // ============================================
 // Collection List Rendering
 // ============================================

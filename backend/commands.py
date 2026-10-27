@@ -17,7 +17,6 @@ sys.stdout.reconfigure(
 import os
 import subprocess
 from xml.parsers.expat import errors
-import chromadb
 import json
 import time
 import requests
@@ -692,7 +691,7 @@ class Commands:
 
             if not test_path.exists():
                 raise FileNotFoundError(
-                    f"Validated rules not found: {test_path}"
+                    f"Generated unit tests not found: {test_path}"
                 )
 
 
@@ -1054,7 +1053,12 @@ class Commands:
             return {**base, "success": False, "error": "No model name provided."}
 
         try:
-            check = verify_llm_key(provider, model.strip(), api_key.strip())
+            check = verify_llm_key(
+                provider,
+                model.strip(),
+                api_key.strip(),
+                timeout=self.VALIDATION_TIMEOUT_SECONDS,
+            )
         except Exception as exc:
             return {**base, "success": False, "error": str(exc)}
 
