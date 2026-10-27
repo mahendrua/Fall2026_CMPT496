@@ -122,6 +122,7 @@ let insightRootPath = null;
 let insightParentPath = null;
 let insightsPanelRequest = 0;
 const unitTestPreviewPaths = new Set();
+const unitTestPreviewPendingPaths = new Set();
 let unitTestPreviewLoading = false;
 let suppressAutoEnterOnce = false;
 
@@ -2122,21 +2123,154 @@ document.getElementById("viewUsageBtn")
 document.getElementById("viewRunReportBtn")
 .addEventListener("click", async () => {
 
-    // This message takes the output box (see showButtons).
+    showButtons("mainViewBtns");
+    const requestId = insightsPanelRequest;
+    const output = document.getElementById("viewDisplayOutputBox");
+    output.replaceChildren();
+
     if (window.ConsistencyReviewScreen) {
         window.ConsistencyReviewScreen.hide();
     }
 
     const codebaseName = getSelectedCodebaseName();
-    const response = await window.electronAPI.openLatestReport(codebaseName);
+    if (!codebaseName) {
+        renderRunReportEmpty("Select a codebase to view its run report.");
+        return;
+    }
 
-    renderTextPreview(
-        response?.success
-            ? `Opened the run report for ${response.codebase} in its own window.`
-            : (response?.error || "Could not open the run report.")
+    let response;
+    try {
+        response = await window.electronAPI.getRunReportHtml(codebaseName);
+    } catch (error) {
+        response = { success: false, error: "Could not load the run report." };
+    }
+
+    // A different Insights section or codebase may have been selected while IPC was pending.
+    if (requestId !== insightsPanelRequest || codebaseName !== getSelectedCodebaseName()) return;
+
+    if (!response?.success || response.codebase !== codebaseName || typeof response.html !== "string") {
+        renderRunReportEmpty(response?.error || "No run report is available for this codebase.");
+        return;
+    }
+
+    const frame = document.createElement("iframe");
+    frame.className = "run-report-frame";
+    frame.title = `Run report for ${response.codebase}`;
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.setAttribute("referrerpolicy", "no-referrer");
+    frame.addEventListener("load", () => {
+        frame.contentWindow?.postMessage({
+            type: "checkpoint:set-report-theme",
+            theme: document.body.dataset.theme === "light" ? "light" : "dark"
+        }, "*");
+    });
+
+    const embeddedHtml = createEmbeddedRunReportHtml(
+        response.html,
+        document.body.dataset.theme === "light" ? "light" : "dark"
     );
+    if (!embeddedHtml) {
+        renderRunReportEmpty("This saved report could not be displayed because its document structure is invalid.");
+        return;
+    }
+
+    frame.srcdoc = embeddedHtml;
+    output.replaceChildren(frame);
 
 });
+
+function renderRunReportEmpty(message) {
+    const output = document.getElementById("viewDisplayOutputBox");
+    if (!output) return;
+
+    const state = document.createElement("section");
+    state.className = "run-report-empty";
+    state.setAttribute("role", "status");
+    const title = document.createElement("h2");
+    title.textContent = "Run Report unavailable";
+    const detail = document.createElement("p");
+    detail.textContent = message;
+    state.append(title, detail);
+    output.replaceChildren(state);
+}
+
+function createEmbeddedRunReportHtml(reportHtml, theme) {
+    const originalLowerHtml = reportHtml.toLowerCase();
+    const scriptEnd = originalLowerHtml.lastIndexOf("</script>");
+    const routerEnd = reportHtml.lastIndexOf("})();", scriptEnd);
+    if (scriptEnd < 0 || routerEnd < 0) return null;
+
+    // The report's router is private to its IIFE. Route embed clicks from inside
+    // that closure instead of relying on fragment navigation in the sandboxed frame.
+    const routerExtension = `
+  document.addEventListener("click", function(event) {
+    var modeButton = event.target.closest && event.target.closest(".view-switch button");
+    if (modeButton) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      var nextView = modeButton.dataset.view;
+      if (nextView === VIEW) return;
+      var nextTab = currentTab();
+      setView(nextView);
+      if (nextView === "business" && DEV_ONLY.indexOf(nextTab) >= 0) nextTab = "overview";
+      showTab(nextTab);
+      try { history.replaceState(null, "", "#" + nextTab); } catch (error) {}
+      return;
+    }
+
+    var tabLink = event.target.closest && event.target.closest("#tabs a[data-tab]");
+    if (tabLink) {
+      event.preventDefault();
+      var tab = tabLink.getAttribute("data-tab");
+      showTab(tab);
+      try { history.replaceState(null, "", "#" + tab); } catch (error) {}
+      return;
+    }
+
+    var fragmentLink = event.target.closest && event.target.closest("a[href^='#']");
+    if (!fragmentLink) return;
+    event.preventDefault();
+    var hash = fragmentLink.getAttribute("href");
+    try { history.replaceState(null, "", hash); }
+    catch (error) { try { location.hash = hash; } catch (ignored) {} }
+    route();
+  }, true);
+`;
+    reportHtml = reportHtml.slice(0, routerEnd) + routerExtension + reportHtml.slice(routerEnd);
+
+    const lowerHtml = reportHtml.toLowerCase();
+    const headEnd = lowerHtml.indexOf("</head>");
+    const bodyEnd = lowerHtml.lastIndexOf("</body>");
+    if (headEnd < 0 || bodyEnd < headEnd) return null;
+
+    const headInjection = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+<script>document.documentElement.dataset.checkpointEmbedded="true";document.documentElement.dataset.checkpointTheme="${theme}";</script>
+<style>
+html[data-checkpoint-theme="dark"] { color-scheme: dark; --bg:#0d111a; --panel:#141a24; --text:#fff; --muted:#94a3b8; --line:rgba(255,255,255,.08); --accent:#e52b38; --accent-soft:rgba(229,43,56,.15); --code-bg:#101722; --ok:#86efac; --ok-bg:rgba(34,197,94,.15); --bad:#ff8a93; --bad-bg:rgba(229,43,56,.15); --warn:#fbbf24; --warn-bg:rgba(245,158,11,.15); --none:#94a3b8; --none-bg:rgba(148,163,184,.12); --flash:rgba(229,43,56,.2); }
+html[data-checkpoint-theme="light"] { color-scheme: light; --bg:#f1f4f8; --panel:#fff; --text:#172033; --muted:#475569; --line:rgba(15,23,42,.13); --accent:#d92332; --accent-soft:rgba(229,43,56,.1); --code-bg:#f7f9fc; --ok:#166534; --ok-bg:rgba(34,197,94,.12); --bad:#a51d29; --bad-bg:rgba(229,43,56,.1); --warn:#854d0e; --warn-bg:rgba(245,158,11,.13); --none:#64748b; --none-bg:rgba(100,116,139,.1); --flash:#fff4c2; }
+html[data-checkpoint-embedded="true"] body { min-width:0; background:var(--bg); color:var(--text); }
+html[data-checkpoint-embedded="true"] #report-back,
+html[data-checkpoint-embedded="true"] #report-back-help { display:none !important; }
+html[data-checkpoint-embedded="true"] .viewport { min-height:240px; max-height:560px; background:var(--code-bg); }
+html[data-checkpoint-embedded="true"] #tabs a:focus-visible,
+html[data-checkpoint-embedded="true"] .view-switch button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+</style>`;
+    const bootstrap = `<script>(function(){
+  var back=document.getElementById("report-back"); if(back) back.remove();
+  var help=document.getElementById("report-back-help"); if(help) help.remove();
+  document.addEventListener("click",function(event){
+    var link=event.target.closest&&event.target.closest("a[href]");
+    if(link&&link.getAttribute("href").charAt(0)!=="#") event.preventDefault();
+  },true);
+  window.addEventListener("message",function(event){
+    var data=event.data;
+    if(event.source!==window.parent||!data||data.type!=="checkpoint:set-report-theme"||(data.theme!=="light"&&data.theme!=="dark")) return;
+    document.documentElement.dataset.checkpointTheme=data.theme;
+  });
+})();</script>`;
+
+    return reportHtml.slice(0, headEnd) + headInjection + reportHtml.slice(headEnd, bodyEnd) + bootstrap + reportHtml.slice(bodyEnd);
+}
 
 document.getElementById("viewDisplaySummariesBtn")
     .addEventListener("click", () => {
@@ -2423,7 +2557,8 @@ document.getElementById("viewUnitTestsBtn").addEventListener("click", async () =
 
         const normalized = normalizePath(file.path);
         unitTestPreviewPaths.add(normalized);
-        unitTestPreviewLoading = true;
+        unitTestPreviewPendingPaths.add(normalized);
+        unitTestPreviewLoading = unitTestPreviewPendingPaths.size > 0;
         try {
             const response = await window.electronAPI.previewCommand("open_file", { path: file.path });
             if (!response?.success || !response.preview) return undefined;
@@ -2433,8 +2568,11 @@ document.getElementById("viewUnitTestsBtn").addEventListener("click", async () =
             console.warn(`Could not read saved ${fileName}:`, error);
             return undefined;
         } finally {
-            unitTestPreviewPaths.delete(normalized);
-            unitTestPreviewLoading = unitTestPreviewPaths.size > 0;
+            // preview-command also broadcasts the same open_file result to
+            // the generic Insights listener. Keep this path suppressed after
+            // the invoke resolves because that broadcast can arrive later.
+            unitTestPreviewPendingPaths.delete(normalized);
+            unitTestPreviewLoading = unitTestPreviewPendingPaths.size > 0;
         }
     };
 
@@ -3033,8 +3171,14 @@ window.electronAPI.onBackendResponse(async (response) => {
         return;
     }
 
-    if ((response.type === "file-preview" && unitTestPreviewPaths.has(normalizePath(response.path))) ||
-        (unitTestPreviewLoading && !response.type && !response.request_id)) {
+    if (response.type === "file-preview" && unitTestPreviewPaths.has(normalizePath(response.path))) {
+        // Consume just this duplicate IPC broadcast. A later user-selected
+        // preview of the same JSON file should still use the generic renderer.
+        unitTestPreviewPaths.delete(normalizePath(response.path));
+        return;
+    }
+
+    if (unitTestPreviewLoading && !response.type && !response.request_id) {
         return;
     }
 
@@ -3563,6 +3707,7 @@ function setTheme(theme, persist = true) {
     if (theme !== "light" && theme !== "dark") return;
 
     document.body.dataset.theme = theme;
+    notifyEmbeddedRunReportTheme(theme);
     document.querySelectorAll("[data-theme-choice]").forEach(option => {
         option.setAttribute("aria-checked", String(option.dataset.themeChoice === theme));
     });
@@ -3574,6 +3719,11 @@ function setTheme(theme, persist = true) {
             console.warn("Could not save the selected theme locally:", error);
         }
     }
+}
+
+function notifyEmbeddedRunReportTheme(theme) {
+    const frame = document.querySelector("#viewDisplayOutputBox .run-report-frame");
+    frame?.contentWindow?.postMessage({ type: "checkpoint:set-report-theme", theme }, "*");
 }
 
 function initializeThemeMenu() {

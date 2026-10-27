@@ -1278,6 +1278,35 @@ ipcMain.handle("open-report", async (event, reportPath) => {
     return { success: true };
 });
 
+// View Insights embeds only the saved report for its explicitly selected codebase.
+// The renderer places this HTML in a sandboxed iframe; it never enters the app DOM.
+ipcMain.handle("get-run-report-html", async (_event, codebaseName) => {
+
+    const folder = path.basename(String(codebaseName || "").trim());
+    if (!folder || folder === "." || folder === "..") {
+        return { success: false, error: "Select a codebase to view its run report." };
+    }
+
+    const file = path.join(reportsDir(), folder, REPORT_NAME);
+    if (!isRunReport(file)) {
+        return {
+            success: false,
+            error: `No run report is available for ${folder}. Run the full pipeline on this codebase to create one.`
+        };
+    }
+
+    try {
+        return {
+            success: true,
+            codebase: folder,
+            html: fs.readFileSync(file, "utf8")
+        };
+    } catch (error) {
+        console.error("Could not read the selected codebase run report:", error);
+        return { success: false, error: `Could not read the run report for ${folder}.` };
+    }
+});
+
 // From View Insights, any time later: the selected codebase's report, or
 // when none is selected, the most recently written report.
 ipcMain.handle("open-latest-report", async (event, codebaseName) => {

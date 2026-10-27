@@ -116,6 +116,8 @@ contextBridge.exposeInMainWorld(
         openReport: (reportPath) => ipcRenderer.invoke("open-report", reportPath),
         // The selected codebase's report, or the newest one when none is selected.
         openLatestReport: (codebaseName) => ipcRenderer.invoke("open-latest-report", codebaseName),
+        // Saved report HTML for the selected codebase, rendered by the UI in a sandboxed iframe.
+        getRunReportHtml: (codebaseName) => ipcRenderer.invoke("get-run-report-html", codebaseName),
 
 
         // ==================================

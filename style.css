@@ -5670,6 +5670,7 @@ body[data-theme="light"] .business-rules-unavailable,
 body[data-theme="light"] .unit-test-summary,
 body[data-theme="light"] .unit-test-note,
 body[data-theme="light"] .unit-test-empty { background: var(--bg-panel); color: var(--text-secondary); }
+body[data-theme="light"] .unit-test-project-error { border-color: rgba(185,28,42,.25); background: rgba(229,43,56,.08); color: #a51d29; }
 body[data-theme="light"] .cr-screen { color: var(--text-primary); }
 body[data-theme="light"] .cr-code,
 body[data-theme="light"] .cr-review { background: var(--bg-surface); color: var(--text-primary); }
@@ -5837,4 +5838,44 @@ body[data-theme="dark"] #faqAndSupportBtnContainer button.btn-inverted {
   #faqAndSupportPage { gap: .8rem; padding: 1rem; }
   #faqAndSupportBtnContainer { gap: .65rem; }
   #faqAndSupportBtnContainer button { min-width: 0; flex: 1; }
+}
+
+/* Run reports stay inside the Insights output pane and scroll within the frame. */
+#viewDisplayOutputBox:has(.run-report-frame) {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  padding: 1rem;
+}
+
+.run-report-frame {
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 12px;
+  background: var(--bg-app);
+  color-scheme: light dark;
+}
+
+.run-report-empty {
+  align-self: center;
+  width: min(100%, 42rem);
+  margin: auto;
+  padding: clamp(1.25rem, 4vw, 2rem);
+  border: 1px solid var(--border-subtle);
+  border-radius: 14px;
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  text-align: center;
+}
+
+.run-report-empty h2 { margin-bottom: .5rem; color: var(--text-primary); }
+
+@media (max-width: 760px) {
+  #viewDisplayOutputBox:has(.run-report-frame) { padding: .65rem; }
 }
