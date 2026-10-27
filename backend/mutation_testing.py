@@ -47,6 +47,7 @@ from agent.test_harness import namespace_for, project_dir_for, target_project_fo
 from backend.mutation_mapping import build
 from backend.progress_logging import progress
 from backend.run_report_data import _PathShortener, _read_unit_tests
+from utils.output_redaction import OutputRedactionError, save_json, save_text
 
 
 logger = logging.getLogger(__name__)
@@ -133,9 +134,10 @@ def run(
     try:
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / REPORT_NAME
-        path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        # Cleaned of secrets (T-078): it quotes rules and Stryker's messages.
+        save_json(path, report)
         report["report_path"] = str(path)
-    except OSError as exc:
+    except (OSError, OutputRedactionError) as exc:
         logger.exception("Could not save the mutation report")
         report["message"] += f" The report could not be saved: {exc}"
         report["report_path"] = None
@@ -225,8 +227,11 @@ def _measure(report, codebase, app_dir, out_dir, test_dir, on_progress):
     )
     result = run_stryker(args, test_dir, limits["time_limit_minutes"] * 60, on_progress)
 
+    # Stryker's console output quotes test failures and build errors, so only
+    # a cleaned copy is kept (T-078). Its own reports are not rewritten: they
+    # hold the mutated source files themselves, like the codebase does.
     output_path = stryker_dir / "stryker_output.txt"
-    output_path.write_text(result["output"], encoding="utf-8", errors="replace")
+    save_text(output_path, result["output"])
     json_path = stryker_dir / "reports" / "mutation-report.json"
     html_path = stryker_dir / "reports" / "mutation-report.html"
 

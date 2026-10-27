@@ -22,6 +22,7 @@ from pathlib import Path
 from collections import defaultdict
 from backend.progress_logging import progress
 from utils.chroma_utils import collection_name
+from utils.output_redaction import save_json, save_text
 from agent.test_harness import (
     MAX_TEST_OUTPUT_TOKENS, check_tests, make_cases, make_fixer, write_results
 )
@@ -662,41 +663,43 @@ class ITAgent:
             integration_tests_path_json = os.path.join(codebase_subdir, "integration_tests.json")
             integration_tests_path_txt = os.path.join(codebase_subdir, "integration_tests.txt")
 
-            with open(integration_tests_path_json, "w", encoding="utf-8") as f:
-                json.dump([u.model_dump() for u in integration_tests], f, indent=2)
+            # Cleaned of secrets (T-078): the model's tests can repeat one.
+            save_json(integration_tests_path_json, [u.model_dump(mode="json") for u in integration_tests])
 
-            with open(integration_tests_path_txt, "w", encoding="utf-8") as file:
-                for test in integration_tests:
+            text = []
+            for test in integration_tests:
 
-                    file.write(f"// Workflow: {test.workflow_name}\n")
-                    file.write(f"// Description: {test.workflow_description}\n")
-                    file.write(f"// Covered Business Rules: {test.rule_ids}\n\n")
+                text.append(f"// Workflow: {test.workflow_name}\n")
+                text.append(f"// Description: {test.workflow_description}\n")
+                text.append(f"// Covered Business Rules: {test.rule_ids}\n\n")
 
-                    # Write imports first
-                    if getattr(test, "imports", None):
-                        for imp in test.imports:
-                            imp = imp.strip()
+                # Write imports first
+                if getattr(test, "imports", None):
+                    for imp in test.imports:
+                        imp = imp.strip()
 
-                            # Skip invalid imports
-                            if not imp:
-                                continue
+                        # Skip invalid imports
+                        if not imp:
+                            continue
 
-                            # Add using automatically
-                            if not imp.startswith("using "):
-                                imp = f"using {imp}"
+                        # Add using automatically
+                        if not imp.startswith("using "):
+                            imp = f"using {imp}"
 
-                            # Add semicolon automatically
-                            if not imp.endswith(";"):
-                                imp += ";"
+                        # Add semicolon automatically
+                        if not imp.endswith(";"):
+                            imp += ";"
 
-                            file.write(imp + "\n")
+                        text.append(imp + "\n")
 
-                        file.write("\n")
+                    text.append("\n")
 
-                    # Write test method
-                    file.write(
-                        test.integration_test + "\n\n"
-                    )
+                # Write test method
+                text.append(
+                    test.integration_test + "\n\n"
+                )
+
+            save_text(integration_tests_path_txt, "".join(text))
             progress(
                 f"Wrote {len(integration_tests)} workflow integration tests to "
                 f"{integration_tests_path_json} and {integration_tests_path_txt}",

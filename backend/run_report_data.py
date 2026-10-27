@@ -20,6 +20,7 @@ from datetime import datetime
 from pathlib import Path
 
 from agent.crawl_config import prune
+from utils.output_redaction import save_json
 
 
 REPORT_DIR = "run_reports"
@@ -43,11 +44,10 @@ def report_folder(app_dir, codebase_name):
 
 
 def save(data, app_dir):
-    """Write the data file next to the report and return its path."""
+    """Write the data file, cleaned of secrets (T-078), next to the report and return its path."""
     folder = report_folder(app_dir, data["codebase"])
-    folder.mkdir(parents=True, exist_ok=True)
     path = folder / DATA_NAME
-    path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    save_json(path, data)
     return path
 
 

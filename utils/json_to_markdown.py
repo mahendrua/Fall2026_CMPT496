@@ -21,6 +21,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import sys
 
+from utils.output_redaction import OutputRedactionError, sanitize_text, save_text
+
 
 def json_to_markdown(obj: Dict[str, Any]) -> str:
 	lines: List[str] = []
@@ -159,6 +161,14 @@ def process_file(json_path: Path, input_dir: Path, out_dir: Path, to_stdout: boo
 			# nothing to write for this JSON object
 			continue
 
+		# Cleaned of secrets (T-078): a summary saved before outputs were
+		# cleaned would otherwise be copied out as it is.
+		try:
+			md, _ = sanitize_text(md)
+		except OutputRedactionError as e:
+			print(f"Skipping {json_path}: {e}")
+			continue
+
 		# choose filename based on the JSON filename stem (e.g. ConsoleTable-cs.json -> ConsoleTable-cs.md)
 		if len(items) == 1:
 			candidate_name = json_path.stem
@@ -194,7 +204,7 @@ def process_file(json_path: Path, input_dir: Path, out_dir: Path, to_stdout: boo
 		else:
 			# ensure the mirrored target directory exists
 			target_dir.mkdir(parents=True, exist_ok=True)
-			out_path.write_text(md, encoding="utf-8")
+			save_text(out_path, md)
 			created_paths.append(out_path)
 
 	return created_paths[0] if created_paths else None

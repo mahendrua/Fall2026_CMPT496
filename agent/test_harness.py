@@ -42,6 +42,7 @@ from agent.crawl_config import mark_generated
 from agent.llm import DailyLimitError, RateLimitTimeoutError
 from agent.structured_output.UTV_output import TestRepair
 from backend.progress_logging import progress
+from utils.output_redaction import OutputRedactionError, save_json, save_text
 
 
 # A healthy generated test is 300-4,000 characters (Stateless: median 1,143,
@@ -504,8 +505,9 @@ def write_tests(test_dir, namespace, prefix, cases):
 
 
 def _write_case(test_dir, namespace, case):
-    with open(os.path.join(test_dir, f"{case.name}.cs"), "w", encoding="utf-8") as file:
-        file.write(render_test(case, namespace))
+    # Cleaned of secrets (T-078). A secret inside a string literal becomes a
+    # placeholder inside the same literal, so the file still compiles.
+    save_text(os.path.join(test_dir, f"{case.name}.cs"), render_test(case, namespace))
 
 
 def _remove_case(test_dir, case):
@@ -647,9 +649,14 @@ def run_tests(test_dir, namespace, prefix, results_dir, report_name):
         output = ""
         progress("dotnet was not found, so the tests could not be run.")
 
+    # The report shows each failed assertion's actual value, read from the
+    # running code, so it is kept only as a cleaned copy (T-078).
     scratch_report = os.path.join(scratch, report_name)
     if os.path.exists(scratch_report):
-        shutil.move(scratch_report, report_path)
+        try:
+            save_text(report_path, Path(scratch_report).read_text(encoding="utf-8", errors="replace"))
+        except OutputRedactionError:
+            progress("The HTML test report could not be checked for secrets, so it was not kept.")
     shutil.rmtree(scratch, ignore_errors=True)
 
     passed, failed, skipped, failed_tests = parse_test_output(output)
@@ -932,15 +939,19 @@ def write_results(run, output_dir, to_json):
     """
     os.makedirs(output_dir, exist_ok=True)
 
-    with open(os.path.join(output_dir, "validated_tests.json"), "w", encoding="utf-8") as file:
-        json.dump([to_json(case) for case in run.kept], file, indent=2)
+    # Cleaned of secrets (T-078): tests quote code, and reasons quote
+    # compiler errors and test output.
+    save_json(
+        os.path.join(output_dir, "validated_tests.json"),
+        [to_json(case) for case in run.kept],
+    )
 
-    with open(os.path.join(output_dir, "discarded_tests.json"), "w", encoding="utf-8") as file:
-        json.dump(
-            [dict(to_json(case), reason=case.reason) for case in run.dropped],
-            file,
-            indent=2,
-        )
+    save_json(
+        os.path.join(output_dir, "discarded_tests.json"),
+        [dict(to_json(case), reason=case.reason) for case in run.dropped],
+    )
 
-    with open(os.path.join(output_dir, "test_report.json"), "w", encoding="utf-8") as file:
-        json.dump(dict(run.summary(), message=run.message()), file, indent=2)
+    save_json(
+        os.path.join(output_dir, "test_report.json"),
+        dict(run.summary(), message=run.message()),
+    )

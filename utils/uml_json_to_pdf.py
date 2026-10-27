@@ -67,6 +67,14 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+try:
+    from utils.output_redaction import sanitize_data
+except ModuleNotFoundError:
+    # Run as a script from utils/ (see Usage above): the repository root,
+    # which holds the utils package, is not on the path then.
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from utils.output_redaction import sanitize_data
+
 
 ACCENT = colors.HexColor("#2E5BFF")
 ACCENT_DARK = colors.HexColor("#183A9E")
@@ -768,7 +776,9 @@ def build_report(args: argparse.Namespace) -> list[str]:
         else input_path.with_suffix(".pdf")
     )
 
-    data = load_json(input_path)
+    # Cleaned of secrets (T-078): a summary saved before outputs were cleaned
+    # would otherwise reach the PDF and the PlantUML files as it is.
+    data, _ = sanitize_data(load_json(input_path))
     styles = build_styles()
 
     source_path_text = safe_text(data.get("path"))

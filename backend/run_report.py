@@ -25,6 +25,7 @@ from pathlib import Path
 from backend.run_report_data import collect, report_folder, save
 from backend.run_report_diagram import build_diagram
 from backend.run_report_html import render
+from utils.output_redaction import sanitize_data, save_text
 
 
 logger = logging.getLogger(__name__)
@@ -47,18 +48,23 @@ def write_run_report(codebase, app_dir, run_log_path=None, open_browser=False):
         codebase_path = codebase.resolve() if codebase.is_dir() else None
 
         data = collect(codebase.name, app_dir, codebase_path=codebase_path, run_log_path=run_log_path)
+
+        # The report copies every output it reads, including ones saved
+        # before secrets were cleaned from outputs (T-078), so it is built
+        # from a cleaned copy: data, diagram and page alike.
+        data, _ = sanitize_data(data)
         diagram = build_diagram(data, app_dir)
 
         folder = report_folder(app_dir, codebase.name)
         save(data, app_dir)
 
         if diagram.get("puml"):
-            (folder / "project_diagram.puml").write_text(diagram["puml"], encoding="utf-8")
+            save_text(folder / "project_diagram.puml", diagram["puml"])
         if diagram.get("svg"):
-            (folder / "project_diagram.svg").write_text(diagram["svg"], encoding="utf-8")
+            save_text(folder / "project_diagram.svg", diagram["svg"])
 
         path = folder / REPORT_NAME
-        path.write_text(render(data, diagram), encoding="utf-8")
+        save_text(path, render(data, diagram))
         logger.info("Run report written to %s", path)
 
         if open_browser:
