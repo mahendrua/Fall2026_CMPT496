@@ -84,6 +84,9 @@ header { position: sticky; top: 0; z-index: 20; background: var(--panel); border
 .title-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
 .title-row h1 { font-size: 20px; margin: 0; }
 .title-row .sub { color: var(--muted); font-size: 13px; }
+.report-back { margin-left: auto; padding: 7px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.report-back:hover, .report-back:focus-visible { border-color: var(--accent); outline: 2px solid transparent; }
+.report-back-help { flex-basis: 100%; color: var(--muted); font-size: 12px; }
 nav { display: flex; gap: 4px; margin-top: 10px; overflow-x: auto; }
 nav a { padding: 8px 12px; border-bottom: 2px solid transparent; color: var(--muted); font-weight: 600; font-size: 14px; white-space: nowrap; }
 nav a:hover { color: var(--text); text-decoration: none; }
@@ -207,6 +210,8 @@ button.more:hover { text-decoration: underline; }
     <div class="title-row">
       <h1>@@CODEBASE@@</h1>
       <span class="sub" id="run-line">Checkpoint run report</span>
+      <button type="button" class="report-back" id="report-back">Back to Checkpoint</button>
+      <span class="report-back-help" id="report-back-help" aria-live="polite"></span>
       <div class="view-switch" role="group" aria-label="Who is reading">
         <button type="button" data-view="business" aria-pressed="true">Business</button>
         <button type="button" data-view="developer" aria-pressed="false">Developer</button>
@@ -248,6 +253,22 @@ button.more:hover { text-decoration: underline; }
 <script>
 (function () {
   "use strict";
+
+  var backButton = document.getElementById("report-back");
+  var backHelp = document.getElementById("report-back-help");
+  backButton.addEventListener("click", function () {
+    backButton.disabled = true;
+    window.close();
+    window.setTimeout(function () {
+      if (window.closed) return;
+      if (window.history.length > 1) {
+        window.history.back();
+        return;
+      }
+      backButton.disabled = false;
+      backHelp.textContent = "This report is open on its own. Close this tab or window to return to Checkpoint.";
+    }, 250);
+  });
 
   var DATA = JSON.parse(document.getElementById("report-data").textContent);
   var COUNTS = DATA.overview.counts;

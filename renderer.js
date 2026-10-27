@@ -26,6 +26,7 @@ let backendOutputBuffer = "";
 //loadingscreen
 const commandRequests = new window.CommandRequestTracker();
 let activeRequestId = null;
+let operationReturnPage = null;
 
 // The saved check a finished pipeline or Consistency Review operation can
 // open: the codebase it ran on and the check ID it produced.
@@ -119,6 +120,10 @@ let insightFolderHistory = [];
 let currentInsightFolderPath = null;
 let insightRootPath = null;
 let insightParentPath = null;
+let insightsPanelRequest = 0;
+const unitTestPreviewPaths = new Set();
+const unitTestPreviewPendingPaths = new Set();
+let unitTestPreviewLoading = false;
 let suppressAutoEnterOnce = false;
 
 //output
@@ -295,6 +300,10 @@ function showLoading(title, message, options = {}) {
         document.getElementById("loadingOverlay");
 
     if (!overlay) return;
+
+    // Processing starts from Run Operations, including its task-selection
+    // subpages. Acknowledging its result returns to the main operations page.
+    operationReturnPage = "analysisPage";
 
     overlay.classList.remove("hidden");
 
@@ -527,6 +536,14 @@ function hideLoading() {
     }
 }
 
+function returnToOperationPage() {
+    hideLoading();
+    document.getElementById("loadingOkBtn").classList.add("hidden");
+    document.getElementById("loadingOpenReviewBtn").classList.add("hidden");
+    showPage(operationReturnPage || "analysisPage");
+    operationReturnPage = null;
+}
+
 function showErrorPopup(message) {
     const popup = document.getElementById("errorPopup");
     const messageElement = document.getElementById("errorPopupMessage");
@@ -620,7 +637,10 @@ async function runBackendCommand(command,args={}){
 }
 
 async function refreshErrorLog() {
+    const requestId = insightsPanelRequest;
     const response = await window.electronAPI.getErrorLog();
+
+    if (requestId !== insightsPanelRequest) return;
 
     if (response?.success) {
         renderErrorPreview(response.errors);
@@ -1353,6 +1373,84 @@ function usageHeader(text) {
     return header;
 }
 
+function usageMetric(label, value, ratio, kind) {
+
+    const metric = document.createElement("article");
+    metric.className = `usage-metric usage-metric-${kind}`;
+
+    const title = document.createElement("span");
+    title.className = "usage-metric-label";
+    title.textContent = label;
+
+    const number = document.createElement("strong");
+    number.className = "usage-metric-value";
+    number.textContent = value;
+
+    const svgNS = "http://www.w3.org/2000/svg";
+    const visual = document.createElementNS(svgNS, "svg");
+    visual.classList.add("usage-metric-visual");
+    visual.setAttribute("aria-hidden", "true");
+    visual.setAttribute("viewBox", kind === "calls" ? "0 0 76 40" : "0 0 76 48");
+    visual.setAttribute("focusable", "false");
+    if (kind === "calls") {
+        visual.classList.add("usage-wave");
+        const wave = document.createElementNS(svgNS, "path");
+        wave.setAttribute("d", "M2 21h10l5-12 8 23 8-18 7 12 7-8 6 3h11");
+        wave.setAttribute("fill", "none");
+        wave.setAttribute("stroke", "currentColor");
+        wave.setAttribute("stroke-width", "2.5");
+        wave.setAttribute("stroke-linecap", "round");
+        wave.setAttribute("stroke-linejoin", "round");
+        visual.appendChild(wave);
+    } else {
+        const heights = [15, 25, 20, 38, 30, 44, 35];
+        heights.forEach((height, index) => {
+            const bar = document.createElementNS(svgNS, "rect");
+            bar.setAttribute("x", String(3 + index * 10));
+            bar.setAttribute("y", String(46 - height * (0.35 + Math.max(0, Math.min(1, ratio / 100)) * 0.65)));
+            bar.setAttribute("width", "5");
+            bar.setAttribute("height", String(height * (0.35 + Math.max(0, Math.min(1, ratio / 100)) * 0.65)));
+            bar.setAttribute("rx", "2");
+            visual.appendChild(bar);
+        });
+    }
+
+    metric.append(title, number, visual);
+    return metric;
+}
+
+function usageDetail(label, value, icon) {
+
+    const row = document.createElement("div");
+    row.className = "usage-detail-row";
+
+    const iconNode = document.createElement("span");
+    iconNode.className = "usage-detail-icon";
+    iconNode.setAttribute("aria-hidden", "true");
+    iconNode.textContent = icon;
+
+    const copy = document.createElement("div");
+    copy.className = "usage-detail-copy";
+    const title = document.createElement("span");
+    title.className = "usage-detail-label";
+    title.textContent = label;
+    const text = document.createElement("strong");
+    text.className = "usage-detail-value";
+    text.textContent = value;
+    copy.append(title, text);
+
+    row.append(iconNode, copy);
+    return row;
+}
+
+function usageTime(seconds) {
+
+    const time = document.createElement("span");
+    time.textContent = formatSeconds(seconds);
+    if (Number(seconds) >= 60) time.className = "usage-time-long";
+    return time;
+}
+
 function renderRunUsage(run) {
 
     const output =
@@ -1370,9 +1468,7 @@ function renderRunUsage(run) {
     }
 
     const card = document.createElement("div");
-    card.className = "summary-card usage-card";
-
-    card.appendChild(usageHeader("AI Usage — Last Run"));
+    card.className = "summary-card usage-card usage-dashboard";
 
     const totals = run.totals || {};
 
@@ -1380,30 +1476,50 @@ function renderRunUsage(run) {
         ? ` (${totals.failed_calls} failed)`
         : "";
 
-    const overview = [
-        ["Codebase", run.codebase || "—"],
-        ["Status", usageStatus(run.status)],
-        ["Started", formatStamp(run.started_at)],
-        ["Duration", formatSeconds(run.elapsed_seconds)],
-        ["AI calls", formatCount(totals.calls) + failedNote],
-        ["Input tokens", formatCount(totals.input_tokens)],
-        ["Output tokens", formatCount(totals.output_tokens)],
-        ["Total tokens", formatCount(totals.total_tokens)],
-        ["Run ID", run.run_id || "—"],
-    ];
+    const titlebar = document.createElement("div");
+    titlebar.className = "usage-titlebar";
+    const title = usageHeader("AI Usage — Last Run");
+    title.classList.add("usage-title");
+    const project = document.createElement("span");
+    project.className = "usage-project";
+    project.textContent = run.codebase || "—";
+    const status = usageStatus(run.status || "unknown");
+    status.classList.add("usage-run-status");
+    titlebar.append(title, project, status);
+    card.appendChild(titlebar);
 
-    // Only when Google made us wait, so a slow run reads as throttled,
-    // not stuck.
-    if (totals.waits) {
-        overview.splice(4, 0, [
-            "Waited for Google",
-            `${totals.waits} time${totals.waits === 1 ? "" : "s"}, ` +
-            formatSeconds(totals.waited_seconds),
-        ]);
-    }
+    const dashboard = document.createElement("div");
+    dashboard.className = "usage-dashboard-grid";
+    const details = document.createElement("section");
+    details.className = "usage-details";
+    details.setAttribute("aria-label", "Run details and timings");
+    details.append(
+        usageDetail("Duration", formatSeconds(run.elapsed_seconds), "⏱️"),
+        usageDetail("Waited", `${formatCount(totals.waits)} times, ${formatSeconds(totals.waited_seconds ?? 0)}`, "⏳")
+    );
+    const identity = document.createElement("div");
+    identity.className = "usage-identity-card";
+    identity.append(
+        usageDetail("Started", formatStamp(run.started_at), "📅"),
+        usageDetail("Run ID", run.run_id || "—", "📁")
+    );
+    details.appendChild(identity);
 
-    card.appendChild(usageTable(null, overview))
-        .classList.add("usage-overview");
+    const tokenMetrics = document.createElement("section");
+    tokenMetrics.className = "usage-metrics";
+    tokenMetrics.setAttribute("aria-label", "Token and API call metrics");
+    const inputs = Number(totals.input_tokens) || 0;
+    const outputs = Number(totals.output_tokens) || 0;
+    const total = Number(totals.total_tokens) || 0;
+    const maxToken = Math.max(inputs, outputs, total);
+    tokenMetrics.append(
+        usageMetric("Input Tokens", formatCount(totals.input_tokens), maxToken ? inputs / maxToken * 100 : 0, "input"),
+        usageMetric("Output Tokens", formatCount(totals.output_tokens), maxToken ? outputs / maxToken * 100 : 0, "output"),
+        usageMetric("Total Tokens", formatCount(totals.total_tokens), maxToken ? 100 : 0, "total"),
+        usageMetric("AI Calls" + failedNote, formatCount(totals.calls), 0, "calls")
+    );
+    dashboard.append(details, tokenMetrics);
+    card.appendChild(dashboard);
 
     if (run.error) {
         const error = document.createElement("pre");
@@ -1420,7 +1536,7 @@ function renderRunUsage(run) {
 
         card.appendChild(usageHeader("By Step"));
 
-        card.appendChild(usageTable(
+        const byStep = usageTable(
             ["Step", "Status", "Time", "Calls", "Input", "Output", "Total"],
             stages.map(stage => [
                 stage.stage,
@@ -1438,7 +1554,9 @@ function renderRunUsage(run) {
                 formatCount(totals.output_tokens),
                 formatCount(totals.total_tokens),
             ]
-        ));
+        );
+        byStep.classList.add("usage-data-table");
+        card.appendChild(byStep);
     }
 
     const calls = run.calls || [];
@@ -1451,16 +1569,26 @@ function renderRunUsage(run) {
             .sort((a, b) => (b.duration_seconds ?? 0) - (a.duration_seconds ?? 0))
             .slice(0, 5);
 
-        card.appendChild(usageTable(
+        const slowTable = usageTable(
             ["Step", "Time", "Input", "Output", "Status"],
             slowest.map(call => [
-                call.stage,
-                formatSeconds(call.duration_seconds),
+                `⚙️ ${call.stage || "—"}`,
+                usageTime(call.duration_seconds),
                 formatCount(call.input_tokens),
                 formatCount(call.output_tokens),
                 usageStatus(call.status),
             ])
-        ));
+        );
+        slowTable.classList.add("usage-data-table", "usage-slowest-table");
+        [...slowTable.tBodies[0].rows].forEach(row => {
+            row.cells[1].classList.add("usage-time-cell");
+            row.cells[2].classList.add("usage-number-cell");
+            row.cells[3].classList.add("usage-number-cell");
+        });
+        const slowTableShell = document.createElement("div");
+        slowTableShell.className = "usage-table-shell";
+        slowTableShell.appendChild(slowTable);
+        card.appendChild(slowTableShell);
     }
 
     const failed = calls.filter(call => call.status === "failed");
@@ -1485,18 +1613,24 @@ function renderRunUsage(run) {
 
         card.appendChild(usageHeader("Waits for Google"));
 
-        const reasonText = reason => reason === "429"
-            ? "429 rate limit"
-            : `${reason} Google busy`;
+        const reasonText = reason => {
+            const badge = document.createElement("span");
+            badge.className = `usage-reason ${reason === "429" ? "rate-limit" : ""}`;
+            badge.textContent = reason === "429" ? "429 rate limit" : `${reason} Google busy`;
+            return badge;
+        };
 
-        card.appendChild(usageTable(
+        const waitsTable = usageTable(
             ["Step", "Reason", "Waited"],
             waits.map(wait => [
-                wait.stage,
+                `⚙️ ${wait.stage || "—"}`,
                 reasonText(wait.reason),
                 formatSeconds(wait.seconds),
             ])
-        ));
+        );
+        waitsTable.classList.add("usage-data-table", "usage-waits-table");
+        [...waitsTable.tBodies[0].rows].forEach(row => row.cells[2].classList.add("usage-number-cell"));
+        card.appendChild(waitsTable);
     }
 
     const note = document.createElement("p");
@@ -1530,6 +1664,139 @@ function renderTextPreview(text) {
     output.appendChild(pre);
 }
 
+function renderUnitTestsPreview(data) {
+
+    const output = document.getElementById("viewDisplayOutputBox");
+    output.innerHTML = "";
+
+    const title = document.createElement("h2");
+    title.className = "summary-header";
+    title.textContent = "Unit Tests";
+    output.appendChild(title);
+
+    const generated = Array.isArray(data.generated) ? data.generated : [];
+    const validated = Array.isArray(data.validated) ? data.validated : [];
+    const discarded = Array.isArray(data.discarded) ? data.discarded : [];
+    const report = data.report && typeof data.report === "object" ? data.report : null;
+    const sourceTests = generated.length
+        ? generated
+        : [...validated, ...discarded];
+
+    if (report) {
+        const summary = document.createElement("p");
+        summary.className = "unit-test-summary";
+        summary.textContent = [
+            `Generated: ${report.generated ?? sourceTests.length}`,
+            `Passed: ${report.passed ?? "—"}`,
+            `Failed: ${report.failed ?? "—"}`,
+            `Skipped: ${report.skipped ?? "—"}`
+        ].join(" · ");
+        output.appendChild(summary);
+
+        if (report.project_error) {
+            const error = document.createElement("p");
+            error.className = "unit-test-project-error";
+            error.textContent = `Tests were not run because the test project could not be built: ${report.project_error}`;
+            output.appendChild(error);
+        } else if (report.message) {
+            const note = document.createElement("p");
+            note.className = "unit-test-note";
+            note.textContent = report.message;
+            output.appendChild(note);
+        }
+    }
+
+    if (!sourceTests.length) {
+        const empty = document.createElement("p");
+        empty.className = "unit-test-empty";
+        empty.textContent = "No saved unit-test results are available for this codebase.";
+        output.appendChild(empty);
+        return;
+    }
+
+    const byId = entries => new Map(entries
+        .filter(entry => entry && entry.id !== undefined)
+        .map(entry => [String(entry.id), entry]));
+    const validatedById = byId(validated);
+    const discardedById = byId(discarded);
+    const failedNames = new Set((Array.isArray(report?.failed_tests) ? report.failed_tests : [])
+        .flatMap(value => String(value).match(/\bUT_[\w]+\b/g) || []));
+    const list = document.createElement("div");
+    list.className = "unit-test-list";
+
+    sourceTests.forEach((test, index) => {
+        if (!test || typeof test !== "object") return;
+
+        const id = test.id === undefined ? `item-${index + 1}` : String(test.id);
+        const name = `UT_${id}`;
+        const dropped = discardedById.get(id);
+        const kept = validatedById.get(id);
+        let statusLabel;
+        let statusClass;
+        let reason = "";
+
+        if (dropped) {
+            statusLabel = "Discarded";
+            statusClass = "discarded";
+            reason = dropped.reason || "This generated test was discarded during validation.";
+        } else if (report?.project_error) {
+            statusLabel = "Not run";
+            statusClass = "not-run";
+            reason = "The test project did not build, so this test was not executed.";
+        } else if (!report) {
+            statusLabel = "Not run";
+            statusClass = "not-run";
+            reason = "No saved test report is available for this test.";
+        } else if (failedNames.has(name)) {
+            statusLabel = "Failed";
+            statusClass = "failed";
+        } else if ((Number(report?.passed) || 0) + (Number(report?.failed) || 0) > 0) {
+            // Match the status calculation already used by the saved Run Report:
+            // failed test names identify failures; otherwise a test run with
+            // recorded pass/fail results marks the kept test as passed.
+            statusLabel = "Passed";
+            statusClass = "passed";
+        } else if (kept) {
+            statusLabel = "Not run";
+            statusClass = "not-run";
+            reason = "The test was validated, but the saved report records no execution result.";
+        } else {
+            statusLabel = "Not run";
+            statusClass = "not-run";
+        }
+
+        const item = document.createElement("article");
+        item.className = "unit-test-item";
+        const header = document.createElement("div");
+        header.className = "unit-test-item-header";
+        const nameNode = document.createElement("h3");
+        nameNode.textContent = name;
+        const badge = document.createElement("span");
+        badge.className = `unit-test-status ${statusClass}`;
+        badge.textContent = statusLabel;
+        header.append(nameNode, badge);
+        item.appendChild(header);
+
+        const description = document.createElement("p");
+        description.className = "unit-test-details";
+        description.textContent = reason || (test.source_file_paths?.length
+            ? `Source: ${test.source_file_paths.join(", ")}`
+            : "Saved unit-test result.");
+        item.appendChild(description);
+
+        const finalTest = kept || dropped || test;
+        const code = document.createElement("pre");
+        code.className = "unit-test-code";
+        const imports = Array.isArray(finalTest.imports) ? finalTest.imports.join("\n") : "";
+        const body = finalTest.unit_test || finalTest.test || "";
+        code.textContent = [imports, body].filter(Boolean).join("\n\n") || "Test source was not saved.";
+        item.appendChild(code);
+        list.appendChild(item);
+    });
+
+    output.appendChild(list);
+}
+
 function showPage(pageId) {
 
     document.querySelectorAll('.page').forEach(page => {
@@ -1540,6 +1807,8 @@ function showPage(pageId) {
 }
 
 function showButtons(buttonId) {
+
+    insightsPanelRequest += 1;
 
     // Another view is taking the output box: the Consistency Review screen
     // must not draw into it when a background load or check finishes.
@@ -1688,8 +1957,9 @@ document.getElementById("loadingCancelBtn").addEventListener("click", async () =
 
     commandRequests.fail(cancelledRequestId, cancellationMessage, { cancelled: true });
     if (activeRequestId === cancelledRequestId) activeRequestId = null;
-    hideLoading();
-    showPage("homePage");
+    finishLoading(cancellationMessage);
+    document.getElementById("loadingTitle").textContent = "Cancelled";
+    activeCommand = null;
 });
 
 // Opens the whole-project result of the check that just finished, by its ID:
@@ -1713,16 +1983,16 @@ document.getElementById("loadingOpenReviewBtn").addEventListener("click", () => 
 });
 
 document.getElementById("loadingOkBtn").addEventListener("click", () => {
-
-    hideLoading();
-    document.getElementById("loadingOkBtn").classList.add("hidden");
-    showPage('homePage');
-
+    returnToOperationPage();
 });
 
 document.getElementById("loadingReportBtn").addEventListener("click", async () => {
 
     if (!runReportPath) return;
+
+    // Opening the report dismisses the completion overlay but keeps the
+    // selected codebase's Run Operations page in place behind its window.
+    returnToOperationPage();
 
     const response = await window.electronAPI.openReport(runReportPath);
 
@@ -1733,6 +2003,9 @@ document.getElementById("loadingReportBtn").addEventListener("click", async () =
 });
 
 // MENU BUTTONS
+document.getElementById("homeConnectCodebaseBtn")
+    .addEventListener("click", () => showPage("codebasePipelinePage"));
+
 document.getElementById('analysisBtn')
     .addEventListener('click', () => {
 
@@ -1764,12 +2037,18 @@ document.getElementById('mainViewBtn')
 
         
         showPage('mainViewPage');
-        refreshErrorLog();
+        document.getElementById("viewDisplayOutputBox").innerHTML = "";
 
     });
 
 document.getElementById("errorPopupCloseBtn")
-    .addEventListener("click", hideErrorPopup);
+    .addEventListener("click", () => {
+        hideErrorPopup();
+        // Failed operation responses dismiss their loading overlay before
+        // showing this popup. Cancellation-request errors leave the operation
+        // active, so closing that popup must not dismiss its progress screen.
+        if (!activeCommand && operationReturnPage) returnToOperationPage();
+    });
 
 document.getElementById("viewDisplaySourcesBtn")
 .addEventListener("click", () => {
@@ -1848,21 +2127,154 @@ document.getElementById("viewUsageBtn")
 document.getElementById("viewRunReportBtn")
 .addEventListener("click", async () => {
 
-    // This message takes the output box (see showButtons).
+    showButtons("mainViewBtns");
+    const requestId = insightsPanelRequest;
+    const output = document.getElementById("viewDisplayOutputBox");
+    output.replaceChildren();
+
     if (window.ConsistencyReviewScreen) {
         window.ConsistencyReviewScreen.hide();
     }
 
     const codebaseName = getSelectedCodebaseName();
-    const response = await window.electronAPI.openLatestReport(codebaseName);
+    if (!codebaseName) {
+        renderRunReportEmpty("Select a codebase to view its run report.");
+        return;
+    }
 
-    renderTextPreview(
-        response?.success
-            ? `Opened the run report for ${response.codebase} in its own window.`
-            : (response?.error || "Could not open the run report.")
+    let response;
+    try {
+        response = await window.electronAPI.getRunReportHtml(codebaseName);
+    } catch (error) {
+        response = { success: false, error: "Could not load the run report." };
+    }
+
+    // A different Insights section or codebase may have been selected while IPC was pending.
+    if (requestId !== insightsPanelRequest || codebaseName !== getSelectedCodebaseName()) return;
+
+    if (!response?.success || response.codebase !== codebaseName || typeof response.html !== "string") {
+        renderRunReportEmpty(response?.error || "No run report is available for this codebase.");
+        return;
+    }
+
+    const frame = document.createElement("iframe");
+    frame.className = "run-report-frame";
+    frame.title = `Run report for ${response.codebase}`;
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.setAttribute("referrerpolicy", "no-referrer");
+    frame.addEventListener("load", () => {
+        frame.contentWindow?.postMessage({
+            type: "checkpoint:set-report-theme",
+            theme: document.body.dataset.theme === "light" ? "light" : "dark"
+        }, "*");
+    });
+
+    const embeddedHtml = createEmbeddedRunReportHtml(
+        response.html,
+        document.body.dataset.theme === "light" ? "light" : "dark"
     );
+    if (!embeddedHtml) {
+        renderRunReportEmpty("This saved report could not be displayed because its document structure is invalid.");
+        return;
+    }
+
+    frame.srcdoc = embeddedHtml;
+    output.replaceChildren(frame);
 
 });
+
+function renderRunReportEmpty(message) {
+    const output = document.getElementById("viewDisplayOutputBox");
+    if (!output) return;
+
+    const state = document.createElement("section");
+    state.className = "run-report-empty";
+    state.setAttribute("role", "status");
+    const title = document.createElement("h2");
+    title.textContent = "Run Report unavailable";
+    const detail = document.createElement("p");
+    detail.textContent = message;
+    state.append(title, detail);
+    output.replaceChildren(state);
+}
+
+function createEmbeddedRunReportHtml(reportHtml, theme) {
+    const originalLowerHtml = reportHtml.toLowerCase();
+    const scriptEnd = originalLowerHtml.lastIndexOf("</script>");
+    const routerEnd = reportHtml.lastIndexOf("})();", scriptEnd);
+    if (scriptEnd < 0 || routerEnd < 0) return null;
+
+    // The report's router is private to its IIFE. Route embed clicks from inside
+    // that closure instead of relying on fragment navigation in the sandboxed frame.
+    const routerExtension = `
+  document.addEventListener("click", function(event) {
+    var modeButton = event.target.closest && event.target.closest(".view-switch button");
+    if (modeButton) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      var nextView = modeButton.dataset.view;
+      if (nextView === VIEW) return;
+      var nextTab = currentTab();
+      setView(nextView);
+      if (nextView === "business" && DEV_ONLY.indexOf(nextTab) >= 0) nextTab = "overview";
+      showTab(nextTab);
+      try { history.replaceState(null, "", "#" + nextTab); } catch (error) {}
+      return;
+    }
+
+    var tabLink = event.target.closest && event.target.closest("#tabs a[data-tab]");
+    if (tabLink) {
+      event.preventDefault();
+      var tab = tabLink.getAttribute("data-tab");
+      showTab(tab);
+      try { history.replaceState(null, "", "#" + tab); } catch (error) {}
+      return;
+    }
+
+    var fragmentLink = event.target.closest && event.target.closest("a[href^='#']");
+    if (!fragmentLink) return;
+    event.preventDefault();
+    var hash = fragmentLink.getAttribute("href");
+    try { history.replaceState(null, "", hash); }
+    catch (error) { try { location.hash = hash; } catch (ignored) {} }
+    route();
+  }, true);
+`;
+    reportHtml = reportHtml.slice(0, routerEnd) + routerExtension + reportHtml.slice(routerEnd);
+
+    const lowerHtml = reportHtml.toLowerCase();
+    const headEnd = lowerHtml.indexOf("</head>");
+    const bodyEnd = lowerHtml.lastIndexOf("</body>");
+    if (headEnd < 0 || bodyEnd < headEnd) return null;
+
+    const headInjection = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+<script>document.documentElement.dataset.checkpointEmbedded="true";document.documentElement.dataset.checkpointTheme="${theme}";</script>
+<style>
+html[data-checkpoint-theme="dark"] { color-scheme: dark; --bg:#0d111a; --panel:#141a24; --text:#fff; --muted:#94a3b8; --line:rgba(255,255,255,.08); --accent:#e52b38; --accent-soft:rgba(229,43,56,.15); --code-bg:#101722; --ok:#86efac; --ok-bg:rgba(34,197,94,.15); --bad:#ff8a93; --bad-bg:rgba(229,43,56,.15); --warn:#fbbf24; --warn-bg:rgba(245,158,11,.15); --none:#94a3b8; --none-bg:rgba(148,163,184,.12); --flash:rgba(229,43,56,.2); }
+html[data-checkpoint-theme="light"] { color-scheme: light; --bg:#f1f4f8; --panel:#fff; --text:#172033; --muted:#475569; --line:rgba(15,23,42,.13); --accent:#d92332; --accent-soft:rgba(229,43,56,.1); --code-bg:#f7f9fc; --ok:#166534; --ok-bg:rgba(34,197,94,.12); --bad:#a51d29; --bad-bg:rgba(229,43,56,.1); --warn:#854d0e; --warn-bg:rgba(245,158,11,.13); --none:#64748b; --none-bg:rgba(100,116,139,.1); --flash:#fff4c2; }
+html[data-checkpoint-embedded="true"] body { min-width:0; background:var(--bg); color:var(--text); }
+html[data-checkpoint-embedded="true"] #report-back,
+html[data-checkpoint-embedded="true"] #report-back-help { display:none !important; }
+html[data-checkpoint-embedded="true"] .viewport { min-height:240px; max-height:560px; background:var(--code-bg); }
+html[data-checkpoint-embedded="true"] #tabs a:focus-visible,
+html[data-checkpoint-embedded="true"] .view-switch button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+</style>`;
+    const bootstrap = `<script>(function(){
+  var back=document.getElementById("report-back"); if(back) back.remove();
+  var help=document.getElementById("report-back-help"); if(help) help.remove();
+  document.addEventListener("click",function(event){
+    var link=event.target.closest&&event.target.closest("a[href]");
+    if(link&&link.getAttribute("href").charAt(0)!=="#") event.preventDefault();
+  },true);
+  window.addEventListener("message",function(event){
+    var data=event.data;
+    if(event.source!==window.parent||!data||data.type!=="checkpoint:set-report-theme"||(data.theme!=="light"&&data.theme!=="dark")) return;
+    document.documentElement.dataset.checkpointTheme=data.theme;
+  });
+})();</script>`;
+
+    return reportHtml.slice(0, headEnd) + headInjection + reportHtml.slice(headEnd, bodyEnd) + bootstrap + reportHtml.slice(bodyEnd);
+}
 
 document.getElementById("viewDisplaySummariesBtn")
     .addEventListener("click", () => {
@@ -1921,77 +2333,207 @@ document.getElementById("viewDisplayFilesBtn").addEventListener("click", () => {
 
 });
 
-document.getElementById("viewDisplayBusinessRulesBtn").addEventListener("click", () => {
+let businessRulesRequest = 0;
 
-    showButtons("viewBusinessRulesBtns");
+document.getElementById("viewDisplayBusinessRulesBtn").addEventListener("click", async () => {
+    showButtons("mainViewBtns");
 
+    const output = document.getElementById("viewDisplayOutputBox");
+    const requestId = ++businessRulesRequest;
+    const codebasePath = selectedCodebasePath;
+    output.innerHTML = "";
 
-    
+    const title = document.createElement("h2");
+    title.className = "business-rules-title";
+    title.textContent = "Business Rules";
+    output.appendChild(title);
 
-});
+    if (!codebasePath) {
+        const message = document.createElement("p");
+        message.className = "business-rules-empty";
+        message.textContent = "Select a codebase first from the pipeline page.";
+        output.appendChild(message);
+        return;
+    }
 
-document.getElementById("viewUnitTestsBtn")
-    .addEventListener("click", () => {
+    const loading = document.createElement("p");
+    loading.className = "business-rules-loading";
+    loading.textContent = "Loading business rules…";
+    output.appendChild(loading);
 
-        showButtons("viewFilesBtns");
-        setActiveFileListView({ includePdfs: false, onlyPdfs: false, recursivePdfs: false });
+    let response;
+    try {
+        response = await window.electronAPI.getBusinessRules(codebasePath);
+    } catch (error) {
+        response = { success: false, error: error.message || "Could not load business rules." };
+    }
 
-        const codebaseName = getSelectedCodebaseName();
-        if (!codebaseName) {
-            renderTextPreview("Select a codebase first from the pipeline page.");
+    if (requestId !== businessRulesRequest || codebasePath !== selectedCodebasePath) return;
+    output.innerHTML = "";
+    output.appendChild(title);
+
+    if (!response?.success) {
+        const message = document.createElement("p");
+        message.className = "business-rules-unavailable";
+        message.textContent = response?.error || "Could not load business rules.";
+        output.appendChild(message);
+        return;
+    }
+
+    const validated = response.validated || { exists: false, loaded: false, count: null, rules: [] };
+    const discarded = response.discarded || { exists: false, loaded: false, count: null, rules: [] };
+    const summary = document.createElement("div");
+    summary.className = "business-rules-summary";
+    for (const [label, file] of [["Validated", validated], ["Discarded", discarded]]) {
+        const badge = document.createElement("span");
+        badge.className = `business-rules-count ${label.toLowerCase()}`;
+        badge.textContent = `${label}: ${file.loaded ? file.count : "Unavailable"}`;
+        summary.appendChild(badge);
+    }
+    output.appendChild(summary);
+
+    const allRules = [
+        ...(validated.loaded ? validated.rules.map((rule) => ({
+            text: typeof rule === "string" ? rule : rule.text,
+            source: typeof rule === "string" ? "" : (rule.source || ""),
+            status: "Validated"
+        })) : []),
+        ...(discarded.loaded ? discarded.rules.map((rule) => ({
+            text: typeof rule === "string" ? rule : rule.text,
+            source: typeof rule === "string" ? "" : (rule.source || ""),
+            status: "Discarded"
+        })) : [])
+    ];
+
+    const toolbar = document.createElement("div");
+    toolbar.className = "business-rules-toolbar";
+    const search = document.createElement("input");
+    search.type = "search";
+    search.className = "business-rules-search";
+    search.placeholder = "Search rules...";
+    search.setAttribute("aria-label", "Search rules");
+    const status = document.createElement("select");
+    status.className = "business-rules-filter";
+    status.setAttribute("aria-label", "Filter by status");
+    [["All", "all"], ["Validated", "validated"], ["Discarded", "discarded"]].forEach(([label, value]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        status.appendChild(option);
+    });
+    const folder = document.createElement("select");
+    folder.className = "business-rules-filter";
+    folder.setAttribute("aria-label", "Filter by source folder");
+    const allFolders = document.createElement("option");
+    allFolders.value = "all";
+    allFolders.textContent = "All Folders";
+    folder.appendChild(allFolders);
+    [...new Set(allRules.map((rule) => rule.source).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+        .forEach((source) => {
+            const option = document.createElement("option");
+            option.value = source;
+            option.textContent = source;
+            folder.appendChild(option);
+        });
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "business-rules-clear";
+    clear.textContent = "✕ Clear Filters";
+    toolbar.append(search, status, folder, clear);
+    output.appendChild(toolbar);
+
+    const list = document.createElement("div");
+    list.className = "business-rules-list";
+    output.appendChild(list);
+
+    const hasAnyRuleFile = validated.exists || discarded.exists;
+    if (!hasAnyRuleFile) {
+        const empty = document.createElement("p");
+        empty.className = "business-rules-empty";
+        empty.textContent = "No business-rule validation results are available for this codebase.";
+        list.appendChild(empty);
+    }
+
+    const addStatusMessage = (message, className = "business-rules-empty") => {
+        const empty = document.createElement("p");
+        empty.className = className;
+        empty.textContent = message;
+        list.appendChild(empty);
+    };
+
+    if (validated.exists && !validated.loaded) {
+        addStatusMessage(`Validated rules unavailable${validated.error ? `: ${validated.error}` : "."}`, "business-rules-unavailable");
+    } else if (validated.loaded && validated.count === 0) {
+        addStatusMessage("No validated rules");
+    }
+    if (discarded.exists && !discarded.loaded) {
+        addStatusMessage(`Discarded rules unavailable${discarded.error ? `: ${discarded.error}` : "."}`, "business-rules-unavailable");
+    } else if (discarded.loaded && discarded.count === 0) {
+        addStatusMessage("No discarded rules");
+    }
+
+    const renderRows = () => {
+        list.querySelectorAll(".business-rule-row, .business-rules-no-match").forEach((node) => node.remove());
+        if (!hasAnyRuleFile || allRules.length === 0) return;
+
+        const query = search.value.trim().toLocaleLowerCase();
+        const selectedStatus = status.value;
+        const selectedFolder = folder.value;
+        const matches = allRules.filter((rule) =>
+            (selectedStatus === "all" || rule.status.toLowerCase() === selectedStatus) &&
+            (selectedFolder === "all" || rule.source === selectedFolder) &&
+            rule.text.toLocaleLowerCase().includes(query)
+        );
+
+        if (matches.length === 0) {
+            const noMatch = document.createElement("div");
+            noMatch.className = "business-rules-no-match";
+            const message = document.createElement("p");
+            message.textContent = "No matching rules";
+            const clearLink = document.createElement("button");
+            clearLink.type = "button";
+            clearLink.className = "business-rules-clear";
+            clearLink.textContent = "Clear Filters";
+            clearLink.addEventListener("click", () => clear.click());
+            noMatch.append(message, clearLink);
+            list.appendChild(noMatch);
             return;
         }
 
-        try{
-            const rootPath = `agent/UT_agent_output/${codebaseName}`;
+        matches.forEach((rule) => {
+            const row = document.createElement("article");
+            row.className = "business-rule-row";
+            const badge = document.createElement("span");
+            const statusClass = rule.status.toLowerCase();
+            badge.className = `business-rule-status ${statusClass}`;
+            badge.textContent = rule.status;
+            const text = document.createElement("p");
+            text.className = "business-rule-text";
+            text.textContent = rule.text;
+            row.append(badge, text);
+            list.appendChild(row);
+        });
+    };
 
-            resetInsightFolderNavigation(rootPath);
-
-            runPreviewCommand("files", {
-                path: rootPath
-            });
-        } catch (error) {
-            const rootPath = `backend/agent/UT_agent_output/${codebaseName}`;
-
-            resetInsightFolderNavigation(rootPath);
-
-            runPreviewCommand("files", {
-                path: rootPath
-            });
-        }
-
-    });
-
-//Hardcoded to see if outputs work
-document.getElementById("validatedBusinessRulesBtn").addEventListener("click", () => {
-
-    const codebaseName = getSelectedCodebaseName();
-    if (!codebaseName) {
-        renderTextPreview("Select a codebase first from the pipeline page.");
-        return;
-    }
-
-    try{
-        runPreviewCommand(
-            "open_file",
-            {
-                path: `agent/BR_agent_output/${codebaseName}/validated_rules.json`
-            }
-        );
-    } catch (error) {
-        runPreviewCommand(
-            "open_file",
-            {
-                path: `backend/agent/BR_agent_output/${codebaseName}/validated_rules.json`
-            }
-        );
-    }
-
-
+    const clearFilters = () => {
+        search.value = "";
+        status.value = "all";
+        folder.value = "all";
+        renderRows();
+    };
+    search.addEventListener("input", renderRows);
+    status.addEventListener("change", renderRows);
+    folder.addEventListener("change", renderRows);
+    clear.addEventListener("click", clearFilters);
+    renderRows();
 });
 
-//hoardcoded to see if outputs work
-document.getElementById("discardedBusinessRulesBtn").addEventListener("click", () => {
+document.getElementById("viewUnitTestsBtn").addEventListener("click", async () => {
+    showButtons("mainViewBtns");
+    const requestId = insightsPanelRequest;
+    const output = document.getElementById("viewDisplayOutputBox");
+    output.innerHTML = "";
 
     const codebaseName = getSelectedCodebaseName();
     if (!codebaseName) {
@@ -1999,22 +2541,54 @@ document.getElementById("discardedBusinessRulesBtn").addEventListener("click", (
         return;
     }
 
-    try{
-        runPreviewCommand(
-            "open_file",
-            {
-                path: `agent/BR_agent_output/${codebaseName}/discarded_rules.json`
-            }
-        );
-    } catch (error) {
-        runPreviewCommand(
-            "open_file",
-            {
-                path: `backend/agent/BR_agent_output/${codebaseName}/discarded_rules.json`
-            }
-        );
+    const loading = document.createElement("p");
+    loading.className = "unit-test-empty";
+    loading.textContent = "Loading saved unit-test results…";
+    output.appendChild(loading);
+
+    const rootPath = `agent/UT_agent_output/${codebaseName}`;
+    const listing = await window.electronAPI.previewCommand("files", { path: rootPath });
+    if (requestId !== insightsPanelRequest || codebaseName !== getSelectedCodebaseName()) return;
+    if (!listing?.success) {
+        renderUnitTestsPreview({ generated: [], validated: [], discarded: [], report: null });
+        return;
     }
 
+    const filesByName = new Map((listing.files || []).map(file => [file.name.toLowerCase(), file]));
+    const readSavedJson = async fileName => {
+        const file = filesByName.get(fileName.toLowerCase());
+        if (!file || file.isDirectory) return undefined;
+
+        const normalized = normalizePath(file.path);
+        unitTestPreviewPaths.add(normalized);
+        unitTestPreviewPendingPaths.add(normalized);
+        unitTestPreviewLoading = unitTestPreviewPendingPaths.size > 0;
+        try {
+            const response = await window.electronAPI.previewCommand("open_file", { path: file.path });
+            if (!response?.success || !response.preview) return undefined;
+            const content = response.preview.content;
+            return typeof content === "string" ? JSON.parse(content) : content;
+        } catch (error) {
+            console.warn(`Could not read saved ${fileName}:`, error);
+            return undefined;
+        } finally {
+            // preview-command also broadcasts the same open_file result to
+            // the generic Insights listener. Keep this path suppressed after
+            // the invoke resolves because that broadcast can arrive later.
+            unitTestPreviewPendingPaths.delete(normalized);
+            unitTestPreviewLoading = unitTestPreviewPendingPaths.size > 0;
+        }
+    };
+
+    const [generated, validated, discarded, report] = await Promise.all([
+        readSavedJson("unit_tests.json"),
+        readSavedJson("validated_tests.json"),
+        readSavedJson("discarded_tests.json"),
+        readSavedJson("test_report.json")
+    ]);
+
+    if (requestId !== insightsPanelRequest || codebaseName !== getSelectedCodebaseName()) return;
+    renderUnitTestsPreview({ generated, validated, discarded, report });
 });
 
 document.getElementById('mainViewBackBtn')
@@ -2027,36 +2601,34 @@ document.getElementById('mainViewBackBtn')
 
 // UML view should surface the generated PDFs for the selected codebase.
 document.getElementById('viewUMLBtn')
-    .addEventListener('click', () => {
+    .addEventListener('click', async () => {
 
         showButtons('viewFilesBtns');
         setActiveFileListView({ includePdfs: true, onlyPdfs: true, recursivePdfs: true });
 
+        const output = document.getElementById("viewDisplayOutputBox");
+        output.innerHTML = "";
         const codebaseName = getSelectedCodebaseName();
         if (!codebaseName) {
             renderTextPreview("Select a codebase first from the pipeline page.");
             return;
         }
 
-        try{
-            const rootPath = `agent/file_summary_agent_output/${codebaseName}`;
+        const requestId = insightsPanelRequest;
+        const rootPath = `agent/file_summary_agent_output/${codebaseName}`;
+        resetInsightFolderNavigation(rootPath);
+        const response = await runPreviewCommand('files', {
+            path: rootPath,
+            recursivePdfs: true
+        });
 
-            resetInsightFolderNavigation(rootPath);
-
-            runPreviewCommand('files', {
-                path: rootPath,
-                recursivePdfs: true
-            });
-        } catch (error) {
-            const rootPath = `backend/agent/file_summary_agent_output/${codebaseName}`;
-
-            resetInsightFolderNavigation(rootPath);
-
-            runPreviewCommand('files', {
-                path: rootPath,
-                recursivePdfs: true
-            });
+        if (requestId !== insightsPanelRequest) return;
+        if (!response?.success || !response.files?.some(file => file.name.toLowerCase().endsWith(".pdf"))) {
+            renderTextPreview("No UML diagram is available for this codebase yet. Generate UML from Run Operations to create one.");
+            return;
         }
+
+        renderTextPreview("Saved UML diagrams are available. Select a diagram from the file list to preview it.");
     });
 
 
@@ -2541,6 +3113,8 @@ document.getElementById('submitPathBtn')
             'codebasePath'
         ).value;
 
+    updateHomeCodebaseSummary(selectedCodebasePath);
+
 
 });
 
@@ -2556,7 +3130,31 @@ document.getElementById("browseCodebaseBtn")
     document.getElementById("codebasePath").value = path;
 
     selectedCodebasePath = path;
+    updateHomeCodebaseSummary(path);
 });
+
+function updateHomeCodebaseSummary(codebasePath) {
+    const cleaned = String(codebasePath || "").replace(/[\\/]+$/, "");
+    const codebaseName = cleaned ? cleaned.split(/[\\/]/).pop() : "No codebase selected";
+    const name = document.getElementById("homeCodebaseName");
+    const operationsName = document.getElementById("operationsProjectName");
+    const operationsPath = document.getElementById("operationsCodebasePath");
+
+    if (name) {
+        name.textContent = codebaseName;
+        name.title = cleaned || "";
+    }
+    if (operationsName) {
+        operationsName.textContent = codebaseName;
+        operationsName.title = cleaned || "";
+    }
+    if (operationsPath) {
+        operationsPath.textContent = cleaned || "No path selected";
+        operationsPath.title = cleaned || "";
+    }
+}
+
+updateHomeCodebaseSummary(selectedCodebasePath);
 
 
 
@@ -2574,6 +3172,17 @@ async function handleBackendResponse(response) {
 
 
     if (!response) {
+        return;
+    }
+
+    if (response.type === "file-preview" && unitTestPreviewPaths.has(normalizePath(response.path))) {
+        // Consume just this duplicate IPC broadcast. A later user-selected
+        // preview of the same JSON file should still use the generic renderer.
+        unitTestPreviewPaths.delete(normalizePath(response.path));
+        return;
+    }
+
+    if (unitTestPreviewLoading && !response.type && !response.request_id) {
         return;
     }
 
@@ -2799,6 +3408,9 @@ async function handleBackendResponse(response) {
     // Errors
     // ----------------------------------------
     if (response.cancelled) {
+        finishLoading(response.message || "Operation cancelled.");
+        document.getElementById("loadingTitle").textContent = "Cancelled";
+        activeCommand = null;
         return;
     }
 
@@ -2824,7 +3436,6 @@ async function handleBackendResponse(response) {
         if (activeCommand) {
 
             hideLoading();
-            showPage('homePage');
             activeCommand = null;
 
         }
@@ -3113,16 +3724,89 @@ function renderCollectionPreview(
 // ==========================================
 
 
-function toggleTheme() {
-  const newTheme =
-    document.body.dataset.theme === "dark"
-      ? "light"
-      : "dark";
+function setTheme(theme, persist = true) {
+    if (theme !== "light" && theme !== "dark") return;
 
-  document.body.dataset.theme = newTheme;
+    document.body.dataset.theme = theme;
+    notifyEmbeddedRunReportTheme(theme);
+    document.querySelectorAll("[data-theme-choice]").forEach(option => {
+        option.setAttribute("aria-checked", String(option.dataset.themeChoice === theme));
+    });
 
-  localStorage.setItem("theme", newTheme);
+    if (persist) {
+        try {
+            localStorage.setItem("theme", theme);
+        } catch (error) {
+            console.warn("Could not save the selected theme locally:", error);
+        }
+    }
 }
+
+function notifyEmbeddedRunReportTheme(theme) {
+    const frame = document.querySelector("#viewDisplayOutputBox .run-report-frame");
+    frame?.contentWindow?.postMessage({ type: "checkpoint:set-report-theme", theme }, "*");
+}
+
+function initializeThemeMenu() {
+    const button = document.getElementById("themeMenuButton");
+    const menu = document.getElementById("themeMenu");
+    const options = [...menu.querySelectorAll("[data-theme-choice]")];
+
+    const closeMenu = (returnFocus = false) => {
+        menu.classList.add("hidden");
+        button.setAttribute("aria-expanded", "false");
+        if (returnFocus) button.focus();
+    };
+
+    let savedTheme = "dark";
+    try {
+        const stored = localStorage.getItem("theme");
+        if (stored === "light" || stored === "dark") savedTheme = stored;
+    } catch (error) {
+        console.warn("Could not read the saved theme:", error);
+    }
+    setTheme(savedTheme, false);
+
+    button.addEventListener("click", () => {
+        const opening = menu.classList.contains("hidden");
+        menu.classList.toggle("hidden", !opening);
+        button.setAttribute("aria-expanded", String(opening));
+        if (opening) options.find(option => option.getAttribute("aria-checked") === "true")?.focus();
+    });
+
+    options.forEach(option => option.addEventListener("click", () => {
+        setTheme(option.dataset.themeChoice);
+        closeMenu(true);
+    }));
+
+    document.addEventListener("pointerdown", event => {
+        if (!menu.contains(event.target) && !button.contains(event.target) && !menu.classList.contains("hidden")) {
+            closeMenu();
+        }
+    });
+
+    document.addEventListener("keydown", event => {
+        if (menu.classList.contains("hidden")) return;
+        if (event.key === "Escape") {
+            event.preventDefault();
+            closeMenu(true);
+            return;
+        }
+
+        const activeIndex = options.indexOf(document.activeElement);
+        let nextIndex = activeIndex;
+        if (event.key === "ArrowDown") nextIndex = (activeIndex + 1 + options.length) % options.length;
+        else if (event.key === "ArrowUp") nextIndex = (activeIndex - 1 + options.length) % options.length;
+        else if (event.key === "Home") nextIndex = 0;
+        else if (event.key === "End") nextIndex = options.length - 1;
+        else return;
+
+        event.preventDefault();
+        options[nextIndex].focus();
+    });
+}
+
+initializeThemeMenu();
 
 function setApiKeyPending(pending) {
 
@@ -3179,12 +3863,10 @@ function showApiKeyPresent() {
 
     if (!apiBtnEl) return;
 
-    // Deliberately NOT .unusable-btn. That class is cosmetic -- it only
-    // fades the button and shows a not-allowed cursor -- but this button
-    // is the only route to the Replace / Keep page, so looking disabled
-    // made a stale key appear unchangeable. Relabel instead of greying.
+    // Keep the landing action label stable; this route also manages/replaces
+    // an existing key, so it remains available when a key is already saved.
     apiBtnEl.classList.remove("unusable-btn");
-    apiBtnEl.textContent = "Manage API Keys";
+    apiBtnEl.textContent = "↑ Upload API Key";
 
 }
 

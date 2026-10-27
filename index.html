@@ -10,16 +10,78 @@
 
     <!-- HOME PAGE -->
     <div id="homePage" class="page active">
+        <header class="home-header">
+            <div class="home-theme-control">
+                <button class="home-brand-mark" id="themeMenuButton" type="button"
+                    aria-label="Choose color theme" aria-haspopup="menu" aria-expanded="false">C</button>
+                <div class="theme-menu hidden" id="themeMenu" role="menu" aria-label="Color theme">
+                    <button class="theme-menu-option" id="themeLightOption" type="button" role="menuitemradio" aria-checked="false" data-theme-choice="light">Light</button>
+                    <button class="theme-menu-option" id="themeDarkOption" type="button" role="menuitemradio" aria-checked="true" data-theme-choice="dark">Dark</button>
+                </div>
+            </div>
+            <div class="home-brand-copy">
+                <p class="home-eyebrow">CODEBASE WORKSPACE</p>
+                <h1>Checkpoint</h1>
+            </div>
+            <span class="home-header-divider" aria-hidden="true"></span>
+            <p class="home-intro">Choose where you want to go</p>
+        </header>
 
-        <h1>Checkpoint</h1>
-        <h2>Codebase Analysis System</h2>
+        <section class="home-codebase-summary" aria-live="polite" aria-label="Selected codebase">
+            <div class="home-codebase-copy">
+                <p class="home-codebase-select-label">Selected Codebase <span aria-hidden="true">⌄</span></p>
+                <p class="home-codebase-name" id="homeCodebaseName">No codebase selected</p>
+            </div>
+            <button class="home-connect-button" id="homeConnectCodebaseBtn" type="button">
+                Connect Codebase <span aria-hidden="true">+</span>
+            </button>
+        </section>
 
-        <button class="btn-primary unusable-btn" id="analysisBtn">Run Operations</button>
-        <button class="btn-primary" id="mainViewBtn">View Insights</button>
-        <button class="btn-primary" id="apiBtn">Manage API Keys</button>
-        <button class="btn-primary" id="faqAndSupportBtn">FAQ & Support</button>
-        <button class="btn-primary back-btn" id="exitBtn">Exit</button>
+        <main class="home-destinations">
+            <article class="home-action-card">
+                <div class="home-card-topline">
+                    <span class="home-card-number">01</span>
+                    <div class="home-card-icons" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M12 8.2a3.8 3.8 0 1 0 0 7.6 3.8 3.8 0 0 0 0-7.6Z"/><path d="m19.4 13.5 1.1.9-1.5 2.6-1.4-.5a7.8 7.8 0 0 1-1.6.9l-.3 1.5h-3l-.3-1.5a7.8 7.8 0 0 1-1.6-.9l-1.4.5-1.5-2.6 1.1-.9a7 7 0 0 1 0-1.8l-1.1-.9 1.5-2.6 1.4.5a7.8 7.8 0 0 1 1.6-.9l.3-1.5h3l.3 1.5a7.8 7.8 0 0 1 1.6.9l1.4-.5 1.5 2.6-1.1.9a7 7 0 0 1 0 1.8Z"/></svg>
+                        <svg viewBox="0 0 24 24"><path d="m14.5 6.5 3-3 3 3-3 3M5 19l9.2-9.2M4 20l4.5-1.2L5.2 15 4 20Z"/><path d="m13 8 3 3"/></svg>
+                        <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 8h18M6 6h.01M9 6h.01M7 12h10M7 15h7"/></svg>
+                    </div>
+                </div>
+                <div class="home-card-copy">
+                    <h2>Run Operations</h2>
+                    <p>Analyze the selected codebase and run available processing steps.</p>
+                </div>
+                <button class="home-action-button primary" id="analysisBtn" type="button">
+                    <span>Open operations</span><span class="home-button-arrow" aria-hidden="true">→</span>
+                </button>
+            </article>
 
+            <article class="home-action-card">
+                <div class="home-card-topline">
+                    <span class="home-card-number">02</span>
+                    <div class="home-card-icons" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><path d="M4 4h16v12H4zM12 16v4M8 20h8M8 12l2-3 2 2 3-4"/></svg>
+                        <svg viewBox="0 0 24 24"><path d="M4 20V10h4v10M10 20V4h4v16M16 20v-7h4v7M2 20h20"/></svg>
+                        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="m6.5 14 3-3 2.5 2 5-5"/></svg>
+                    </div>
+                </div>
+                <div class="home-card-copy">
+                    <h2>View Insights</h2>
+                    <p>Review generated summaries, business rules, test results, and run information.</p>
+                </div>
+                <button class="home-action-button secondary" id="mainViewBtn" type="button">
+                    <span>Open insights</span><span class="home-button-arrow" aria-hidden="true">→</span>
+                </button>
+            </article>
+        </main>
+
+        <footer class="home-footer">
+            <div class="home-footer-actions">
+                <button class="home-footer-button" id="apiBtn" type="button"><span aria-hidden="true">↑</span> Upload API Key</button>
+                <button class="home-footer-button" id="faqAndSupportBtn" type="button"><span class="home-question-icon" aria-hidden="true">?</span> FAQ &amp; Support</button>
+            </div>
+            <button class="home-footer-button home-exit-button back-btn" id="exitBtn" type="button"><span aria-hidden="true">↳</span> Exit</button>
+        </footer>
     </div>
 
 
@@ -48,34 +110,67 @@
 
     <!-- ANALYSIS PAGE -->
     <div id="analysisPage" class="page hidden">
-
-        <h1>Operations</h1>
-
-        <div id="analysisOptions">
-
-            <div id="pipelineOptions">
-               
-                <button class="btn-primary" id="estimateTokensBtn">Estimate Token Usage</button>
-                <button class="btn-primary" id="tokenCalibrationBtn">Show Token Calibration</button>
-                <button class="btn-primary" id="codebaseAnalysisPipelineBtn" aria-describedby="pipelineReviewNote">Full Codebase Analysis Pipeline</button>
-                <p id="pipelineReviewNote" class="operation-note">Ends with a Consistency Review of what it generated: one more AI request per source file, on your API key.</p>
-                <button class="btn-primary" id="createCodeDatabaseOnlyBtn">Create Code Database</button>
-                <button class="btn-primary" id="createJSONSummariesOnlyBtn">Create JSON Summaries</button>
-                <button class="btn-primary" id="createSummaryDatabasefromJSONOnlyBtn">Create Summary Database from JSON</button>
-                <button class="btn-primary" id="createDirectorySummariesOnlyBtn">Create Directory Summaries & Business Rules</button>
-                <button class="btn-primary" id="runBusinessRuleValidationOnlyBtn">Business Rule Validation</button>
-                <button class="btn-primary" id="runUMLGenerationOnly">UML Generation</button>
-                <button class="btn-primary" id="runUnitTestGenerationOnlyBtn">Unit Test Generation</button>
-                <button class="btn-primary" id="runUnitTestValidationOnlyBtn">Unit Test Validation</button>
-                <button class="btn-primary" id="runMutationTestingOnlyBtn">Test Strength (Mutation Testing)</button>
-                <button class="btn-primary" id="runIntegrationTestGenerationOnlyBtn">Integration Test Generation</button>
-                <button class="btn-primary" id="runConsistencyReviewOnlyBtn">Consistency Review</button>
-                
-                
+        <header class="operations-topbar">
+            <button class="operations-back-button" id="analysisBackBtn" type="button"><span aria-hidden="true">&#8592;</span> Back to Dashboard</button>
+            <div class="operations-heading">
+                <h1>Operations</h1>
+                <span class="operations-heading-divider" aria-hidden="true">|</span>
+                <p>Select analysis tasks or run full automated pipeline</p>
             </div>
+        </header>
 
-            <button class="btn-primary back-btn" id="analysisBackBtn">Return to Main Menu</button>
+        <div id="analysisOptions" class="operations-content">
+            <section class="operations-codebase-summary" aria-label="Selected codebase">
+                <h2 class="operations-codebase-title">Selected Codebase</h2>
+                <dl class="operations-codebase-details">
+                    <div><dt>Project</dt><dd id="operationsProjectName">No codebase selected</dd></div>
+                    <div><dt>Language</dt><dd><span class="operations-language-dot" aria-hidden="true"></span>Not detected</dd></div>
+                    <div class="operations-path-detail"><dt>Path</dt><dd id="operationsCodebasePath">No path selected</dd></div>
+                </dl>
+            </section>
 
+            <section class="operations-pipeline-hero" aria-labelledby="operationsPipelineTitle">
+                <div class="operations-pipeline-copy">
+                    <p class="operations-section-eyebrow">AUTOMATED WORKFLOW</p>
+                    <h2 id="operationsPipelineTitle">Automated Pipeline</h2>
+                    <p>This full codebase analysis pipeline, estimate, tots tattows the full sequential process for winning manning information operations, and prediation process.</p>
+                </div>
+                <div class="operations-pipeline-action">
+                    <button class="operations-pipeline-button" id="codebaseAnalysisPipelineBtn" type="button">
+                        <span aria-hidden="true">&#9889;</span>
+                        <span>Run Full Codebase Analysis Pipeline</span>
+                        <span aria-hidden="true">&#8594;</span>
+                    </button>
+                    <p id="pipelineReviewNote" class="operation-note">Ends with a Consistency Review of what it generated: one more AI request per source file, on your API key.</p>
+                </div>
+            </section>
+
+            <div id="pipelineOptions" class="operations-category-grid">
+                <section class="operations-category-card" aria-labelledby="operationsTokensTitle">
+                    <h2 id="operationsTokensTitle"><span class="operations-category-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="13" r="7.5"/><path d="M12 9v4l2.5 1.5M9 2.8h6M12 2.8V5"/></svg></span>Tokens &amp; Diagnostics</h2>
+                    <button class="operation-task-button" id="estimateTokensBtn" type="button">Estimate Token Usage</button>
+                    <button class="operation-task-button" id="tokenCalibrationBtn" type="button">Show Token Calibration</button>
+                </section>
+
+                <section class="operations-category-card" aria-labelledby="operationsDatabaseTitle">
+                    <h2 id="operationsDatabaseTitle"><span class="operations-category-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><ellipse cx="12" cy="5" rx="7.5" ry="2.5"/><path d="M4.5 5v14c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5V5M4.5 12c0 1.4 3.4 2.5 7.5 2.5s7.5-1.1 7.5-2.5"/></svg></span>Database &amp; Summaries</h2>
+                    <button class="operation-task-button" id="createCodeDatabaseOnlyBtn" type="button">Create Code Database</button>
+                    <button class="operation-task-button" id="createJSONSummariesOnlyBtn" type="button">Create JSON Summaries</button>
+                    <button class="operation-task-button" id="createSummaryDatabasefromJSONOnlyBtn" type="button">Create Summary Database from JSON</button>
+                    <button class="operation-task-button" id="createDirectorySummariesOnlyBtn" type="button">Create Directory Summaries &amp; Business Rules</button>
+                </section>
+
+                <section class="operations-category-card" aria-labelledby="operationsTestsTitle">
+                    <h2 id="operationsTestsTitle"><span class="operations-category-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 3h6M10 3v6l-4.5 8.2A2.5 2.5 0 0 0 7.7 21h8.6a2.5 2.5 0 0 0 2.2-3.8L14 9V3M8 15h8"/></svg></span>Tests &amp; Architecture</h2>
+                    <button class="operation-task-button" id="runBusinessRuleValidationOnlyBtn" type="button">Business Rule Validation</button>
+                    <button class="operation-task-button" id="runUMLGenerationOnly" type="button">UML Generation</button>
+                    <button class="operation-task-button" id="runUnitTestGenerationOnlyBtn" type="button">Unit Test Generation</button>
+                    <button class="operation-task-button" id="runUnitTestValidationOnlyBtn" type="button">Unit Test Validation</button>
+                    <button class="operation-task-button" id="runIntegrationTestGenerationOnlyBtn" type="button">Integration Test Generation</button>
+                    <button class="operation-task-button" id="runMutationTestingOnlyBtn" type="button">Test Strength (Mutation Testing)</button>
+                    <button class="operation-task-button" id="runConsistencyReviewOnlyBtn" type="button">Consistency Review</button>
+                </section>
+            </div>
         </div>
     </div>
 
@@ -193,11 +288,6 @@
 
                 <div id="viewFilesBtns" class="viewBtnContainer hidden"> </div>
 
-                <div id="viewBusinessRulesBtns" class="viewBtnContainer hidden"> 
-                    <button id="validatedBusinessRulesBtn" class="output-file-btn btn-secondary">Validated Business Rules</button>
-                    <button id="discardedBusinessRulesBtn" class="output-file-btn btn-secondary">Discarded Business Rules</button>
-
-                </div>
             </div>
             
             
@@ -207,7 +297,7 @@
 
         <!-- This box will be for the outputs -->
         <div id="viewDisplayOutput">
-            <pre id="viewDisplayOutputBox"></pre>
+            <div id="viewDisplayOutputBox"></div>
         </div>
         
         

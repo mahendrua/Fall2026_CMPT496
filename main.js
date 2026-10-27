@@ -1085,6 +1085,49 @@ ipcMain.handle(
     }
 );
 
+ipcMain.handle("get-business-rules", async (_event, request) => {
+    const codebaseName = path.basename(String(request?.codebasePath || ""));
+    if (!codebaseName || codebaseName === "." || codebaseName === ".." || codebaseName === path.sep) {
+        return { success: false, error: "No codebase selected" };
+    }
+
+    const folder = path.join(backendOutputDir, "agent", "BR_agent_output", codebaseName);
+    const readRules = (filename) => {
+        const file = path.join(folder, filename);
+        if (!fs.existsSync(file)) {
+            return { exists: false, loaded: false, count: null, rules: [] };
+        }
+        try {
+            const entries = JSON.parse(fs.readFileSync(file, "utf8"));
+            if (!Array.isArray(entries)) {
+                return { exists: true, loaded: false, count: null, rules: [], error: "Expected a JSON array." };
+            }
+            return {
+                exists: true,
+                loaded: true,
+                count: entries.length,
+                rules: entries.map((entry) => ({
+                    text: typeof entry === "string"
+                        ? entry
+                        : (typeof entry?.rule === "string" && entry.rule) || "No rule text recorded",
+                    source: typeof entry?.source_directory === "string"
+                        ? entry.source_directory.trim()
+                        : ""
+                }))
+            };
+        } catch (error) {
+            return { exists: true, loaded: false, count: null, rules: [], error: `Could not read ${filename}: ${error.message}` };
+        }
+    };
+
+    return {
+        success: true,
+        codebase: codebaseName,
+        validated: readRules("validated_rules.json"),
+        discarded: readRules("discarded_rules.json")
+    };
+});
+
 
 
 
@@ -1206,6 +1249,11 @@ async function showReportWindow(file) {
 
         reportWindow.on("closed", () => {
             reportWindow = null;
+            if (mainWindow && !mainWindow.isDestroyed()) {
+                if (mainWindow.isMinimized()) mainWindow.restore();
+                mainWindow.show();
+                mainWindow.focus();
+            }
         });
     }
 
@@ -1228,6 +1276,35 @@ ipcMain.handle("open-report", async (event, reportPath) => {
 
     await showReportWindow(file);
     return { success: true };
+});
+
+// View Insights embeds only the saved report for its explicitly selected codebase.
+// The renderer places this HTML in a sandboxed iframe; it never enters the app DOM.
+ipcMain.handle("get-run-report-html", async (_event, codebaseName) => {
+
+    const folder = path.basename(String(codebaseName || "").trim());
+    if (!folder || folder === "." || folder === "..") {
+        return { success: false, error: "Select a codebase to view its run report." };
+    }
+
+    const file = path.join(reportsDir(), folder, REPORT_NAME);
+    if (!isRunReport(file)) {
+        return {
+            success: false,
+            error: `No run report is available for ${folder}. Run the full pipeline on this codebase to create one.`
+        };
+    }
+
+    try {
+        return {
+            success: true,
+            codebase: folder,
+            html: fs.readFileSync(file, "utf8")
+        };
+    } catch (error) {
+        console.error("Could not read the selected codebase run report:", error);
+        return { success: false, error: `Could not read the run report for ${folder}.` };
+    }
 });
 
 // From View Insights, any time later: the selected codebase's report, or
