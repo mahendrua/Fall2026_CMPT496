@@ -46,6 +46,7 @@ from agent.BR_agent import BRAgent
 from agent.IT_agent import ITAgent
 from agent.UT_agent import UTAgent
 from agent.UTV_agent import UTVAgent
+from agent.gui_test_agent import GuiTestAgent
 from agent.directory_agent import DirectoryAgent
 from agent.file_summary_agent import FileSummaryAgent
 from agent.llm import verify_llm_key
@@ -651,6 +652,30 @@ class Commands:
 
         return self._run_command(
             "generate_unit_tests",
+            task,
+            individualStep=individualStep,
+        )
+
+    def generate_gui_test_cases(self, codebase: str, individualStep=True):
+        """Generate Playwright GUI test files from an application source folder."""
+
+        def task():
+            return GuiTestAgent().run(codebase)
+
+        return self._run_command(
+            "generate_gui_test_cases",
+            task,
+            individualStep=individualStep,
+        )
+
+    def repair_gui_test_case(self, codebase: str, test_file: str, failure: dict, individualStep=True):
+        """Attempt one source-confirmed locator repair for a failed generated GUI test."""
+
+        def task():
+            return GuiTestAgent().repair_failed_test(codebase, test_file, failure)
+
+        return self._run_command(
+            "repair_gui_test_case",
             task,
             individualStep=individualStep,
         )

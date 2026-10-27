@@ -3915,8 +3915,48 @@ h2{
 
 }
 
+#guiTestPage {
+    width: min(96vw, 1600px);
+    max-width: none;
+    min-height: 100vh;
+    justify-content: flex-start;
+    align-items: stretch;
+    text-align: left;
+    gap: 1.25rem;
+}
 
+.gui-page-header,
+.gui-card-heading,
+.gui-preview-heading,
+.gui-run-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
 
+.gui-page-header h1 {
+    margin: 0;
+}
+
+.gui-page-header p,
+.gui-card-heading p,
+.gui-preview-heading p {
+    margin-top: 0.35rem;
+    color: var(--text-secondary);
+}
+
+#guiTestPage button {
+    width: auto;
+    max-width: none;
+}
+
+.gui-feature-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+}
 
 /* ============================================
    Consistency Review screen
@@ -3944,6 +3984,611 @@ h2{
     align-items: flex-start;
     flex-wrap: wrap;
     gap: 0.75rem;
+}
+
+.gui-host-label,
+.gui-host-help {
+    flex-basis: 100%;
+}
+
+.gui-host-label {
+    color: var(--text-secondary);
+    font-weight: 600;
+}
+
+.gui-host-input {
+    width: min(600px, 100%);
+    max-width: 600px !important;
+    text-align: left;
+    resize: vertical;
+}
+
+.gui-host-help {
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+}
+
+.gui-message {
+    flex-basis: 100%;
+    color: #b42318;
+    overflow-wrap: anywhere;
+}
+
+.gui-generation-result {
+    flex-basis: 100%;
+    padding: 0.85rem 1rem;
+    border: 1px solid rgba(99, 102, 241, 0.25);
+    border-radius: 0.75rem;
+    background: rgba(99, 102, 241, 0.06);
+    overflow-wrap: anywhere;
+}
+
+.gui-generation-result p {
+    margin: 0.45rem 0;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
+}
+
+.gui-generation-result ul {
+    margin: 0.5rem 0;
+    padding-left: 1.25rem;
+}
+
+.gui-generation-result li {
+    margin: 0.2rem 0;
+}
+
+.gui-test-layout,
+.gui-bottom-grid {
+    display: grid;
+    grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.7fr);
+    gap: 1rem;
+}
+
+.gui-bottom-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.gui-card {
+    min-width: 0;
+    padding: 1.25rem;
+    border: 1px solid var(--glass-border);
+    border-radius: var(--radius);
+    background: var(--bg-secondary);
+    box-shadow: var(--shadow);
+}
+
+.gui-card h2 {
+    margin: 0;
+    font-size: 1.2rem;
+}
+
+.gui-test-list,
+.gui-results-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    max-height: 340px;
+    margin: 1rem 0;
+    overflow: auto;
+}
+
+.gui-test-item,
+.gui-result-item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 0.7rem;
+    padding: 0.7rem;
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    background: var(--glass-bg);
+    overflow-wrap: anywhere;
+}
+
+.gui-test-item input {
+    margin-top: 0.25rem;
+}
+
+.gui-test-item span,
+.gui-result-item span {
+    min-width: 0;
+    flex: 1;
+}
+
+.gui-status {
+    flex: 0 0 auto !important;
+    font-weight: 700;
+}
+
+.gui-status-passed {
+    color: #16803c;
+}
+
+.gui-status-failed {
+    color: #b42318;
+}
+
+.gui-status-running {
+    color: #a15c00;
+}
+
+.gui-status-skipped {
+    color: var(--text-secondary);
+}
+
+.gui-result-error {
+    flex-basis: 100%;
+    color: #b42318;
+    font: 0.82rem/1.45 Consolas, monospace;
+    white-space: pre-wrap;
+}
+
+.gui-empty-state,
+.gui-security-note {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+}
+
+.gui-run-actions {
+    justify-content: flex-start;
+}
+
+.gui-security-note {
+    margin-top: 1rem;
+    line-height: 1.45;
+}
+
+.gui-preview-frame {
+    position: relative;
+    min-height: 260px;
+    aspect-ratio: 16 / 9;
+    margin-top: 1rem;
+    overflow: hidden;
+    border-radius: 12px;
+    background: #10131a;
+}
+
+.gui-preview-frame iframe {
+    width: 100%;
+    height: 100%;
+    min-height: 260px;
+    border: 0;
+    background: #10131a;
+}
+
+.gui-preview-empty {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    padding: 1rem;
+    color: #e5e7eb;
+    text-align: center;
+}
+
+.gui-preview-collapse {
+    position: absolute;
+    z-index: 2;
+    top: 0.75rem;
+    right: 0.75rem;
+    padding: 0.45rem 0.7rem;
+}
+
+.gui-dashboard {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 0.6rem;
+    margin-top: 1rem;
+}
+
+.gui-stat {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    padding: 0.65rem;
+    border-radius: 10px;
+    background: var(--glass-bg);
+}
+
+.gui-stat span {
+    color: var(--text-secondary);
+}
+
+.gui-stat-passed strong {
+    color: #16803c;
+}
+
+.gui-stat-failed strong {
+    color: #b42318;
+}
+
+.gui-stat-running strong {
+    color: #a15c00;
+}
+
+.gui-execution-logs {
+    max-height: 280px;
+    min-height: 180px;
+    margin-top: 1rem;
+    padding: 0.85rem;
+    overflow: auto;
+    border-radius: 10px;
+    background: #111827;
+    color: #e5e7eb;
+    font: 0.82rem/1.5 Consolas, monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.gui-preview-frame.gui-preview-expanded {
+    position: fixed;
+    z-index: 10000;
+    inset: 3vh 3vw;
+    width: 94vw;
+    height: 94vh;
+    max-height: none;
+    aspect-ratio: auto;
+    margin: 0;
+    box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.75);
+}
+
+.gui-preview-expanded iframe {
+    height: 100%;
+    min-height: 100%;
+}
+
+@media (max-width: 850px) {
+    #guiTestPage {
+        width: 100%;
+        padding: 1rem;
+    }
+
+    .gui-test-layout,
+    .gui-bottom-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .gui-dashboard {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .gui-page-header {
+        align-items: flex-start;
+    }
+}
+
+/* GUI testing reports in View Insights */
+#viewGuiReportsBtns {
+    flex: 1;
+    overflow-y: auto;
+}
+
+#guiTestingReportsList {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    overflow-y: auto;
+}
+
+.gui-report-select {
+    width: 100%;
+    max-width: none;
+    text-align: left;
+    white-space: normal;
+    line-height: 1.35;
+}
+
+#guiTestingReportView {
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    overflow-y: auto;
+    padding: 1.5rem;
+    color: var(--text-primary);
+    background: var(--bg-app);
+}
+
+#guiTestingReportContent {
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.gui-report-header,
+.gui-report-metadata,
+.gui-report-summary,
+.gui-report-test > summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.gui-report-header {
+    margin-bottom: 1.25rem;
+}
+
+.gui-report-header h1 {
+    margin: 0;
+    color: var(--text-primary);
+}
+
+.gui-report-header p {
+    margin: 0.4rem 0 0;
+    color: var(--text-secondary);
+}
+
+.gui-report-header button {
+    flex: 0 0 auto;
+}
+
+.gui-report-metadata {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    margin-bottom: 1.25rem;
+    padding: 1rem;
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    background: var(--bg-secondary);
+}
+
+.gui-report-meta-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    min-width: 130px;
+}
+
+.gui-report-meta-label {
+    color: var(--text-secondary);
+    font-size: 0.8rem;
+}
+
+.gui-report-summary {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(120px, 1fr));
+    margin-bottom: 1.25rem;
+}
+
+.gui-report-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    padding: 1rem;
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    background: var(--bg-secondary);
+}
+
+.gui-report-card strong {
+    font-size: 1.8rem;
+}
+
+.gui-report-passed strong,
+.gui-report-legend-passed {
+    color: #4ade80;
+}
+
+.gui-report-failed strong,
+.gui-report-legend-failed {
+    color: #ff8a93;
+}
+
+.gui-report-skipped strong,
+.gui-report-legend-skipped {
+    color: var(--text-secondary);
+}
+
+.gui-report-chart-section,
+.gui-report-tests {
+    margin: 1.25rem 0;
+    padding: 1.15rem;
+    border: 1px solid var(--glass-border);
+    border-radius: 12px;
+    background: var(--bg-secondary);
+}
+
+.gui-report-chart-section h2,
+.gui-report-tests h2 {
+    margin: 0 0 1rem;
+    color: var(--text-primary);
+}
+
+.gui-report-table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+
+.gui-report-table th,
+.gui-report-table td {
+    padding: 0.8rem;
+    border-bottom: 1px solid var(--glass-border);
+    text-align: left;
+    vertical-align: top;
+    overflow-wrap: anywhere;
+}
+
+.gui-report-table th {
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+    font-size: 0.82rem;
+}
+
+.gui-report-table th:nth-child(1) {
+    width: 32%;
+}
+
+.gui-report-table th:nth-child(2) {
+    width: 14%;
+}
+
+.gui-report-table th:nth-child(3) {
+    width: 18%;
+}
+
+.gui-report-table th:nth-child(4) {
+    width: 36%;
+}
+
+.gui-report-table tbody tr:hover {
+    background: var(--bg-surface);
+}
+
+.gui-report-test-details > summary {
+    cursor: pointer;
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.gui-report-chart {
+    position: relative;
+    display: grid;
+    width: 150px;
+    height: 150px;
+    margin: 0 auto 1rem;
+    place-items: center;
+    border-radius: 50%;
+}
+
+.gui-report-chart::before {
+    position: absolute;
+    width: 105px;
+    height: 105px;
+    border-radius: 50%;
+    background: var(--bg-secondary);
+    content: "";
+}
+
+.gui-report-pass-rate {
+    position: relative;
+    font-size: 1.35rem;
+    color: var(--text-primary);
+}
+
+.gui-report-legend {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 1.25rem;
+    font-weight: 600;
+}
+
+.gui-report-test,
+.gui-report-run-errors {
+    margin: 0.65rem 0;
+    border: 1px solid var(--glass-border);
+    border-radius: 10px;
+    background: var(--bg-surface);
+}
+
+.gui-report-test > summary,
+.gui-report-run-errors > summary {
+    padding: 0.9rem 1rem;
+    cursor: pointer;
+    list-style-position: inside;
+}
+
+.gui-report-test-name {
+    flex: 1;
+    font-weight: 650;
+}
+
+.gui-report-test-duration {
+    min-width: 85px;
+    color: var(--text-secondary);
+    text-align: right;
+}
+
+.gui-report-badge {
+    padding: 0.25rem 0.55rem;
+    border-radius: 999px;
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    font-weight: 700;
+    text-transform: uppercase;
+}
+
+.gui-report-badge-passed {
+    background: rgba(34, 197, 94, 0.16);
+    color: #4ade80;
+}
+
+.gui-report-badge-failed {
+    background: var(--accent-crimson-subtle);
+    color: #ff8a93;
+}
+
+.gui-report-badge-interrupted,
+.gui-report-badge-skipped,
+.gui-report-badge-running {
+    background: var(--bg-surface);
+    color: var(--text-secondary);
+}
+
+.gui-report-test-body {
+    padding: 0 1rem 1rem 2rem;
+    line-height: 1.5;
+}
+
+.gui-report-test-body p {
+    margin: 0.6rem 0;
+}
+
+.gui-report-failure-explanation {
+    margin: 0.8rem 0;
+    padding: 0.8rem 1rem;
+    border-left: 4px solid var(--accent-crimson);
+    border-radius: 5px;
+    background: var(--accent-crimson-subtle);
+}
+
+.gui-report-failure-explanation h3 {
+    margin: 0 0 0.5rem;
+    color: var(--text-primary);
+}
+
+.gui-report-evidence {
+    margin-top: 0.8rem;
+}
+
+.gui-report-evidence summary {
+    cursor: pointer;
+    color: var(--text-primary);
+    font-weight: 600;
+}
+
+.gui-report-evidence-text {
+    max-height: 260px;
+    overflow: auto;
+    padding: 0.75rem;
+    border-radius: 6px;
+    background: var(--bg-surface);
+    color: var(--text-primary);
+    font: 0.82rem/1.45 Consolas, "Courier New", monospace;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
+.gui-report-empty {
+    color: var(--text-secondary);
+    line-height: 1.5;
+}
+
+@media (max-width: 800px) {
+    .gui-report-summary {
+        grid-template-columns: repeat(2, minmax(120px, 1fr));
+    }
+
+    .gui-report-header,
+    .gui-report-test > summary {
+        align-items: flex-start;
+    }
+
+    #guiTestingReportView {
+        padding: 1rem;
+    }
 }
 
 .cr-header-actions {
@@ -4478,7 +5123,7 @@ h2{
 
 #homePage .home-destinations {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: clamp(1rem, 2.4vw, 1.5rem);
   width: 100%;
 }
@@ -4649,6 +5294,10 @@ h2{
   #homePage .home-destinations { grid-template-columns: minmax(0, 1fr); }
   #homePage .home-action-card { min-height: 17rem; }
   #homePage .home-footer { align-items: flex-start; }
+}
+
+@media (min-width: 681px) and (max-width: 1100px) {
+  #homePage .home-destinations { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
 
 /* Operations workspace */

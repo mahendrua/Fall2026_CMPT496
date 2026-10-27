@@ -73,6 +73,23 @@
                     <span>Open insights</span><span class="home-button-arrow" aria-hidden="true">→</span>
                 </button>
             </article>
+
+            <article class="home-action-card">
+                <div class="home-card-topline">
+                    <span class="home-card-number">03</span>
+                    <div class="home-card-icons" aria-hidden="true">
+                        <svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3M7 10h3l2 3 2-5 1 2h2"/></svg>
+                        <svg viewBox="0 0 24 24"><path d="M4 5h16v14H4zM8 9h8M8 13h5M8 17h3"/></svg>
+                    </div>
+                </div>
+                <div class="home-card-copy">
+                    <h2>GUI Test Cases</h2>
+                    <p>Generate or run Playwright tests and review saved GUI testing reports.</p>
+                </div>
+                <button class="home-action-button secondary" id="guiTestCasesBtn" type="button">
+                    <span>Open GUI testing</span><span class="home-button-arrow" aria-hidden="true">→</span>
+                </button>
+            </article>
         </main>
 
         <footer class="home-footer">
@@ -84,6 +101,102 @@
         </footer>
     </div>
 
+    <!-- GUI TEST CASES -->
+    <div id="guiTestPage" class="page hidden">
+        <header class="gui-page-header">
+            <div>
+                <h1>Developer Options</h1>
+                <p>Manual GUI Testing</p>
+            </div>
+            <button class="btn-secondary" id="guiTestBackBtn">Main Menu</button>
+        </header>
+
+        <div class="gui-feature-actions">
+            <button class="btn-primary" id="uploadGuiTestsBtn">Upload Test Cases Manually</button>
+            <button class="btn-secondary" id="generateGuiTestsBtn">Generate Test Cases Using AI</button>
+            <p class="gui-host-help">
+                AI generation detects the Node.js framework, starts the app on an available port, and lets the
+                Playwright container connect through host.docker.internal. Dependencies must already be installed.
+            </p>
+            <section id="guiGenerationResult" class="gui-generation-result hidden" aria-live="polite">
+                <strong id="guiGenerationStatus">Choose an app source folder to generate GUI tests.</strong>
+                <p id="guiGenerationDetails"></p>
+                <ul id="guiGeneratedFiles"></ul>
+                <p>Generated specs are saved separately and run against the local app. The app process is stopped when generation or testing ends.</p>
+            </section>
+            <label class="gui-host-label" for="guiAllowedHosts">Allowed website hosts for manual tests</label>
+            <textarea id="guiAllowedHosts" class="input-glass gui-host-input" rows="2"
+                placeholder="app.example.com&#10;host.docker.internal:3000"></textarea>
+            <p class="gui-host-help">
+                Enter one hostname per line; add :port for a nonstandard port. Local apps must use
+                host.docker.internal:port. Prefix a hostname with *. to allow it and its subdomains.
+                Other private-network targets are blocked. Generated tests automatically target the local app through
+                host.docker.internal; use this list only for external website dependencies.
+            </p>
+            <p id="guiUploadError" class="gui-message hidden" role="alert"></p>
+        </div>
+
+        <div class="gui-test-layout">
+            <section class="gui-card gui-test-list-card">
+                <div class="gui-card-heading">
+                    <div>
+                        <h2>Uploaded Test Cases</h2>
+                        <p>Select test files to run. Files ending in .spec.js/.spec.ts or .test.js/.test.ts are preselected; other uploads can provide helpers.</p>
+                    </div>
+                </div>
+                <div id="guiTestList" class="gui-test-list" aria-live="polite">
+                    <p class="gui-empty-state">No test files uploaded yet.</p>
+                </div>
+                <div class="gui-run-actions">
+                    <button class="btn-primary" id="runGuiTestsBtn" disabled>Run GUI Tests</button>
+                    <button class="btn-secondary hidden" id="stopGuiTestsBtn">Stop Run</button>
+                </div>
+                <p class="gui-security-note">
+                    Tests are executable code and run in a resource-limited Docker container.
+                    Browser traffic is limited to the hostnames above; private destinations are blocked
+                    except for explicitly allowed host.docker.internal targets.
+                    Only run test files you trust. Docker must be installed and running.
+                </p>
+            </section>
+
+            <section class="gui-card gui-preview-card">
+                <div class="gui-card-heading gui-preview-heading">
+                    <div>
+                        <h2>Live Browser Preview</h2>
+                        <p id="guiCurrentTest">Waiting for a test run</p>
+                    </div>
+                    <button class="btn-secondary" id="expandGuiPreviewBtn" disabled>Expand Preview</button>
+                </div>
+                <div id="guiPreviewFrame" class="gui-preview-frame">
+                    <div id="guiPreviewEmpty" class="gui-preview-empty">
+                        The Playwright browser will appear here when a run starts.
+                    </div>
+                    <iframe id="guiPreview" title="Live Playwright browser" class="hidden"></iframe>
+                    <button id="collapseGuiPreviewBtn" class="btn-secondary gui-preview-collapse hidden">Collapse Preview</button>
+                </div>
+
+                <div class="gui-dashboard">
+                    <div class="gui-stat"><span>Total</span><strong id="guiTotalCount">0</strong></div>
+                    <div class="gui-stat gui-stat-passed"><span>Passed</span><strong id="guiPassedCount">0</strong></div>
+                    <div class="gui-stat gui-stat-failed"><span>Failed</span><strong id="guiFailedCount">0</strong></div>
+                    <div class="gui-stat gui-stat-running"><span>Running</span><strong id="guiRunningCount">0</strong></div>
+                </div>
+            </section>
+        </div>
+
+        <div class="gui-bottom-grid">
+            <section class="gui-card">
+                <h2>Execution Status</h2>
+                <div id="guiResultsList" class="gui-results-list">
+                    <p class="gui-empty-state">Results will appear here after execution begins.</p>
+                </div>
+            </section>
+            <section class="gui-card">
+                <h2>Execution Logs</h2>
+                <pre id="guiExecutionLogs" class="gui-execution-logs" aria-live="polite">Ready.</pre>
+            </section>
+        </div>
+    </div>
 
    <!-- API PAGE -->
     <div id="apiPage" class="page hidden">
@@ -270,6 +383,7 @@
                     <button class="btn-primary" id="viewUsageBtn">AI Usage</button>
                     <button class="btn-primary" id="viewConsistencyBtn">Consistency Review</button>
                     <button class="btn-primary" id="viewRunReportBtn">Run Report</button>
+                    <button class="btn-primary" id="viewGuiTestingReportsBtn">GUI Testing</button>
 
                     <button class="btn-primary" id="viewDisplayFilesBtn">Files</button>
                 </div>
@@ -284,6 +398,10 @@
 
                 <div id="viewUsageBtns" class="viewBtnContainer hidden"> </div>
 
+                <div id="viewGuiReportsBtns" class="viewBtnContainer hidden">
+                    <button class="btn-secondary" id="refreshGuiReportsBtn">Refresh reports</button>
+                    <div id="guiTestingReportsList"></div>
+                </div>
                 <div id="viewConsistencyBtns" class="viewBtnContainer hidden"> </div>
 
                 <div id="viewFilesBtns" class="viewBtnContainer hidden"> </div>
@@ -298,6 +416,9 @@
         <!-- This box will be for the outputs -->
         <div id="viewDisplayOutput">
             <div id="viewDisplayOutputBox"></div>
+            <section id="guiTestingReportView" class="hidden" aria-live="polite">
+                <div id="guiTestingReportContent"></div>
+            </section>
         </div>
         
         
@@ -382,6 +503,10 @@
 
                         • UML diagrams representing relationships between
                         components
+                        <br><br>
+
+                        • GUI testing reports with saved Playwright results,
+                        failure evidence, and downloadable PDF summaries
                         <br><br>
 
                         Use the sidebar navigation to select the type of insight

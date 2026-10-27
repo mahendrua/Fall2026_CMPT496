@@ -96,6 +96,26 @@ Flags:
 Notes:
 - Run the command from the project root so the default input path resolves correctly.
 
+## Manual GUI testing
+
+The **GUI Test Cases** screen runs uploaded JavaScript and TypeScript Playwright tests in a separate Docker environment. Docker Desktop must be installed, running Linux containers, and have at least 2 GB of available memory. The Playwright and proxy images are built automatically on the first run and rebuilt when their bundled Docker contexts change; building requires an internet connection.
+
+Upload up to 20 `.js` or `.ts` files (2 MB each, 20 MB total). Select test files to run; unselected uploads remain available as relative helper modules. Tests should use `@playwright/test` or `playwright/test`; additional npm packages are not installed.
+
+Before running, enter each allowed website hostname on its own line. Hostnames allow HTTP and HTTPS on ports 80 and 443; adding a port also allows that port, for example `app.example.com:5173`. Host entries match exactly; prefix with `*.` to allow the hostname and its subdomains. Private network destinations are blocked. To test a web app running on the host machine, use `host.docker.internal:<port>` instead of `localhost` and explicitly allow it.
+
+The application mounts only copied test files into the runner, read-only, and runs the browser in a resource-limited container. Browser traffic is routed through a separate allowlisting proxy; the live browser preview and status stream are relayed through loopback-only host ports, while the runner remains isolated from the host network. Uploaded tests are executable code: only run files you trust.
+
+### AI-generated GUI tests
+
+Choose **Generate Test Cases Using AI** and select a Node.js application source folder. Checkpoint detects common frameworks from the package dependencies and scripts, chooses an available port based on the framework's default (Vite `5173`, Next.js/React `3000`, Angular `4200`, Vue CLI `8080`), and tries the next ports automatically if that port is occupied. It starts the project's `npm run dev`, `npm run start`, or `npm run server` script (in that priority order) while the selected AI provider analyzes a bounded set of source files. The project must have a `package.json`, installed dependencies, and one of those scripts. Supported frameworks receive host/port arguments; Vite also gets a temporary process environment setting to allow Docker's `host.docker.internal` hostname without editing the project's config. Other servers should honor `HOST=0.0.0.0` and `PORT`. The app must listen on `0.0.0.0` so Docker Desktop can reach it. Checkpoint does not install packages or modify project files.
+
+The Playwright runner reaches the app at `http://host.docker.internal:<port>` through the allowlist proxy. Generated JavaScript Playwright specs are saved under `agent/GUI_test_agent_output/<app-name>/run-<timestamp>/` and run in the isolated browser container. The local app process is stopped after generation failure, test completion, cancellation, or app shutdown. The generator supports common web UI source types (HTML, CSS, JavaScript/TypeScript, Vue, Svelte, Razor, C#, PHP, and Python), skips dependency/build folders and common secret files, and limits each request to 40 files and 90,000 characters of source.
+
+Starting a project runs its npm script directly on your PC with your Windows user permissions. Checkpoint asks for confirmation first; only select folders whose code you trust. The app process receives a reduced environment (no inherited API keys or other arbitrary environment variables), but host execution is not a security sandbox. To make it reachable from Docker, the app listens on all network interfaces; your firewall configuration determines whether other devices can reach that port. The selected source files are also sent to the configured AI provider, so only choose source you are permitted to share with that provider.
+
+Generated specs are also saved so you can inspect or reuse them. The selected source files are sent to the configured AI provider, so only choose source you are permitted to share with that provider.
+
 ## Verifying combined business rule validation (US-028)
 
 Business rule validation reads both file-level and folder-level rules:
@@ -376,7 +396,6 @@ its backend commands and the pipeline's review stage. Rebuild it with the
 PyInstaller command below before `npm run dist`. `releases/main.spec` needs no
 change: the new modules are imported directly by `backend/commands.py`, so
 PyInstaller finds them.
-
 ## Packaging the backend using Pyinstaller
 
 Package backend using main.spec found in releases. Copy and paste any needed programs in before going to the next step. Stuff like plantuml.jar
