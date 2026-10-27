@@ -30,7 +30,7 @@ from backend.dispatcher import CommandDispatcher
 from backend.preview_collections import CollectionPreview
 
 from backend.progress_logging import configure_progress_logging, request_scope, send_response
-from utils.output_redaction import secret_scope
+from backend.run_protection import protected_run
 
 configure_progress_logging()
 
@@ -181,12 +181,13 @@ def serve(stdin):
     """
     Answer request lines until stdin closes, one JSON response line each.
 
-    Each request is its own secret scope: what it finds is remembered while
-    it runs, so its progress, errors and response are cleaned of it too, and
-    forgotten afterwards.
+    Each request is its own protected run (backend/run_protection.py): what
+    it finds is remembered while it runs, so its progress, errors and
+    response are cleaned of it too, and forgotten afterwards; and nothing it
+    does is traced to LangSmith.
     """
     for line in iter(stdin.readline, ""):
-        with secret_scope():
+        with protected_run():
             send_response(handle_request(line))
 
 

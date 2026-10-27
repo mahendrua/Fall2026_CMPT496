@@ -60,7 +60,8 @@ from backend import consistency_review
 from src.build_database import build_database
 from src.build_database_JSON import build_database as build_summary_database
 
-from utils.output_redaction import safe_text, secret_scope
+from backend.run_protection import protected_run
+from utils.output_redaction import safe_text
 
 from utils.uml_json_to_pdf import (
     build_report as uml_build_report,
@@ -161,11 +162,11 @@ class Commands:
         start = time.perf_counter()
 
         # Times this command into last_run_log.json: the outermost command is
-        # the run, the commands it calls are its stages. The secret scope
+        # the run, the commands it calls are its stages. The protected run
         # remembers the secrets the run finds, so its outputs and errors are
-        # cleaned of them even where they appear without context (T-078);
-        # stages share the run's scope.
-        with secret_scope(), track_command(
+        # cleaned of them even where they appear without context, and keeps
+        # it out of LangSmith tracing (T-078); stages share the run's.
+        with protected_run(), track_command(
             self.app_dir,
             self.current_codebase_name,
             command_name,

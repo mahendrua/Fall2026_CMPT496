@@ -34,7 +34,7 @@ from langchain_core.runnables import Runnable
 
 from agent.request_redaction import redact_model_input, redact_prompts
 from backend.progress_logging import progress
-from backend.token_usage import record_wait, status_code
+from backend.token_usage import REDACTION_METADATA_KEY, record_wait, status_code
 
 
 # Kept so older imports keep working, and used as the model for a legacy
@@ -327,18 +327,22 @@ def _retrying(base, label):
 #   - LangGraph reports each node's input (the graph state, which holds
 #     source code and summaries) to chain callbacks before the node calls
 #     the model. Checkpoint registers no tracer and its token-usage handler
-#     ignores chain events, but a LangSmith tracer switched on through
-#     environment variables (LANGSMITH_TRACING) would receive that state.
+#     ignores chain events. A LangSmith tracer switched on through
+#     environment variables (LANGSMITH_TRACING) would receive that state, so
+#     backend/run_protection.py turns tracing off for every backend request
+#     and command (T-078).
 #   - Other wrappers that report their raw input (with_retry,
 #     with_fallbacks, prompt | model chains). The agents do not use them.
 #   - Structured-output and tool schemas, which come from this repository's
 #     pydantic models, not from the code being analysed.
-#   - The model's answers, and the logs and saved summaries built from them
-#     (T-078).
-
-# Callback metadata key carrying how many secrets a call had replaced, by
-# category. Counts only, never values.
-REDACTION_METADATA_KEY = "redacted_secrets"
+#   - The model's answers. The logs, run records and saved outputs built
+#     from them are cleaned on the way out instead (T-078,
+#     utils/output_redaction.py).
+#
+# REDACTION_METADATA_KEY ("redacted_secrets", defined in
+# backend/token_usage.py, which records it per call in last_run_log.json)
+# carries how many secrets a call had replaced, by category. Counts only,
+# never values.
 
 
 def _with_report(metadata, report):

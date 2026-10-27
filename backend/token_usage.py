@@ -36,6 +36,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration
 from langchain_core.tracers.context import register_configure_hook
 from backend.progress_logging import send
+from utils.output_redaction import WITHHELD, OutputRedactionError, sanitize_data
 
 
 USAGE_LOG_NAME = "token_usage_log.json"
@@ -48,6 +49,10 @@ RUN_LOG_NAME = "last_run_log.json"
 # Every run is also kept here as <codebase>_<run id>.json, since the next run
 # replaces last_run_log.json.
 RUN_HISTORY_DIR = "run_logs"
+
+# Callback metadata key under which agent/llm.py passes how many secrets a
+# call's request had replaced, by category (T-077). Counts only, never values.
+REDACTION_METADATA_KEY = "redacted_secrets"
 
 
 def _read_usage(response):
@@ -188,6 +193,16 @@ def _step(callback_kwargs):
     return (callback_kwargs.get("metadata") or {}).get("langgraph_node")
 
 
+def _redacted(callback_kwargs):
+    """{category: count} of secrets the call's request had replaced, or {}."""
+    counts = (callback_kwargs.get("metadata") or {}).get(REDACTION_METADATA_KEY) or {}
+    return {
+        str(category): count
+        for category, count in counts.items()
+        if isinstance(count, int) and not isinstance(count, bool)
+    }
+
+
 class _Fanout(BaseCallbackHandler):
     """
     Forwards every model call to all recorders currently in scope.
@@ -210,11 +225,11 @@ class _Fanout(BaseCallbackHandler):
 
     def on_chat_model_start(self, serialized, messages, *, run_id, **kwargs):
         if self.run_log:
-            self.run_log.call_started(run_id, _step(kwargs))
+            self.run_log.call_started(run_id, _step(kwargs), _redacted(kwargs))
 
     def on_llm_start(self, serialized, prompts, *, run_id, **kwargs):
         if self.run_log:
-            self.run_log.call_started(run_id, _step(kwargs))
+            self.run_log.call_started(run_id, _step(kwargs), _redacted(kwargs))
 
     def on_llm_end(self, response, **kwargs):
         for recorder in self.recorders:
@@ -370,6 +385,20 @@ def record_to_log(app_dir: Path, codebase_name: str, summary: dict):
 # whole run under a run ID -- stages, every AI call, timings, outcome.
 #
 # Logging must never cost a run: every write is best-effort.
+#
+# Secrets (T-078, US-034). The log is cleaned when saved: an error can quote
+# the analysed code or a provider's answer. Each call also records
+# "redacted_secrets", {category: count}, and every total sums them:
+#   - a count is an occurrence replaced in the request one AI call sent, as
+#     agent/llm.py reported it to the callbacks. The same secret sent in five
+#     calls counts five times; it is not a count of distinct secrets.
+#   - a call is counted once. Retries resend the same cleaned request inside
+#     that call, and with_structured_output() cleaning it a second time finds
+#     nothing new, so neither adds to it.
+#   - placeholder numbers are per request and are not kept here.
+#   - a direct generate() with several prompts reports their combined count
+#     on each of them. The agents never call it that way; batch() and
+#     abatch() are separate calls.
 
 def _stamp(moment=None):
     return (moment or datetime.now()).isoformat(timespec="seconds")
@@ -469,10 +498,10 @@ class RunLog:
 
     # --- AI calls -----------------------------------------
 
-    def call_started(self, call_id, step=None):
+    def call_started(self, call_id, step=None, redacted=None):
         with self._lock:
             self._open_calls[call_id] = (
-                datetime.now(), time.perf_counter(), step
+                datetime.now(), time.perf_counter(), step, dict(redacted or {})
             )
 
     def call_ended(self, call_id, stage, response=None, error=None):
@@ -491,6 +520,7 @@ class RunLog:
             "input_tokens": None,
             "output_tokens": None,
             "thinking_tokens": None,
+            "redacted_secrets": started[3] if started else {},
         }
 
         if error is not None:
@@ -565,6 +595,10 @@ class RunLog:
                 )),
                 "waits": len(wait_subset),
                 "waited_seconds": round(sum(w["seconds"] for w in wait_subset), 1),
+                # e.g. {"API_KEY": 1, "PASSWORD": 4}; see "Secrets" above
+                "redacted_secrets": dict(sorted(sum(
+                    (Counter(c.get("redacted_secrets") or {}) for c in call_subset), Counter()
+                ).items())),
             }
 
         for stage in stages:
@@ -587,7 +621,15 @@ class RunLog:
             if not self._worth_saving():
                 return
 
-            text = json.dumps(self.to_dict(), indent=2)
+            data = self.to_dict()
+
+            try:
+                data, _ = sanitize_data(data)
+            except OutputRedactionError:
+                # Still a record of the run, with its only free text taken out.
+                data = _errors_withheld(data)
+
+            text = json.dumps(data, indent=2)
         except Exception:
             return
 
@@ -602,6 +644,21 @@ class RunLog:
                 os.replace(tmp, path)
             except Exception:
                 pass
+
+
+def _errors_withheld(value):
+    """
+    value with every "error" text replaced by a fixed notice. Errors are the
+    only free text a run log holds; the rest is names, times and numbers.
+    """
+    if isinstance(value, dict):
+        return {
+            key: WITHHELD if key == "error" and isinstance(item, str) else _errors_withheld(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_errors_withheld(item) for item in value]
+    return value
 
 
 def current_run_id():
