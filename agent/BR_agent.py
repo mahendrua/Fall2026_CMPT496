@@ -29,9 +29,9 @@ from collections import defaultdict
 from backend.progress_logging import progress
 from utils.chroma_utils import collection_name
 
-MAX_CONCURRENCY = 10
-DEFAULT_CODEBASE_K = 15
-DEFAULT_FILE_SUMMARY_K = 5
+MAX_CONCURRENCY = 3
+DEFAULT_CODEBASE_K = 8
+DEFAULT_FILE_SUMMARY_K = 3
 MAX_CODEBASE_K = 30
 MAX_FILE_SUMMARY_K = 10
 
