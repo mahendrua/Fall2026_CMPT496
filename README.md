@@ -390,8 +390,10 @@ Authorization: Bearer Fake-Token-123456789               ->   Authorization: Bea
 ```
 
 Detection is local pattern matching; nothing is sent anywhere to decide what
-is a secret. Only the outgoing copy changes: source files and saved outputs
-are not touched, and the provider's own API key still authenticates the call.
+is a secret. Only the outgoing copy changes: source files are not touched,
+and the provider's own API key still authenticates the call. What comes back,
+and what the app logs and saves, is cleaned separately (see
+[Secret protection in logs and saved outputs](#secret-protection-in-logs-and-saved-outputs-us-034-t-078)).
 
 ### Where it happens
 
@@ -473,7 +475,9 @@ pagination token.
   `3 secret value(s) replaced (API_KEY x1, PASSWORD x2)`.
 - Each model call passes its counts to callbacks as `redacted_secrets`
   metadata, for example `{"PASSWORD": 2}`.
-- The counts are not yet shown in the UI or written to the run log.
+- Since T-078 the run log records them for each call, with totals per stage
+  and per run (see [Redaction counts](#redaction-counts-in-the-run-log)).
+  They are not shown in the UI.
 
 ### When a request cannot be checked
 
@@ -509,12 +513,13 @@ plain text, so in practice this does not happen. If it did:
 - **Outside this boundary**, and so not covered by T-077:
   - LangGraph node state reported to chain callbacks. This only matters if
     LangSmith tracing is switched on through environment variables; the app
-    configures no tracer.
+    configures no tracer, and since T-078 backend runs are never traced.
   - Other chain wrappers (`with_retry`, `prompt | model`), which the agents
     do not use.
   - Structured-output schemas from this repository.
   - Base64 image and file payloads.
   - The model's answers, application logs, and summaries saved to disk.
+    T-078 cleans these on the way out.
 - **Cost:** about 2 ms per KB of prompt on the development machine (about
   30 ms for a 15 KB file, 120 ms for a 56 KB prompt), run on the agents' event
   loop.
@@ -547,12 +552,11 @@ contains a real-format token, which GitHub push protection would block.
 
 ### Remaining work
 
-- **T-078:** redact application logs (progress messages, error logs,
-  `last_run_log.json`) and the summaries, rules and tests saved to disk, and
-  consider recording the per-call counts in the run log.
+- **T-078:** done; see
+  [Secret protection in logs and saved outputs](#secret-protection-in-logs-and-saved-outputs-us-034-t-078).
 - **T-079:** broader verification with ten planted fake secrets across file
   types, run through the pipeline, reporting what is missed and what is
-  over-redacted.
+  over-redacted (see [What T-079 still has to verify](#what-t-079-still-has-to-verify)).
 
 T-077 alone does not complete US-034.
 
@@ -560,6 +564,235 @@ T-077 alone does not complete US-034.
 
 The new modules are imported by `agent/llm.py`, so PyInstaller finds them and
 `releases/main.spec` needs no change. Rebuild the backend before `npm run dist`.
+
+## Secret protection in logs and saved outputs (US-034, T-078)
+
+T-077 cleans what is sent to an AI provider. T-078 cleans what Checkpoint
+shows and keeps: console output, logs, run records, the outputs it saves, and
+the reports built from them. It uses the same detector and the same
+placeholders:
+
+```text
+Error generating summary: 400 Bad Request: could not parse 'password = "Fake-Pass-111!"'
+  ->  Error generating summary: 400 Bad Request: could not parse 'password = "[REDACTED_PASSWORD_1]"'
+```
+
+Source files, `.env` and the API keys the providers authenticate with are
+never changed.
+
+### Where it happens
+
+| Module | Role |
+|---|---|
+| `utils/output_redaction.py` | `sanitize_text()` and `sanitize_data()`; `safe_text()`, which never raises; `save_json()` and `save_text()`, which clean in memory, write a temporary file and swap it in. Also `secret_scope()`. |
+| `utils/secret_redaction.py` | `KnownSecrets`: what one run has found, kept in memory for the secrets it repeats without context. |
+| `backend/log_redaction.py` | The log record factory, the stdout and stderr guards, and exception hooks that print a whole traceback in one write. |
+| `backend/progress_logging.py` | `send()` and `send_response()`: every message to Electron. |
+| `backend/run_protection.py` | `protected_run()`: the run's secret scope, with LangSmith tracing off. |
+
+### What is protected
+
+| Output | Written by | Notes |
+|---|---|---|
+| Messages to Electron on stdout (progress, token counts, responses) | `progress_logging` | Framing, fields and request IDs are unchanged. A stray `print()` to stdout is cleaned too. |
+| stderr (Electron's console) | log factory, stream guard | Records from every logger and library, whichever handler they reach; warnings; tracebacks with their causes; uncaught exceptions in threads. |
+| `error_log.json` | `backend/dispatcher.py` | Electron's own entries are backend messages (already clean) or its own fixed text. |
+| `last_run_log.json`, `run_logs/` | `RunLog.save()` | Also records the redaction counts. |
+| File summaries, file-level `business_rules.json` | file summary agent | Includes `Error generating summary: ...` text. |
+| Directory summaries, directory-level `business_rules.json` | directory agent | |
+| `validated_rules.json`, `discarded_rules.json` | BR agent | Evidence snippets, reasons. |
+| `unit_tests.json/.txt`, `integration_tests.json/.txt` | UT and IT agents | |
+| `UT_*.cs`, `IT_*.cs`, `validated_tests.json`, `discarded_tests.json`, `test_report.json`, the HTML test report | `agent/test_harness.py` | The HTML report shows failed assertions' actual values, read from the running code. |
+| `consistency_result*.json`, `reviews.json` | `agent/consistency_store.py` | Evidence excerpts copied from source lines, claims, explanations, review notes. |
+| `run_reports/<codebase>/*` | `backend/run_report.py` | Built from a cleaned copy of everything it reads, older outputs included. |
+| `mutation_report.json`, `stryker_output.txt` | `backend/mutation_testing.py` | |
+| UML PDF, Markdown export | `utils/uml_json_to_pdf.py`, `utils/json_to_markdown.py` | The summary is cleaned as it is loaded. |
+
+These are kept exactly as they were, so the links between outputs keep
+working:
+
+- dictionary keys, numbers and booleans;
+- reference fields: IDs, paths, symbols, line numbers and content hashes
+  (`REFERENCE_KEYS`).
+
+As a result:
+
+- Finding IDs, and the reviews filed under them, do not change.
+- Line locations and schemas stay valid.
+- Every output still loads where the next step reads it.
+- Generated tests still compile: a secret inside a string literal becomes a
+  placeholder inside the same literal.
+
+### Secrets repeated without context
+
+A secret is found by its context (`password = "..."`). An answer, an error
+message or an excerpt cut out of a file can repeat it without that context.
+
+**How it works:** each backend request and each command (`main.py`,
+`Commands._run_command`) runs as one protected run, and the stages of the full
+pipeline share it. Inside a run, the secrets found in every AI request (T-077)
+and in every cleaned output are remembered, in memory only. Every later output
+in the same run is also cleaned of those values wherever they appear. When the
+run ends, they are dropped. They are never saved, logged or shown.
+
+**Limits:**
+
+- Only values of 8 or more characters mixing letters with digits or symbols
+  are replaced without context. This is the same rule T-077 uses within one
+  request, so ordinary words are never blanked out. `Pw-12` or `letmein` is
+  replaced only where its context shows.
+- It works only within one run. Runs never share what they found, including
+  two runs at once, and a value found in an earlier request is not known to
+  the next.
+- Outside a backend run there is only contextual detection. This applies to
+  the terminal tools: `python -m utils.json_to_markdown`, `uml_json_to_pdf.py`,
+  and `python -m backend.run_report`.
+- A value nothing in the run identified, because T-077's detector missed it,
+  is missed here too.
+- Placeholder numbers are local to each request and each saved file. A
+  `[REDACTED_PASSWORD_1]` in a summary need not be the same secret as in the
+  request, or in another file.
+
+### When something cannot be checked
+
+The original text is never written or shown instead, and no error message
+quotes it.
+
+| Output | Result |
+|---|---|
+| Log record | A fixed notice replaces the message and the traceback. |
+| Progress message | A fixed notice replaces its text. Its type, numbers and request ID still go, so the bars keep moving. |
+| Command response | It becomes a failure saying the response was withheld, still carrying its request ID. |
+| Console line | A fixed notice line. |
+| Saved output | Nothing is written and the previous file is kept. The step fails with only the file name: `Db-cs__1.json was not saved: The text could not be checked for secrets.` |
+| HTML test report | It is not kept, and a progress message says so. The test step carries on. |
+| Run log | It is saved with its error texts withheld; the rest is names, times and numbers. |
+| Consistency Review result | `ConsistencyStoreError`, naming the file. |
+
+### Tracing
+
+LangChain uploads a trace of every run to LangSmith when `LANGSMITH_TRACING`
+(or `LANGCHAIN_TRACING_V2`) is `true`. Such a trace would carry the raw graph
+state, which LangGraph reports before a node calls its model: source code,
+summaries and rules. T-077 noted this exposure.
+
+- **What happens:** every protected run turns tracing off with langsmith's
+  own `tracing_context(enabled=False)`, and sets aside a tracer installed with
+  `tracing_v2_enabled()`.
+- **Scope:** only this process, and only inside the run. The environment and
+  other programs are not changed.
+- **Notice:** when the environment asks for tracing, a warning on stderr
+  says, once, that Checkpoint's runs are not traced, and why.
+- **How it was checked:** `run_record_redaction_test.py` turns tracing on with
+  an endpoint nothing listens on, and replaces the tracer's upload methods
+  with recorders. Without protection, the raw graph state is traced. Inside
+  protected runs and backend commands, nothing is.
+- **Not covered:** a tracer passed in explicitly as a callback (the app
+  passes none), and LangChain's `set_debug()` console output (never turned
+  on).
+
+### Redaction counts in the run log
+
+```json
+"calls": [{"stage": "generate_file_summaries", "status": "success", "redacted_secrets": {"API_KEY": 1, "PASSWORD": 2}, ...}],
+"totals": {"calls": 4, "redacted_secrets": {"API_KEY": 3, "PASSWORD": 6}, ...}
+```
+
+Each stage has the same total for its own calls.
+
+- **What a count is:** an occurrence replaced in the request one AI call
+  sent, by category, as `agent/llm.py` reports it to the callbacks. The same
+  secret sent in five calls counts five times; it is not a count of distinct
+  secrets.
+- **Each call is counted once.** Retries resend the same cleaned request
+  within that call, and `with_structured_output()` cleaning the request a
+  second time finds nothing new.
+- **What is not stored:** placeholder numbers, or which value a count was.
+- **What is not counted:** replacements made in logs and saved outputs.
+- **One exception:** a direct `generate()` with several prompts would report
+  their combined count on each of them. The agents never call it that way;
+  `batch()` and `abatch()` are separate calls.
+
+### Outputs saved before T-078
+
+Files already on disk are **not** cleaned automatically, and none are rewritten
+in bulk. They keep what they hold until a run writes them again. To clean them,
+delete them and run the pipeline again.
+
+- The exports clean what they copy, older outputs included: the run report,
+  the UML PDF and the Markdown export.
+- Responses from the backend are cleaned too.
+- Electron's file browser and View Insights read some files directly, so
+  they show older files as they are stored.
+
+### Limitations
+
+- **Detection is T-077's**, with the misses listed there. Found while testing
+  T-078: a PlantUML private field (`-password : string = "..."`) is missed,
+  because a `-` before the name reads as part of a hyphenated name. It is
+  cleaned only when the run found the value with context elsewhere. The
+  detector itself was not changed.
+- **Not covered:**
+  - **Vector stores** (`vectorStores/`): the code index holds raw source
+    chunks, a copy of the source files themselves. The summary index is built
+    from the saved summaries, which are cleaned from T-078 on.
+  - **Stryker's own reports:** they contain the mutated source files.
+  - **dotnet build output** of the generated test project.
+  - **Raw writes:** bytes written to a stream's `.buffer` or straight to a
+    file descriptor.
+- **Keys and reference fields are never scanned**, so a secret inside a file
+  path or a dictionary key stays.
+- **Private keys:** the body of a private key becomes one placeholder, so an
+  excerpt holding one has fewer lines. Line numbers are not affected.
+- **Consistency Review, verified:** the model sees placeholders, so a finding
+  that quotes a line that held a secret has an excerpt that does not match the
+  source, and the finding is rejected ("its source excerpt does not appear in
+  the code in scope"). T-078 does not change this.
+- **Electron does no detection of its own.** There is one detector, in
+  Python.
+- **Cost on the development machine:** about 0.5 ms per KB of saved output,
+  and 0.1 ms per progress line.
+
+### Tests
+
+```powershell
+.venv\Scripts\python.exe -m pytest test/other_tests/output_redaction_test.py test/other_tests/log_redaction_test.py test/other_tests/frontend_output_redaction_test.py test/other_tests/saved_summary_redaction_test.py test/other_tests/generated_artifact_redaction_test.py test/other_tests/run_record_redaction_test.py
+```
+
+No API key, network, dotnet, Java or Stryker is needed, and every secret is
+fake. The checks for a planted value fail with a count, never the value.
+
+| File | What it checks |
+|---|---|
+| `output_redaction_test.py` | Text and structure; schemas and reference fields; context-free echoes; isolation between threads; detector failures; atomic saves. |
+| `log_redaction_test.py` | Parameterized and pre-formatted log messages; tracebacks and their chains; stack info; handler order and propagation; the stream guards. Also two real processes: the guards alone, and `main.py` answering requests. |
+| `frontend_output_redaction_test.py` | Progress, token and response framing; each request as its own scope; command errors; `error_log.json`. |
+| `saved_summary_redaction_test.py` | A file summary agent run with a misbehaving fake provider; directory and BR writers; rules loading in the next step; a summary that cannot be saved. |
+| `generated_artifact_redaction_test.py` | Generated tests, `.cs` files and test reports; Consistency Review end to end, including reviews and a long title; the run report built from older planted outputs; the mutation report; the UML PDF; the Markdown export. |
+| `run_record_redaction_test.py` | Run logs and counts; offline tracing checks; echoes across stages; concurrent runs. |
+
+### What T-079 still has to verify
+
+T-078 is tested piece by piece, with fake models. It does not show that no
+secret leaks anywhere. T-079 should:
+
+- run ten planted fake secrets, across file types, through a full pipeline
+  run and every output listed above, and report what is missed and what is
+  over-redacted;
+- check the detector gaps: T-077's list and the PlantUML `-password` case;
+- decide what to do about Consistency Review rejecting findings whose
+  excerpts contain placeholders;
+- decide how outputs saved before T-078 should be cleaned up;
+- check the packaged app and the Electron screens (`verify_screen.js`). They
+  were not built or run for T-078.
+
+T-078 does not complete US-034 on its own.
+
+### Packaged app
+
+The new modules are imported by `main.py` and the agents, so PyInstaller
+should find them, and `releases/main.spec` was not changed. The backend was
+not rebuilt for T-078.
 
 ## Packaging the backend using Pyinstaller
 
