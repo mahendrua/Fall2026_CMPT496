@@ -54,6 +54,9 @@ class CommandDispatcher:
             "validate_unit_tests": self.commands.validate_unit_tests,
             "generate_integration_tests": self.commands.generate_integration_tests,
 
+            # Mutation testing (not part of the full pipeline: it takes minutes)
+            "run_mutation_tests": self.commands.run_mutation_tests,
+
             # UML
             "generate_uml": self.commands.generate_uml,
             "generate_all_uml": self.commands.generate_all_uml,
@@ -70,6 +73,14 @@ class CommandDispatcher:
 
             # Usage
             "get_run_usage": self.commands.get_run_usage,
+
+            # Consistency Review (read results, save review decisions)
+            "get_consistency_result": self.commands.get_consistency_result,
+            "save_consistency_review": self.commands.save_consistency_review,
+            "get_consistency_artifact": self.commands.get_consistency_artifact,
+            "get_consistency_targets": self.commands.get_consistency_targets,
+            "get_consistency_methods": self.commands.get_consistency_methods,
+            "check_consistency": self.commands.check_consistency,
 
             # Error log
             "get_errors": self.get_errors,

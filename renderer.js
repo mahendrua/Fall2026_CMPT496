@@ -26,6 +26,79 @@ let backendOutputBuffer = "";
 //loadingscreen
 const commandRequests = new window.CommandRequestTracker();
 let activeRequestId = null;
+
+// The saved check a finished pipeline or Consistency Review operation can
+// open: the codebase it ran on and the check ID it produced.
+let reviewTarget = null;
+
+// True between a pipeline click and the command being sent (a short delay).
+let pipelineStarting = false;
+
+// A new check replaces the saved result that unsaved review notes belong to,
+// so a run that would do so does not start; the user saves or discards first.
+function blockedByUnsavedReviews(codebasePath) {
+    const unsaved = window.ConsistencyReviewScreen.unsavedReviews(codebasePath);
+    if (!unsaved) return false;
+    showErrorPopup(
+        `You have ${unsaved} unsaved review ${unsaved === 1 ? "note" : "notes"} for this codebase in `
+        + "View Insights → Consistency Review. Save or discard them there first: a new check replaces "
+        + "the result they belong to."
+    );
+    return true;
+}
+
+// Shows "Open Consistency Review" on the Complete screen when a check was saved.
+function offerReview(codebasePath, checkId) {
+    reviewTarget = checkId ? { codebasePath, checkId } : null;
+    document.getElementById("loadingOpenReviewBtn").classList.toggle("hidden", !checkId);
+}
+
+// Backend calls whose response goes to the caller's promise rather than the
+// shared handler below (the Consistency Review screen). They never become the
+// active request, so they cannot take over the loading screen or error popup.
+const directRequests = new Map();
+
+// options.onEvent receives the request's streamed messages (progress, provider
+// waits, running token totals) before the final response resolves the promise.
+function backendCall(command, args = {}, options = {}) {
+    const request = commandRequests.begin(command);
+
+    return new Promise(resolve => {
+        directRequests.set(request.requestId, { resolve, onEvent: options.onEvent });
+
+        const refuse = error => {
+            const failure = commandRequests.fail(request.requestId, error);
+            directRequests.delete(request.requestId);
+            resolve(failure ? failure.response : { success: false, error });
+        };
+
+        window.electronAPI.executeCommand(command, args, request.requestId)
+            .then(ack => {
+                if (ack?.accepted === true && ack.request_id === request.requestId) {
+                    commandRequests.accept(request.requestId);
+                } else {
+                    refuse(ack?.error || "The backend did not accept the command.");
+                }
+            })
+            .catch(error => refuse(error.message || "Could not send the command to the backend."));
+    });
+}
+
+// Resolves a direct call's promise with its final response. True if the
+// response belonged to a direct call (handled, or still in progress).
+function settleDirectRequest(correlated) {
+    const requestId = correlated?.request?.requestId;
+    if (!requestId || !directRequests.has(requestId)) return false;
+
+    const entry = directRequests.get(requestId);
+    if (correlated.terminal) {
+        directRequests.delete(requestId);
+        entry.resolve(correlated.response);
+    } else if (entry.onEvent && correlated.response && correlated.response.accepted !== true) {
+        try { entry.onEvent(correlated.response); } catch (error) { console.error("Progress handler failed:", error); }
+    }
+    return true;
+}
 let pipelineMode = false;
 
 let totalSteps = 1;
@@ -213,7 +286,9 @@ refreshApiKeyList();
 // Backend Communication Helpers
 // ============================================
 
-function showLoading(title, message) {
+// options.noPercent hides the step percentage bar, for steps whose backend
+// reports no percentage (the bar would otherwise sit at a meaningless value).
+function showLoading(title, message, options = {}) {
 
 
     const overlay =
@@ -229,6 +304,8 @@ function showLoading(title, message) {
     // show spinner & loading bar
     document.getElementById("loadingSpinner").classList.remove("hidden");
     document.getElementById("stepProgressContainer").classList.remove("hidden");
+    document.getElementById("loadingStepProgressContainer").classList.toggle("hidden", Boolean(options.noPercent));
+    document.getElementById("loadingStepProgressText").classList.toggle("hidden", Boolean(options.noPercent));
 
     // Hide pipeline progress by default
     document.getElementById("pipelineProgressContainer").classList.add("hidden");
@@ -236,6 +313,8 @@ function showLoading(title, message) {
 
     //hide ok button
     document.getElementById("loadingOkBtn").classList.add("hidden");
+    document.getElementById("loadingOpenReviewBtn").classList.add("hidden");
+    showReportButton(null);
     document.getElementById("loadingCancelBtn").classList.remove("hidden");
     document.getElementById("loadingCancelBtn").disabled = false;
 
@@ -328,6 +407,24 @@ function showLoadingWarning(text) {
 }
 
 
+// The run report (US-049) of the full run that just finished. The Complete
+// screen's "Open Report" button opens it in its own window.
+let runReportPath = null;
+
+function showReportButton(reportPath) {
+
+    runReportPath = reportPath || null;
+
+    const button =
+        document.getElementById("loadingReportBtn");
+
+    if (!button) return;
+
+    button.classList.toggle("hidden", !runReportPath);
+
+}
+
+
 function updateTokenMeter(response) {
 
     const meter =
@@ -400,9 +497,11 @@ function finishLoading(message = "Process completed successfully!") {
     }
 
 
-    // hide spinner and progress bars
+    // hide spinner and progress bars; the message itself (inside the step
+    // container) stays visible
     document.getElementById("loadingSpinner").classList.add("hidden");
-    document.getElementById("stepProgressContainer").classList.add("hidden");
+    document.getElementById("loadingStepProgressContainer").classList.add("hidden");
+    document.getElementById("loadingStepProgressText").classList.add("hidden");
     document.getElementById("pipelineProgressContainer").classList.add("hidden");
     document.getElementById("stepProgressTitle").classList.add("hidden");
 
@@ -1442,6 +1541,12 @@ function showPage(pageId) {
 
 function showButtons(buttonId) {
 
+    // Another view is taking the output box: the Consistency Review screen
+    // must not draw into it when a background load or check finishes.
+    if (buttonId !== "viewConsistencyBtns" && window.ConsistencyReviewScreen) {
+        window.ConsistencyReviewScreen.hide();
+    }
+
     document.querySelectorAll('.viewBtnContainer').forEach(buttonContainer => {
         if (buttonContainer.id !== "mainViewBtns") {
 
@@ -1587,11 +1692,43 @@ document.getElementById("loadingCancelBtn").addEventListener("click", async () =
     showPage("homePage");
 });
 
+// Opens the whole-project result of the check that just finished, by its ID:
+// the review screen says so if the saved result has since become another one.
+document.getElementById("loadingOpenReviewBtn").addEventListener("click", () => {
+
+    const target = reviewTarget;
+    if (!target) return;
+
+    hideLoading();
+    document.getElementById("loadingOkBtn").classList.add("hidden");
+    document.getElementById("loadingOpenReviewBtn").classList.add("hidden");
+
+    showPage('mainViewPage');
+    showButtons("viewConsistencyBtns");
+    const output = document.getElementById("viewDisplayOutputBox");
+    output.innerHTML = "";
+    window.ConsistencyReviewScreen.open(output, { call: backendCall }, target.codebasePath,
+        { scope: "full", expectCheckId: target.checkId });
+
+});
+
 document.getElementById("loadingOkBtn").addEventListener("click", () => {
 
     hideLoading();
     document.getElementById("loadingOkBtn").classList.add("hidden");
     showPage('homePage');
+
+});
+
+document.getElementById("loadingReportBtn").addEventListener("click", async () => {
+
+    if (!runReportPath) return;
+
+    const response = await window.electronAPI.openReport(runReportPath);
+
+    if (!response?.success) {
+        showErrorPopup(response?.error || "Could not open the run report.");
+    }
 
 });
 
@@ -1684,12 +1821,46 @@ document.getElementById("viewDisplayErrorsBtn")
 
 });
 
+document.getElementById("viewConsistencyBtn")
+.addEventListener("click", () => {
+
+    showButtons("viewConsistencyBtns");
+
+    const output = document.getElementById("viewDisplayOutputBox");
+    output.innerHTML = "";
+
+    // Reads saved results only: no check is run and no model is called.
+    window.ConsistencyReviewScreen.open(output, { call: backendCall }, selectedCodebasePath);
+
+});
+
 document.getElementById("viewUsageBtn")
 .addEventListener("click", async () => {
 
     showButtons("viewUsageBtns");
 
     await runBackendCommand("get_run_usage");
+
+});
+
+// The run report (US-049) in its own window: the selected codebase's, or the
+// most recent one when no codebase has been selected yet this session.
+document.getElementById("viewRunReportBtn")
+.addEventListener("click", async () => {
+
+    // This message takes the output box (see showButtons).
+    if (window.ConsistencyReviewScreen) {
+        window.ConsistencyReviewScreen.hide();
+    }
+
+    const codebaseName = getSelectedCodebaseName();
+    const response = await window.electronAPI.openLatestReport(codebaseName);
+
+    renderTextPreview(
+        response?.success
+            ? `Opened the run report for ${response.codebase} in its own window.`
+            : (response?.error || "Could not open the run report.")
+    );
 
 });
 
@@ -1905,14 +2076,29 @@ document.getElementById('exitBtn').addEventListener('click', () => {
 //======================================================
 document.getElementById('codebaseAnalysisPipelineBtn')
     .addEventListener('click', () => {
+
+        // Focus stays on the button under the loading screen: no second run
+        // while one is pending (including the moment before it is sent), and
+        // no run over unsaved review notes (its Consistency Review stage
+        // replaces the whole-project result).
+        if (activeRequestId || pipelineStarting) return;
+        if (blockedByUnsavedReviews(selectedCodebasePath)) return;
+        pipelineStarting = true;
+        reviewTarget = { codebasePath: selectedCodebasePath, checkId: null };
+
         showLoading(
             "Running Full Pipeline",
             "Preparing..."
+        );
+        showLoadingWarning(
+            "This run ends with a Consistency Review stage that compares the code with what was just "
+            + "generated: one more AI request per source file, on your selected API key."
         );
 
 
         setTimeout(() => {
 
+            pipelineStarting = false;              // activeRequestId takes over from here
             runBackendCommand(
                 "full_pipeline",
                 {
@@ -2159,6 +2345,42 @@ document.getElementById('runUnitTestValidationOnlyBtn')
     });
 
 
+// Compares the code with the summaries, rules and tests already generated for
+// the selected codebase and saves the result (View Insights → Consistency
+// Review). Nothing is regenerated.
+document.getElementById('runConsistencyReviewOnlyBtn')
+    .addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+
+        // Focus stays on this button under the loading screen; a second Enter
+        // or click must not start another check while one is pending.
+        if (activeRequestId) return;
+
+        if (blockedByUnsavedReviews(selectedCodebasePath)) return;
+        reviewTarget = { codebasePath: selectedCodebasePath, checkId: null };
+
+        showLoading(
+            "Consistency Review",
+            "Preparing...",
+            { noPercent: true }
+        );
+        showLoadingWarning(
+            "This compares the code with the summaries, rules and tests already generated; nothing is "
+            + "regenerated. Each file checked is a request on your selected API key. Cancel stops the check "
+            + "at once: nothing from it is saved (the previous result stays), and requests already made still count."
+        );
+
+        runBackendCommand(
+            "check_consistency",
+            {
+                codebase:selectedCodebasePath,
+                scope:"full",
+            }
+        );
+    });
+
+
 document.getElementById('runIntegrationTestGenerationOnlyBtn')
     .addEventListener('click', (event) => {
         event.preventDefault();
@@ -2173,6 +2395,26 @@ document.getElementById('runIntegrationTestGenerationOnlyBtn')
             {
                 codebase:selectedCodebasePath,
                 selected_rules: []
+            }
+        );
+    });
+
+// Mutation testing: how many small code changes the passing unit tests
+// catch. Takes about a minute on ConsoleTables; the Open Report button shows
+// when it finishes, since the backend rebuilds the run report.
+document.getElementById('runMutationTestingOnlyBtn')
+    .addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        showLoading(
+            "Test Strength (Mutation Testing)",
+            "Preparing..."
+        );
+
+        runBackendCommand(
+            "run_mutation_tests",
+            {
+                codebase:selectedCodebasePath
             }
         );
     });
@@ -2341,11 +2583,13 @@ async function handleBackendResponse(response) {
 
         if (typeof response.request_id !== "string" || !response.request_id) {
             const failures = commandRequests.failAll("Malformed backend response: missing request ID.");
+            failures.forEach(settleDirectRequest);
             correlated = failures.find(item => item.request.requestId === activeRequestId);
         } else {
             correlated = commandRequests.handle(response);
         }
 
+        if (correlated?.matched && settleDirectRequest(correlated)) return;
         if (!correlated?.matched) return;
         if (correlated.terminal) {
             response = correlated.response;
@@ -2535,6 +2779,12 @@ async function handleBackendResponse(response) {
 
         updatePipelineLoading(response.stage);
 
+        // A stage without a percentage of its own (Consistency Review) hides
+        // the step bar instead of leaving the previous stage's value there.
+        const noStepPercent = response.step_percent === false;
+        document.getElementById("loadingStepProgressContainer").classList.toggle("hidden", noStepPercent);
+        document.getElementById("loadingStepProgressText").classList.toggle("hidden", noStepPercent);
+
         if (response.progress !== undefined) {
             console.log("Progress:", response.progress);
             updatePipleineProgressBar(response.progress);
@@ -2655,6 +2905,53 @@ async function handleBackendResponse(response) {
 
 
     // ----------------------------------------
+    // Full pipeline completion
+    // ----------------------------------------
+    // Generation finished (a failed step never gets here). The Consistency
+    // Review stage is reported on its own line: a mismatch, an incomplete or a
+    // failed review is not a pipeline failure.
+    if (activeCommand === "full_pipeline" && response.success && response.result) {
+
+        const review = window.ConsistencyReviewModel.pipelineReview(response.result.consistency_review);
+
+        finishLoading(`${response.result.message || "Full pipeline completed"}. ${review.text}`);
+        showLoadingWarning(response.result.warning);
+        offerReview(reviewTarget ? reviewTarget.codebasePath : selectedCodebasePath, review.checkId);
+        showReportButton(response.result.run_report);
+
+        activeCommand = null;
+
+        return;
+    }
+
+
+    // ----------------------------------------
+    // Consistency check completion
+    // ----------------------------------------
+    // Completed, incomplete and failed checks all return success (the result
+    // was saved); the title tells them apart, and the warning carries why.
+    if (activeCommand === "check_consistency" && response.success && response.result) {
+
+        const check = response.result;
+
+        finishLoading(`${check.message} Open View Insights → Consistency Review to see the result.`);
+        offerReview(reviewTarget ? reviewTarget.codebasePath : selectedCodebasePath, check.check_id);
+
+        document.getElementById("loadingTitle").textContent = {
+            completed: "Complete",
+            partial: "Check incomplete",
+            failed: "Check failed",
+        }[check.status] || "Complete";
+
+        showLoadingWarning(check.warning);
+
+        activeCommand = null;
+
+        return;
+    }
+
+
+    // ----------------------------------------
     // Command completion
     // ----------------------------------------
     if (response.success) {
@@ -2672,6 +2969,7 @@ async function handleBackendResponse(response) {
             );
 
             showLoadingWarning(response.result?.warning);
+            showReportButton(response.result?.run_report);
 
             activeCommand = null;
         }
