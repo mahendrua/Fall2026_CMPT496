@@ -2627,7 +2627,7 @@ document.getElementById("generateGuiTestsBtn").addEventListener("click", async (
         const response = await runBackendCommand("generate_gui_test_cases", {
             codebase: sourceDirectory
         });
-        if (!response?.success) {
+        if (response?.accepted !== true && response?.success !== true) {
             await stopLocalGuiApp();
             guiGenerationInProgress = false;
             activeCommand = null;
