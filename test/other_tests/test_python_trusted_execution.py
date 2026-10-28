@@ -2,6 +2,7 @@
 
 import os
 import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -68,7 +69,8 @@ SLEEPER_BODY = (
     "\n"
     "def test_sleeps_until_harness_timeout():\n"
     "    marker = Path(os.environ['CHECKPOINT_CODEBASE_PATH']) / 'sleeper_pids.txt'\n"
-    "    marker.write_text(f'{os.getpid()} {os.getpgrp()}\\n', encoding='utf-8')\n"
+    "    group = os.getpgrp() if hasattr(os, 'getpgrp') else os.getpid()\n"
+    "    marker.write_text(f'{os.getpid()} {group}\\n', encoding='utf-8')\n"
     "    time.sleep(30)\n"
 )
 
@@ -111,6 +113,15 @@ def _make(lab: Path, tests: list[UnitTest]):
 def _pid_is_running(pid: int) -> bool:
     if pid <= 0:
         return False
+    if os.name == "nt":
+        # os.kill(pid, 0) checks nothing on Windows: signal 0 is CTRL_C_EVENT,
+        # and it raises no error whether or not the process exists.
+        listing = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+        ).stdout
+        return f'"{pid}"' in listing
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -228,7 +239,9 @@ def test_sleeping_pytest_is_timed_out_and_process_group_is_killed(tmp_path):
         test_dir=str(test_dir),
         codebase_path=str(lab),
         results_dir=str(results_dir),
-        timeout=1,
+        # Long enough for pytest to start the sleeper (over a second on
+        # Windows), far below the 30 seconds it would otherwise sleep.
+        timeout=5,
     )
     elapsed = time.monotonic() - started
 

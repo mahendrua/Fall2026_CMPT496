@@ -95,6 +95,32 @@ def test_run_result(test_run, **extra):
 
     return result
 
+
+def no_rules_result(kind):
+    """
+    Result for a test step with no validated rules to work from: the step is
+    skipped with a warning, so a run where no rule passed validation still
+    finishes instead of stopping here.
+    """
+    message = f"No validated business rules to test, so no {kind} tests were generated."
+    return {"message": message, "warning": message}
+
+
+def failed_summaries_message(failed, total=None):
+    """
+    Warning for the file summary step when the AI failed on some files: their
+    summaries only record the error, so later steps get no real summary for
+    them. The step itself still succeeds, so the pipeline carries on.
+    """
+    shown = "; ".join(entry[:200] for entry in failed[:5])
+    if len(failed) > 5:
+        shown += f"; and {len(failed) - 5} more"
+    count = f"{len(failed)} of {total} files" if total else f"{len(failed)} file(s)"
+    return (
+        f"{count} could not be summarized, so their summaries only record the "
+        f"error ({shown}). Run this step again to retry them."
+    )
+
 from backend.run_report import write_run_report
 from backend.mutation_testing import run as run_mutation_testing, TIME_LIMIT_MINUTES
 from backend.token_estimate import estimate_pipeline
@@ -472,7 +498,11 @@ class Commands:
 
         def task():
             progress("Generating file summaries...")
-            return FileSummaryAgent().run(codebase)
+            result = FileSummaryAgent().run(codebase)
+            failed = result.get("failed_files") or []
+            if failed:
+                result["warning"] = failed_summaries_message(failed, result.get("total_number_of_files"))
+            return result
 
         return self._run_command(
             "generate_file_summaries",
@@ -640,6 +670,9 @@ class Commands:
                 for rule in raw_rules:
                     if rule["id"] in selected_rules:
                         input_rules.append(ValidatedRule.model_validate(rule))
+
+            if not input_rules:
+                return no_rules_result("unit")
 
             final_state = UTAgent().run(
                 input_rules,
@@ -818,6 +851,9 @@ class Commands:
                             ValidatedRule.model_validate(rule)
                         )
 
+
+            if not input_rules:
+                return no_rules_result("integration")
 
             result = ITAgent().run(
                 input_rules,

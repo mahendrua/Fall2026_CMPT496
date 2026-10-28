@@ -7,6 +7,7 @@ structured state passed between nodes in the LangGraph execution graph.
 Each node reads from and returns an updated version of this state.
 """
 
+import operator
 from typing import TypedDict, Deque, List, Dict, Annotated
 from agent.structured_output.file_summary_output import FileSummaryOutput, BusinessRule
 
@@ -50,3 +51,5 @@ class FileGraphState(TypedDict):
     current_file: str
     filename_counters: Dict[str, int]
     business_rules_by_file: Annotated[Dict[str, List[BusinessRule]], merge_business_rules]
+    # "file: error" for each file whose summary failed, collected across batches
+    failed_files: Annotated[List[str], operator.add]

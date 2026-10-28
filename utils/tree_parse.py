@@ -85,6 +85,22 @@ class CodeBundle:
     tree: Tree
     language: str = ""
 
+def read_source_bytes(filepath: Path) -> bytes:
+    """!
+    @brief Reads a source file as UTF-8 bytes for parsing.
+    @details Older codebases often save files in Windows-1252, which is not
+    valid UTF-8 and used to stop the code database build. Such files are
+    converted to UTF-8, keeping their text; UTF-8 files are returned unchanged.
+    @param filepath The pathlib.Path of the source file.
+    @return The file content as UTF-8 bytes.
+    """
+    code_bytes = filepath.read_bytes()
+    try:
+        code_bytes.decode("utf-8")
+    except UnicodeDecodeError:
+        code_bytes = code_bytes.decode("cp1252", errors="replace").encode("utf-8")
+    return code_bytes
+
 def parse_file(filepath: Path, parser: Parser, language: str) -> CodeBundle:
     """!
     @brief Parses a specific file into a CodeBundle.
@@ -106,7 +122,7 @@ def parse_file(filepath: Path, parser: Parser, language: str) -> CodeBundle:
     
     # Parse file. Stdout is reserved for Checkpoint's JSON protocol.
     print(f"Parsing: {filepath}", file=sys.stderr)
-    code_bytes = filepath.read_bytes()
+    code_bytes = read_source_bytes(filepath)
     ast = parser.parse(code_bytes)
 
     # Assemble bundle
@@ -155,7 +171,7 @@ def parse_dir(dirpath: str) -> list[CodeBundle]:
     extensions = LANGUAGE_DICT.keys()
     for ext in extensions:
         for filepath in (p for p in found if p.suffix.lower() == ext):
-            code_bytes = filepath.read_bytes()
+            code_bytes = read_source_bytes(filepath)
             tree = parsers[ext].parse(code_bytes)
             bundle = CodeBundle(path = filepath, content = code_bytes, tree = tree, language = LANGUAGE_DICT[ext]["name"])
             bundle_list.append(bundle)
