@@ -1,70 +1,87 @@
-import pytest
-from agent.file_summary_agent import FileSummaryAgent
-from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage
+import asyncio
 from collections import deque
-import os
 from pathlib import Path
+
+import pytest
+
+from agent.file_summary_agent import FileSummaryAgent
+from agent.structured_output.file_summary_output import FileSummaryOutput
+
+TEST_CODEBASE = Path(__file__).parent / "TestCodebase"
+# Circles/circ.py is empty, so it is summarized without an AI call.
+SOURCE_FILES = {"circ.py", "math.py", "math2.py", "shapes.py", "shapes2.py"}
+
+
+class FakeStructuredLLM:
+    """Answers every file with the same structured summary and counts the calls."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def ainvoke(self, messages):
+        self.calls += 1
+        return FileSummaryOutput(path="path written by the AI", summary="A summary.")
+
+
+class FakeChatModel:
+    def __init__(self):
+        self.structured = FakeStructuredLLM()
+
+    def with_structured_output(self, schema, **kwargs):
+        return self.structured
+
 
 @pytest.fixture
 def file_summary_agent():
-    responses = [
-        AIMessage(content="Summary for file 1..."),
-        AIMessage(content="Summary for file 2..."),
-        AIMessage(content="Summary for file 3..."),
-        AIMessage(content="Summary for file 4...")]
-    return FileSummaryAgent(llm=GenericFakeChatModel(messages=iter(responses)))
+    return FileSummaryAgent(llm=FakeChatModel())
 
 
 def test_crawler_node(file_summary_agent):
-    current_dir = Path(__file__).parent
-    test_codebase_path = str(current_dir / "TestCodebase")
-
     initial_state = {
-        "directory_path": test_codebase_path,
+        "directory_path": str(TEST_CODEBASE),
         "files": deque()
     }
 
     result = file_summary_agent.crawler_node(initial_state)
-    
-    # Check that crawler found two files, so excluded the .txt file in TestCodebase
-    assert "files" in result
-    assert result["total_number_of_files"] == 4
+
+    # The .txt files and the bin/ and obj/ folders are skipped.
+    assert {Path(path).name for path in result["files"]} == SOURCE_FILES
+    assert result["total_number_of_files"] == len(SOURCE_FILES)
+    assert result["codebase_name"] == "TestCodebase"
 
 
 def test_summarizer_node(file_summary_agent):
-    # Simulate the state after crawling, with two files to summarize
-    state = {
-        "files": deque([
-            str(Path(__file__).parent / "TestCodebase" / "Shapes" / "shapes2.py"),
-            str(Path(__file__).parent / "TestCodebase" / "Shapes" / "shapes.py"),
-            str(Path(__file__).parent / "TestCodebase" / "Math" / "math2.py"),
-            str(Path(__file__).parent / "TestCodebase" / "Math" / "math.py")
-        ])
-    }
+    files = sorted(str(path) for path in TEST_CODEBASE.rglob("*.py"))
+    state = {"files": deque(files)}
 
-    # Test summarization for the first file
-    result1 = file_summary_agent.summarizer_node(state)
-    assert "file_summary" in result1
-    assert result1["current_file"] == "math.py"
-    assert result1["file_summary"].summary == "Summary for file 1..."
+    # run() sets up this event loop for the summarizer's batched calls.
+    file_summary_agent._loop = asyncio.new_event_loop()
+    try:
+        first = file_summary_agent.summarizer_node(state)
+        second = file_summary_agent.summarizer_node(state)
+    finally:
+        file_summary_agent._loop.close()
 
-    # Test summarization for the second file
-    result2 = file_summary_agent.summarizer_node(state)
-    assert "file_summary" in result2
-    assert result2["current_file"] == "math2.py"
-    assert result2["file_summary"].summary == "Summary for file 2..."
+    # Files are summarized in batches of four.
+    assert len(first["current_files"]) == 4
+    assert len(second["current_files"]) == 1
+    summaries = first["file_summaries"] + second["file_summaries"]
+    # Each summary keeps the real file path, not the path the AI wrote back.
+    assert sorted(summary.path for summary in summaries) == files
+    texts = {Path(summary.path).name: summary.summary for summary in summaries}
+    assert texts.pop("circ.py") == "Empty source file."
+    assert set(texts.values()) == {"A summary."}
+    assert file_summary_agent.structured_llm.calls == 4
 
 
-def test_full_graph(file_summary_agent):
-    current_dir = Path(__file__).parent
-    test_codebase_path = str(current_dir / "TestCodebase")
+def test_full_graph(file_summary_agent, tmp_path, monkeypatch):
+    # The agent writes under ./agent/file_summary_agent_output, so run it from
+    # a temporary folder rather than the project.
+    monkeypatch.chdir(tmp_path)
 
-    # Run the full graph on the test codebase
-    file_summary_agent.run(test_codebase_path)
+    file_summary_agent.run(str(TEST_CODEBASE))
 
-    # Check that output files were created for both source code files
-    output_dir = Path("./agent/file_summary_agent_output") / "TestCodebase"
-    assert output_dir.exists()
-    assert (output_dir / "math-py.json").exists()
-    assert (output_dir / "shapes-py.json").exists()
+    output_dir = tmp_path / "agent" / "file_summary_agent_output" / "TestCodebase"
+    written = {path.name for path in output_dir.glob("*.json")}
+    expected = {name.replace(".", "-") + "__1.json" for name in SOURCE_FILES}
+    assert expected <= written
