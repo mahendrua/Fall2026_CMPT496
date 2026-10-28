@@ -1042,7 +1042,8 @@ ipcMain.handle(
             }
 
             const codebaseName = path.basename(codebasePath);
-            const rulesPath = path.join(__dirname, "agent", "BR_agent_output", codebaseName, "validated_rules.json");
+            // Where the backend saved them: not __dirname in the installed app.
+            const rulesPath = path.join(backendOutputDir, "agent", "BR_agent_output", codebaseName, "validated_rules.json");
 
             let rulesFile = null;
             if (fs.existsSync(rulesPath)) {
