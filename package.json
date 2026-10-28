@@ -5,7 +5,10 @@
   "main": "main.js",
   "type": "commonjs",
   "scripts": {
+    "build:auth": "esbuild auth.js --bundle --format=iife --platform=browser --target=chrome120 --outfile=auth.bundle.js",
+    "prestart": "npm run build:auth",
     "start": "electron .",
+    "predist": "npm run build:auth",
     "dist": "electron-builder build --win"
   },
   "repository": {
@@ -16,9 +19,12 @@
   "devDependencies": {
     "electron": "^42.4.0",
     "electron-builder": "^26.15.3",
-    "electron-reloader": "^1.2.3"
+    "electron-reloader": "^1.2.3",
+    "esbuild": "^0.28.2"
   },
   "dependencies": {
+    "@firebase/app": "^0.16.4",
+    "@firebase/auth": "^1.13.8",
     "dotenv": "^17.4.2"
   },
   "build": {

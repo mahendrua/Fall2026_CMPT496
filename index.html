@@ -3,10 +3,118 @@
 <head>
     <title>Checkpoint</title>
 
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com; frame-src 'self' data:;">
     <link rel="stylesheet" href="style.css">
 </head>
 
 <body>
+
+    <div id="registrationSuccessToast" class="auth-success-toast hidden" role="status" aria-live="polite">
+        Account created successfully. Welcome to Checkpoint.
+    </div>
+    <section id="authScreen" class="auth-screen" aria-label="Checkpoint authentication">
+        <div class="auth-brand-panel">
+            <div class="auth-brand">
+                <span class="auth-logo" aria-hidden="true">C</span>
+                <span>Checkpoint</span>
+            </div>
+            <div class="auth-brand-message">
+                <p class="auth-overline">YOUR SOFTWARE QUALITY WORKSPACE</p>
+                <h1>Build with confidence.<br><span>Ship with clarity.</span></h1>
+                <p>AI-powered analysis and testing tools to help your team deliver better software.</p>
+            </div>
+            <div class="auth-art" aria-hidden="true">
+                <div class="auth-art-orbit auth-orbit-one"></div>
+                <div class="auth-art-orbit auth-orbit-two"></div>
+                <div class="auth-art-core"><span>✓</span></div>
+                <div class="auth-art-node auth-node-one">AI</div>
+                <div class="auth-art-node auth-node-two">&lt;/&gt;</div>
+                <div class="auth-art-node auth-node-three">QA</div>
+                <div class="auth-art-line auth-line-one"></div>
+                <div class="auth-art-line auth-line-two"></div>
+            </div>
+            <p class="auth-brand-footer">ANALYZE · TEST · DELIVER</p>
+        </div>
+
+        <div class="auth-form-panel">
+            <div class="auth-form-wrap">
+                <div id="authSetupNotice" class="auth-notice hidden" role="alert"></div>
+                <div id="authFormContent">
+                    <section id="loginFormView" class="auth-view">
+                        <p class="auth-overline">WELCOME TO CHECKPOINT</p>
+                        <h2>Welcome Back to Checkpoint</h2>
+                        <p class="auth-subtitle">Sign in to continue your development workflow.</p>
+                        <form id="loginForm" novalidate>
+                            <label class="auth-field">
+                                <span>Email Address</span>
+                                <input id="loginEmail" type="email" autocomplete="email" placeholder="you@company.com" required>
+                            </label>
+                            <label class="auth-field">
+                                <span>Password</span>
+                                <span class="auth-password-wrap">
+                                    <input id="loginPassword" type="password" autocomplete="current-password" placeholder="Enter your password" required>
+                                    <button class="auth-show-password" type="button" data-password-toggle="loginPassword" aria-label="Show password">Show</button>
+                                </span>
+                            </label>
+                            <div class="auth-form-options">
+                                <label class="auth-checkbox"><input type="checkbox" id="rememberMe" checked><span>Remember me</span></label>
+                                <button id="forgotPasswordBtn" class="auth-text-button" type="button">Forgot Password?</button>
+                            </div>
+                            <p id="loginError" class="auth-error" role="alert" aria-live="polite"></p>
+                            <button id="signInBtn" class="auth-submit" type="submit"><span>Sign In</span></button>
+                        </form>
+                        <p class="auth-switch">Don't have an account? <button id="showRegistrationBtn" class="auth-text-button" type="button">Create Account</button></p>
+                    </section>
+
+                    <section id="registrationFormView" class="auth-view hidden">
+                        <p class="auth-overline">GET STARTED</p>
+                        <h2>Create Your Checkpoint Account</h2>
+                        <p class="auth-subtitle">Join Checkpoint and simplify your software testing workflow.</p>
+                        <form id="registrationForm" novalidate>
+                            <label class="auth-field">
+                                <span>Full Name</span>
+                                <input id="registrationName" type="text" autocomplete="name" placeholder="Your full name" maxlength="200" required>
+                            </label>
+                            <label class="auth-field">
+                                <span>Email Address</span>
+                                <input id="registrationEmail" type="email" autocomplete="email" placeholder="you@company.com" required>
+                            </label>
+                            <label class="auth-field">
+                                <span>Password</span>
+                                <span class="auth-password-wrap">
+                                    <input id="registrationPassword" type="password" autocomplete="new-password" placeholder="At least 6 characters" required>
+                                    <button class="auth-show-password" type="button" data-password-toggle="registrationPassword" aria-label="Show password">Show</button>
+                                </span>
+                            </label>
+                            <label class="auth-field">
+                                <span>Confirm Password</span>
+                                <span class="auth-password-wrap">
+                                    <input id="registrationConfirmPassword" type="password" autocomplete="new-password" placeholder="Re-enter your password" required>
+                                    <button class="auth-show-password" type="button" data-password-toggle="registrationConfirmPassword" aria-label="Show password">Show</button>
+                                </span>
+                            </label>
+                            <label class="auth-field">
+                                <span>Professional Role</span>
+                                <select id="professionalRole" required>
+                                    <option value="">Select your role</option>
+                                    <option>Software Developer</option>
+                                    <option>Software Tester / QA Engineer</option>
+                                    <option>Project Manager</option>
+                                    <option>Software Engineer</option>
+                                    <option>Team Lead</option>
+                                    <option>Student</option>
+                                    <option>Other</option>
+                                </select>
+                            </label>
+                            <p id="registrationError" class="auth-error" role="alert" aria-live="polite"></p>
+                            <button id="createAccountBtn" class="auth-submit" type="submit"><span>Create Account</span></button>
+                        </form>
+                        <p class="auth-switch">Already have an account? <button id="showLoginBtn" class="auth-text-button" type="button">Sign In</button></p>
+                    </section>
+                </div>
+            </div>
+        </div>
+    </section>
 
     <!-- HOME PAGE -->
     <div id="homePage" class="page active">
@@ -96,6 +204,7 @@
             <div class="home-footer-actions">
                 <button class="home-footer-button" id="apiBtn" type="button"><span aria-hidden="true">↑</span> Upload API Key</button>
                 <button class="home-footer-button" id="faqAndSupportBtn" type="button"><span class="home-question-icon" aria-hidden="true">?</span> FAQ &amp; Support</button>
+                <button class="home-footer-button" id="logoutBtn" type="button">Sign Out</button>
             </div>
             <button class="home-footer-button home-exit-button back-btn" id="exitBtn" type="button"><span aria-hidden="true">↳</span> Exit</button>
         </footer>
@@ -943,6 +1052,7 @@
     <script src="consistency_review.js"></script>
     <script src="api_key_verify.js"></script>
     <script src="renderer.js"></script>
+    <script src="auth.bundle.js"></script>
 
 </body>
 </html>

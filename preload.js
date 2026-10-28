@@ -5,6 +5,14 @@ contextBridge.exposeInMainWorld(
     "electronAPI",
     {
 
+        getFirebaseConfig: () => ipcRenderer.invoke("auth:get-config"),
+        readAuthSession: () => ipcRenderer.invoke("auth:read-session"),
+        writeAuthSession: session => ipcRenderer.invoke("auth:write-session", session),
+        clearAuthSession: () => ipcRenderer.invoke("auth:clear-session"),
+        establishAuthSession: idToken => ipcRenderer.invoke("auth:establish", idToken),
+        signOutAuthSession: () => ipcRenderer.invoke("auth:sign-out"),
+        getUserProfile: () => ipcRenderer.invoke("auth:get-profile"),
+        saveUserProfile: role => ipcRenderer.invoke("auth:save-profile", role),
 
         // ==================================
         // Backend Commands

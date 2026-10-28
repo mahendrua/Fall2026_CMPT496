@@ -24,6 +24,7 @@ __pycache__/
 *.pyc
 .venv/
 node_modules/
+auth.bundle.js
 
 # ignore everything related to packaging the backend
 build/

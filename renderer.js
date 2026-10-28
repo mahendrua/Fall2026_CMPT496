@@ -296,7 +296,12 @@ document.getElementById('submitApiKeyBtn').addEventListener('click', async () =>
     });
 });
 
-refreshApiKeyList();
+window.addEventListener("checkpoint-authenticated", () => {
+    showPage("homePage");
+    refreshApiKeyList().catch(error => {
+        console.error("Could not load API key settings after authentication:", error);
+    });
+});
 
 // ============================================
 // Backend Communication Helpers
