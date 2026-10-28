@@ -135,16 +135,6 @@
             <p class="home-intro">Choose where you want to go</p>
         </header>
 
-        <section class="home-codebase-summary" aria-live="polite" aria-label="Selected codebase">
-            <div class="home-codebase-copy">
-                <p class="home-codebase-select-label">Selected Codebase <span aria-hidden="true">⌄</span></p>
-                <p class="home-codebase-name" id="homeCodebaseName">No codebase selected</p>
-            </div>
-            <button class="home-connect-button" id="homeConnectCodebaseBtn" type="button">
-                Connect Codebase <span aria-hidden="true">+</span>
-            </button>
-        </section>
-
         <main class="home-destinations">
             <article class="home-action-card">
                 <div class="home-card-topline">
@@ -339,6 +329,7 @@
                 <span class="operations-heading-divider" aria-hidden="true">|</span>
                 <p>Select analysis tasks or run full automated pipeline</p>
             </div>
+            <button class="operations-back-button operations-cancel-project" id="cancelProjectSelectionBtn" type="button" title="Clear the selected project and return to the dashboard. Imported files are not deleted.">Cancel Project</button>
         </header>
 
         <div id="analysisOptions" class="operations-content">
@@ -349,6 +340,7 @@
                     <div><dt>Language</dt><dd><span class="operations-language-dot" aria-hidden="true"></span>Not detected</dd></div>
                     <div class="operations-path-detail"><dt>Path</dt><dd id="operationsCodebasePath">No path selected</dd></div>
                 </dl>
+                <div id="operationsProjectSourceInfo" class="operations-project-source-info">Source: Local folder</div>
             </section>
 
             <section class="operations-pipeline-hero" aria-labelledby="operationsPipelineTitle">
@@ -398,17 +390,66 @@
 
     <!--Codebase Analysis Pipeline input and output page-->
     <div id="codebasePipelinePage" class="page hidden">
-        <h1>Codebase Analysis Pipeline</h1>
+        <header class="project-source-header">
+            <p class="operations-section-eyebrow">PROJECT SETUP</p>
+            <h1>Choose a project source</h1>
+            <p>Select a local folder or import a public GitHub repository for your existing Checkpoint operations.</p>
+        </header>
 
-        <a>Click the file button and select a directory: </a>
-        <div id="pathInputContainer">
-            <input class="input-glass" id="codebasePath" type="text" readonly/>
-            <button id="browseCodebaseBtn" class="btn-primary">📂</button>
+        <div id="projectSourceChoices" class="project-source-grid">
+            <article class="project-source-card">
+                <span class="project-source-icon" aria-hidden="true">⌂</span>
+                <h2>Local Project</h2>
+                <p>Select a project folder from your computer.</p>
+                <button class="btn-primary" id="browseCodebaseBtn" type="button">Browse Folder</button>
+            </article>
+            <article class="project-source-card">
+                <span class="project-source-icon github-source-icon" aria-hidden="true">&lt;/&gt;</span>
+                <h2>GitHub Repository</h2>
+                <p>Import and analyze a project directly from GitHub.</p>
+                <button class="btn-primary" id="connectGithubBtn" type="button">Connect Repository</button>
+            </article>
         </div>
-        <button class="btn-primary" id="submitPathBtn">Submit</button>
-        <button class="btn-primary back-btn" id="codebaseBackBtn">Back</button>
 
-       
+        <section id="localFolderPanel" class="project-source-step hidden">
+            <button class="project-source-back" id="backToProjectSourcesBtn" type="button">&#8592; Project sources</button>
+            <p class="operations-section-eyebrow">LOCAL PROJECT</p>
+            <h2>Choose a folder</h2>
+            <p>Select the project folder you want Checkpoint to analyze.</p>
+            <div class="project-local-path-row">
+                <input class="input-glass" id="codebasePath" type="text" readonly placeholder="No folder selected"/>
+                <button class="btn-secondary" id="browseLocalAgainBtn" type="button">Browse</button>
+            </div>
+            <p id="localFolderError" class="project-source-error" role="alert"></p>
+            <button class="btn-primary" id="submitPathBtn" type="button" disabled>Continue to Operations</button>
+        </section>
+
+        <section id="githubConnectPanel" class="project-source-step hidden">
+            <button class="project-source-back" id="backFromGithubBtn" type="button">&#8592; Project sources</button>
+            <p class="operations-section-eyebrow">CHECKPOINT &mdash; CONNECT GITHUB</p>
+            <h2>Connect a repository</h2>
+            <p>Only public GitHub repositories are supported in this phase.</p>
+            <label class="github-url-label" for="githubRepositoryUrl">Enter Repository URL</label>
+            <form id="githubRepositoryForm" class="github-url-form">
+                <input id="githubRepositoryUrl" type="url" autocomplete="url" placeholder="https://github.com/owner/repository" required>
+                <button class="btn-primary" id="fetchGithubBranchesBtn" type="submit">Fetch Repository</button>
+            </form>
+            <p id="githubRepositoryError" class="project-source-error" role="alert" aria-live="polite"></p>
+            <p id="githubRepositoryProgress" class="project-source-progress" aria-live="polite"></p>
+            <div id="githubBranchPanel" class="github-branch-panel hidden">
+                <label for="githubBranchSelect">Available Branches</label>
+                <select id="githubBranchSelect"></select>
+                <p id="githubRepositoryName" class="github-repository-caption"></p>
+                <button class="btn-primary" id="importGithubBtn" type="button">Import and Continue</button>
+            </div>
+            <div id="githubImportProgressPanel" class="github-import-progress hidden">
+                <span class="project-source-spinner" aria-hidden="true"></span>
+                <p id="githubImportProgressText" aria-live="polite">Connecting to GitHub...</p>
+                <button class="btn-secondary" id="cancelGithubImportBtn" type="button">Cancel Import</button>
+            </div>
+        </section>
+
+        <button class="btn-primary back-btn project-source-cancel" id="codebaseBackBtn" type="button">Back</button>
 
     </div>
 

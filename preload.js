@@ -13,6 +13,14 @@ contextBridge.exposeInMainWorld(
         signOutAuthSession: () => ipcRenderer.invoke("auth:sign-out"),
         getUserProfile: () => ipcRenderer.invoke("auth:get-profile"),
         saveUserProfile: role => ipcRenderer.invoke("auth:save-profile", role),
+        getGithubBranches: repositoryUrl => ipcRenderer.invoke("github:get-branches", repositoryUrl),
+        importGithubRepository: request => ipcRenderer.invoke("github:import", request),
+        cancelGithubImport: requestId => ipcRenderer.invoke("github:cancel-import", requestId),
+        onGithubImportProgress: callback => {
+            const listener = (_event, progress) => callback(progress);
+            ipcRenderer.on("github:import-progress", listener);
+            return () => ipcRenderer.removeListener("github:import-progress", listener);
+        },
 
         // ==================================
         // Backend Commands

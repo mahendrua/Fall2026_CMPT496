@@ -17,6 +17,12 @@ const {
     saveGuiTestReport
 } = require("./guiTestReports");
 const { CommandRequestTracker } = require("./command_requests");
+const { assertAuthenticatedRenderer, assertMainRenderer } = require("./ipc_auth");
+const {
+    cleanupIncompleteImports,
+    getRepositoryBranches,
+    importRepository
+} = require("./github_import");
 const {
     getFirebaseConfig,
     readLocalProfile,
@@ -36,34 +42,12 @@ let localGuiApp = null;
 let guiShutdownStarted = false;
 let activeGuiTestReport = null;
 let authSession = null;
+const githubImportControllers = new Map();
 const authSessionPath = () => path.join(app.getPath("userData"), "firebase-auth-session.dat");
-
-function assertMainRenderer(event) {
-    if (
-        !mainWindow ||
-        mainWindow.isDestroyed() ||
-        event.sender !== mainWindow.webContents ||
-        event.senderFrame !== mainWindow.webContents.mainFrame
-    ) {
-        throw new Error("This operation is available only to the Checkpoint window.");
-    }
-}
-
-function assertAuthenticated(event) {
-    assertMainRenderer(event);
-    if (
-        !authSession ||
-        authSession.webContentsId !== event.sender.id ||
-        authSession.expiresAt <= Date.now()
-    ) {
-        authSession = null;
-        throw new Error("Sign in to Checkpoint to continue.");
-    }
-}
 
 function registerProtectedHandler(channel, handler) {
     ipcMain.handle(channel, (event, ...args) => {
-        assertAuthenticated(event);
+        assertAuthenticatedRenderer(event, mainWindow, authSession);
         return handler(event, ...args);
     });
 }
@@ -125,7 +109,7 @@ function readEncryptedAuthSession() {
 }
 
 ipcMain.handle("auth:get-config", event => {
-    assertMainRenderer(event);
+    assertMainRenderer(event, mainWindow);
     const result = getFirebaseConfig(app.getPath("userData"));
     return result.configured
         ? { configured: true, config: result.config }
@@ -133,12 +117,12 @@ ipcMain.handle("auth:get-config", event => {
 });
 
 ipcMain.handle("auth:read-session", event => {
-    assertMainRenderer(event);
+    assertMainRenderer(event, mainWindow);
     return readEncryptedAuthSession();
 });
 
 ipcMain.handle("auth:write-session", (event, value) => {
-    assertMainRenderer(event);
+    assertMainRenderer(event, mainWindow);
     if (!value || typeof value !== "object" || Array.isArray(value)) {
         throw new Error("Firebase provided an invalid session record.");
     }
@@ -146,13 +130,13 @@ ipcMain.handle("auth:write-session", (event, value) => {
 });
 
 ipcMain.handle("auth:clear-session", event => {
-    assertMainRenderer(event);
+    assertMainRenderer(event, mainWindow);
     const filePath = authSessionPath();
     if (fs.existsSync(filePath)) fs.rmSync(filePath, { force: true });
 });
 
 ipcMain.handle("auth:establish", async (event, idToken) => {
-    assertMainRenderer(event);
+    assertMainRenderer(event, mainWindow);
     const { config } = getConfiguredFirebase();
     const identity = await verifyFirebaseIdToken(idToken, config.apiKey);
     authSession = { ...identity, webContentsId: event.sender.id };
@@ -162,8 +146,9 @@ ipcMain.handle("auth:establish", async (event, idToken) => {
 });
 
 ipcMain.handle("auth:sign-out", async event => {
-    assertMainRenderer(event);
+    assertMainRenderer(event, mainWindow);
     authSession = null;
+    for (const { controller } of githubImportControllers.values()) controller.abort();
     restartBackendAfterCancel = false;
     if (pythonProcess) {
         const processToStop = pythonProcess;
@@ -185,12 +170,12 @@ ipcMain.handle("auth:sign-out", async event => {
 });
 
 ipcMain.handle("auth:get-profile", event => {
-    assertAuthenticated(event);
+    assertAuthenticatedRenderer(event, mainWindow, authSession);
     return readLocalProfile(app.getPath("userData"), authSession.uid);
 });
 
 ipcMain.handle("auth:save-profile", (event, professionalRole) => {
-    assertAuthenticated(event);
+    assertAuthenticatedRenderer(event, mainWindow, authSession);
     if (!authSession.displayName) {
         throw new Error("Your Firebase account does not have a full name. Sign in again after updating your profile.");
     }
@@ -202,6 +187,60 @@ ipcMain.handle("auth:save-profile", (event, professionalRole) => {
         accountCreatedAt: authSession.creationTime
     });
 });
+
+registerProtectedHandler("github:get-branches", async (_event, repositoryUrl) => {
+    return getRepositoryBranches(repositoryUrl);
+});
+
+registerProtectedHandler("github:import", async (event, request = {}) => {
+    if (
+        typeof request.requestId !== "string" ||
+        !/^[0-9a-f-]{36}$/i.test(request.requestId) ||
+        githubImportControllers.has(request.requestId)
+    ) {
+        throw new Error("The GitHub import request is invalid or already active.");
+    }
+
+    const controller = new AbortController();
+    const webContentsId = event.sender.id;
+    githubImportControllers.set(request.requestId, { controller, webContentsId });
+    const onProgress = message => {
+        if (
+            !controller.signal.aborted &&
+            mainWindow &&
+            !mainWindow.isDestroyed() &&
+            mainWindow.webContents.id === webContentsId
+        ) {
+            mainWindow.webContents.send("github:import-progress", {
+                requestId: request.requestId,
+                message
+            });
+        }
+    };
+
+    try {
+        return await importRepository(request.url, request.branch, {
+            userDataDirectory: app.getPath("userData"),
+            signal: controller.signal,
+            onProgress
+        });
+    } finally {
+        if (githubImportControllers.get(request.requestId)?.controller === controller) {
+            githubImportControllers.delete(request.requestId);
+        }
+    }
+});
+
+registerProtectedHandler("github:cancel-import", (event, requestId) => {
+    const activeImport = githubImportControllers.get(requestId);
+    if (!activeImport || activeImport.webContentsId !== event.sender.id) return { cancelled: false };
+    activeImport.controller.abort();
+    return { cancelled: true };
+});
+
+async function cleanupExpiredGitHubImports() {
+    await cleanupIncompleteImports(app.getPath("userData"));
+}
 // ----------------------------------------------------
 // API KEYS (.env)
 // ----------------------------------------------------
@@ -806,7 +845,7 @@ registerProtectedHandler(
     }
 );
 
-ipcMain.handle(
+registerProtectedHandler(
     "exit-app",
     () => {
         if (pythonProcess) {
@@ -2054,7 +2093,14 @@ function startPythonBackend(preserveErrors = false) {
 
 app.whenReady()
 .then(
-    createWindow
+    async () => {
+        try {
+            await cleanupExpiredGitHubImports();
+        } catch (error) {
+            console.error("Could not clean up expired incomplete GitHub imports:", error);
+        }
+        createWindow();
+    }
 );
 
 

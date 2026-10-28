@@ -91,6 +91,12 @@ The Firebase Web app configuration in `firebase-config.json` is public client co
 
 Firebase sign-in identifies the Checkpoint account; it does not make an untrusted local project safe to execute. The existing Docker and GUI-testing execution boundaries remain in effect.
 
+## Import a GitHub Repository
+
+From the project source screen, choose **GitHub Repository**, enter a public GitHub repository URL, fetch its branches, and select the revision to import. Checkpoint downloads the selected branch's resolved commit archive into the application's local user-data directory and passes that workspace through the existing analysis pipeline. Private repositories, GitHub credentials, and automatic updates are not supported; import again to analyze a newer revision.
+
+An imported repository is still untrusted project code. Importing it does not run its code, but later project operations such as starting an application for GUI testing can execute local repository files with your Windows user permissions. Review the source and only run operations on projects you trust. Existing Docker and GUI-testing restrictions remain in effect.
+
 ## Deactivate Virtual Environment
 ```powershell
 deactivate
