@@ -95,6 +95,16 @@ def test_run_result(test_run, **extra):
 
     return result
 
+
+def no_rules_result(kind):
+    """
+    Result for a test step with no validated rules to work from: the step is
+    skipped with a warning, so a run where no rule passed validation still
+    finishes instead of stopping here.
+    """
+    message = f"No validated business rules to test, so no {kind} tests were generated."
+    return {"message": message, "warning": message}
+
 from backend.run_report import write_run_report
 from backend.mutation_testing import run as run_mutation_testing, TIME_LIMIT_MINUTES
 from backend.token_estimate import estimate_pipeline
@@ -641,6 +651,9 @@ class Commands:
                     if rule["id"] in selected_rules:
                         input_rules.append(ValidatedRule.model_validate(rule))
 
+            if not input_rules:
+                return no_rules_result("unit")
+
             final_state = UTAgent().run(
                 input_rules,
                 codebase_name,
@@ -818,6 +831,9 @@ class Commands:
                             ValidatedRule.model_validate(rule)
                         )
 
+
+            if not input_rules:
+                return no_rules_result("integration")
 
             result = ITAgent().run(
                 input_rules,
