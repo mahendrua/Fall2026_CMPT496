@@ -8,7 +8,13 @@ This file exposes commands to external callers
 through the CommandDispatcher.
 """
 
+import os
 import sys
+
+# ChromaDB sends anonymous usage events to PostHog unless its
+# anonymized_telemetry setting is off. Every ChromaDB client reads this when
+# it is created, so it is set before any backend module is imported.
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 
 sys.stdout.reconfigure(
     encoding="utf-8",
