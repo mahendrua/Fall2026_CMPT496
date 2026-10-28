@@ -315,6 +315,36 @@ def test_final_pass_discard_keeps_provenance(env):
     assert records(rule) == [("directory_inferred", [])]
 
 
+def test_valid_answer_without_evidence_is_retried_then_discarded(env):
+    # Used to raise while building the ValidatedRule, losing every rule's result.
+    env.llm.decide = lambda text: (
+        ValidatorOutput(decision="valid") if text == "Rule A." else default_decision(text)
+    )
+    write_json(env.file_json, file_rules(env.root, {"src/A.cs": ["Rule A."], "src/B.cs": ["Rule B."]}))
+
+    assert env.commands.validate_business_rules(str(env.root))["success"]
+
+    assert env.llm.validated_texts.count("Rule A.") == 2   # first pass + final pass
+    validated, discarded = read_outputs(env)
+    assert [r["rule"] for r in validated] == ["Rule B."]
+    (rule,) = discarded
+    assert rule["rule"] == "Rule A."
+    assert rule["reason"] == "Marked valid, but no evidence was given."
+    assert records(rule) == [("file", ["src/A.cs"])]
+
+
+def test_valid_answer_without_evidence_gets_a_second_look(env):
+    answers = iter([ValidatorOutput(decision="valid"), default_decision("Rule A.")])
+    env.llm.decide = lambda text: next(answers)
+    write_json(env.file_json, file_rules(env.root, {"src/A.cs": ["Rule A."]}))
+
+    assert env.commands.validate_business_rules(str(env.root))["success"]
+
+    validated, discarded = read_outputs(env)
+    assert [r["rule"] for r in validated] == ["Rule A."]
+    assert discarded == []
+
+
 def test_validator_error_discard_keeps_sources_and_provenance(env):
     env.llm.decide = lambda text: RuntimeError("model unavailable")
     write_json(env.file_json, file_rules(env.root, {"src/A.cs": ["Rule A."]}))

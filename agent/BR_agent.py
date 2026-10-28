@@ -468,6 +468,7 @@ class BRAgent:
         - "valid" → ValidatedRule appended to validated_rules
         - "discard" → DiscardedRule appended to discarded_rules
         - "need_more_context" → rule kept for a second retrieval pass at max k values
+        - "valid" with no explanation → treated like "need_more_context"
 
         If k values are already at their maximums (final pass), "need_more_context" is
         force-treated as a discard. This guarantees at most 2 LLM calls per rule.
@@ -531,6 +532,22 @@ class BRAgent:
                     reason=f"Validation failed with error: {err}",
                     provenance=rule.provenance,
                 ))
+                continue
+
+            if output.decision == "valid" and output.explanation is None:
+                # A validated rule must carry its evidence. Building one without
+                # it raised here, which lost every rule's result in the step.
+                if is_final_pass:
+                    new_discarded.append(DiscardedRule(
+                        id=rule.id,
+                        rule=rule.rule,
+                        source_directory=rule.source_directory,
+                        source_file_paths=rule.source_file_paths,
+                        reason="Marked valid, but no evidence was given.",
+                        provenance=rule.provenance,
+                    ))
+                else:
+                    needs_context.append(rule)
                 continue
 
             if output.decision == "valid":
