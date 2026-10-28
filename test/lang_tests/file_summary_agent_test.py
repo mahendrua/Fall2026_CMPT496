@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+import agent.file_summary_agent as file_summary_module
+import backend.commands as commands_module
 from agent.file_summary_agent import FileSummaryAgent
 from agent.structured_output.file_summary_output import FileSummaryOutput
 
@@ -13,19 +15,24 @@ SOURCE_FILES = {"circ.py", "math.py", "math2.py", "shapes.py", "shapes2.py"}
 
 
 class FakeStructuredLLM:
-    """Answers every file with the same structured summary and counts the calls."""
+    """Answers every file with the same structured summary and counts the calls.
+    Raises for the file names in `fail`, like an AI error or a used-up quota."""
 
-    def __init__(self):
+    def __init__(self, fail=()):
         self.calls = 0
+        self.fail = set(fail)
 
     async def ainvoke(self, messages):
         self.calls += 1
+        file_path = messages[-1][1].split("File path:\n", 1)[1].split("\n", 1)[0]
+        if Path(file_path).name in self.fail:
+            raise RuntimeError("daily limit reached")
         return FileSummaryOutput(path="path written by the AI", summary="A summary.")
 
 
 class FakeChatModel:
-    def __init__(self):
-        self.structured = FakeStructuredLLM()
+    def __init__(self, fail=()):
+        self.structured = FakeStructuredLLM(fail)
 
     def with_structured_output(self, schema, **kwargs):
         return self.structured
@@ -85,3 +92,31 @@ def test_full_graph(file_summary_agent, tmp_path, monkeypatch):
     written = {path.name for path in output_dir.glob("*.json")}
     expected = {name.replace(".", "-") + "__1.json" for name in SOURCE_FILES}
     assert expected <= written
+
+
+def test_failed_files_are_collected_across_batches(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(file_summary_module, "BATCH_SIZE", 1)   # one batch per file
+    agent = FileSummaryAgent(llm=FakeChatModel(fail={"math.py", "shapes.py"}))
+
+    final = agent.run(str(TEST_CODEBASE))
+
+    assert len(final["failed_files"]) == 2
+    assert any("math.py: daily limit reached" in entry for entry in final["failed_files"])
+    assert any("shapes.py: daily limit reached" in entry for entry in final["failed_files"])
+
+
+def test_file_summary_step_warns_about_failed_files(tmp_path, monkeypatch):
+    # The step used to report plain success while some summaries only held
+    # "Error generating summary: ...".
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(file_summary_module, "make_llm", lambda *args, **kwargs: FakeChatModel(fail={"math.py"}))
+    commands = commands_module.Commands()
+    commands.app_dir = tmp_path
+
+    result = commands.generate_file_summaries(str(TEST_CODEBASE))
+
+    assert result["success"] is True
+    warning = result["result"]["warning"]
+    assert "1 of 5 files could not be summarized" in warning
+    assert "math.py: daily limit reached" in warning
