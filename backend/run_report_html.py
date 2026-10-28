@@ -10,6 +10,8 @@ Everything is inside the one file -- styles, script, the run's data and the
 diagram -- so it opens in any browser without Checkpoint or a network.
 """
 
+import base64
+import hashlib
 import json
 import re
 from html import escape
@@ -36,10 +38,11 @@ def render(data, diagram=None):
         "CODEBASE": escape(str(data.get("codebase", "Project"))),
         "DATA": data_json,
         "SVG": svg,
+        "CSP": CONTENT_SECURITY_POLICY,
     }
 
     # One pass, so a marker that happens to appear in the data is left alone.
-    return re.sub(r"@@(TITLE|CODEBASE|DATA|SVG)@@", lambda match: parts[match.group(1)], TEMPLATE)
+    return re.sub(r"@@(TITLE|CODEBASE|DATA|SVG|CSP)@@", lambda match: parts[match.group(1)], TEMPLATE)
 
 
 TEMPLATE = r"""<!doctype html>
@@ -47,6 +50,7 @@ TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="@@CSP@@">
 <title>@@TITLE@@</title>
 <style>
 :root {
@@ -1379,3 +1383,19 @@ button.more:hover { text-decoration: underline; }
 </body>
 </html>
 """
+
+
+def _script_source(page):
+    """CSP source for the page's one inline code block: its SHA-256, base64."""
+    script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
+    return "'sha256-" + base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode("ascii") + "'"
+
+
+# Only the page's own code may run, nothing is fetched from outside (images
+# only as data: URIs) and styles stay inline. Text from the outputs is already
+# escaped; this stops anything that slips through from running code or sending
+# data anywhere. The code block has no @@ markers, so its hash is fixed.
+CONTENT_SECURITY_POLICY = (
+    f"default-src 'none'; script-src {_script_source(TEMPLATE)}; style-src 'unsafe-inline'; "
+    "img-src data:; base-uri 'none'; form-action 'none'"
+)
