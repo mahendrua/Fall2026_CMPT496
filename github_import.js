@@ -170,6 +170,240 @@ async function getRepositoryBranches(input, {
     };
 }
 
+function validatePullRequestNumber(number) {
+    const parsed = Number(number);
+    if (!Number.isSafeInteger(parsed) || parsed < 1) {
+        throw new Error("The pull request number is invalid.");
+    }
+    return parsed;
+}
+
+function assertApiPaginationUrl(url) {
+    let parsed;
+    try {
+        parsed = new URL(url);
+    } catch {
+        throw new Error("GitHub returned an invalid pagination link.");
+    }
+    if (parsed.origin !== GITHUB_API) {
+        throw new Error("GitHub returned an invalid pagination link.");
+    }
+}
+
+async function getGithubJson(url, repository, signal, fetchImpl) {
+    const response = await githubRequest(url, repository, signal, fetchImpl);
+    try {
+        return { data: await response.json(), response };
+    } catch {
+        throw new Error("GitHub returned an invalid response.");
+    }
+}
+
+async function getPaginatedGithubData(url, repository, signal, fetchImpl, itemLimit = 10000) {
+    const results = [];
+    const visited = new Set();
+    let complete = true;
+    while (url) {
+        assertApiPaginationUrl(url);
+        if (visited.has(url)) throw new Error("GitHub returned a repeated pagination link.");
+        visited.add(url);
+        const { data, response } = await getGithubJson(url, repository, signal, fetchImpl);
+        if (!Array.isArray(data)) throw new Error("GitHub returned an invalid list.");
+        results.push(...data);
+        if (results.length >= itemLimit) {
+            complete = !parseNextLink(response.headers.get("link"));
+            if (!complete) results.length = itemLimit;
+            break;
+        }
+        url = parseNextLink(response.headers.get("link"));
+    }
+    return { items: results, complete };
+}
+
+function getPullRequestStatus(pullRequest) {
+    if (pullRequest.merged_at) return "merged";
+    if (pullRequest.state === "closed") return "closed";
+    return "open";
+}
+
+function normalizePullRequest(pullRequest) {
+    return {
+        number: validatePullRequestNumber(pullRequest.number),
+        title: String(pullRequest.title || "Untitled pull request"),
+        body: typeof pullRequest.body === "string" ? pullRequest.body : "",
+        state: getPullRequestStatus(pullRequest),
+        author: pullRequest.user?.login || "Unknown",
+        createdAt: pullRequest.created_at || null,
+        updatedAt: pullRequest.updated_at || null,
+        mergedAt: pullRequest.merged_at || null,
+        baseBranch: pullRequest.base?.ref || "",
+        headBranch: pullRequest.head?.ref || "",
+        baseSha: pullRequest.base?.sha || "",
+        headSha: pullRequest.head?.sha || "",
+        repository: pullRequest.base?.repo?.full_name || "",
+        url: pullRequest.html_url || "",
+        changedFiles: Number.isSafeInteger(pullRequest.changed_files) ? pullRequest.changed_files : null,
+        additions: Number.isSafeInteger(pullRequest.additions) ? pullRequest.additions : null,
+        deletions: Number.isSafeInteger(pullRequest.deletions) ? pullRequest.deletions : null,
+        commitsCount: Number.isSafeInteger(pullRequest.commits) ? pullRequest.commits : null,
+        mergeCommitSha: pullRequest.merge_commit_sha || null
+    };
+}
+
+async function listPullRequests(input, baseBranch, {
+    state = "all",
+    page = 1,
+    signal,
+    fetchImpl = globalThis.fetch
+} = {}) {
+    const repository = parseRepositoryUrl(input);
+    validateBranchName(baseBranch);
+    if (!["open", "closed", "all"].includes(state)) {
+        throw new Error("The pull request status filter is invalid.");
+    }
+    if (!Number.isSafeInteger(page) || page < 1 || page > 1000) {
+        throw new Error("The pull request page is invalid.");
+    }
+    const url = new URL(`${GITHUB_API}/repos/${repository.owner}/${repository.repo}/pulls`);
+    url.searchParams.set("state", state);
+    url.searchParams.set("base", baseBranch);
+    url.searchParams.set("sort", "updated");
+    url.searchParams.set("direction", "desc");
+    url.searchParams.set("per_page", "100");
+    url.searchParams.set("page", String(page));
+    const { data, response } = await getGithubJson(url.toString(), repository, signal, fetchImpl);
+    if (!Array.isArray(data)) throw new Error("GitHub returned an invalid pull request list.");
+    return {
+        repository: repository.url,
+        owner: repository.owner,
+        repo: repository.repo,
+        baseBranch,
+        pullRequests: data.map(normalizePullRequest),
+        hasMore: Boolean(parseNextLink(response.headers.get("link")))
+    };
+}
+
+async function getPullRequestDetails(input, pullRequestNumber, {
+    signal,
+    fetchImpl = globalThis.fetch
+} = {}) {
+    const repository = parseRepositoryUrl(input);
+    const number = validatePullRequestNumber(pullRequestNumber);
+    const apiBase = `${GITHUB_API}/repos/${repository.owner}/${repository.repo}/pulls/${number}`;
+    const [pullResponse, commitsResult, filesResult] = await Promise.all([
+        getGithubJson(apiBase, repository, signal, fetchImpl),
+        getPaginatedGithubData(`${apiBase}/commits?per_page=100&page=1`, repository, signal, fetchImpl),
+        getPaginatedGithubData(`${apiBase}/files?per_page=100&page=1`, repository, signal, fetchImpl, 300)
+    ]);
+    const pullRequest = normalizePullRequest(pullResponse.data);
+    if (!pullRequest.baseSha || !pullRequest.headSha) {
+        throw new Error("GitHub did not provide immutable commit identifiers for this pull request.");
+    }
+    return {
+        ...pullRequest,
+        repositoryUrl: repository.url,
+        commits: commitsResult.items.map(commit => ({
+            sha: String(commit.sha || ""),
+            message: String(commit.commit?.message || ""),
+            author: commit.author?.login || commit.commit?.author?.name || "Unknown",
+            date: commit.commit?.author?.date || null
+        })),
+        files: filesResult.items.map(file => ({
+            filename: String(file.filename || ""),
+            previousFilename: file.previous_filename || null,
+            status: String(file.status || "modified"),
+            additions: Number(file.additions) || 0,
+            deletions: Number(file.deletions) || 0,
+            changes: Number(file.changes) || 0,
+            patchAvailable: typeof file.patch === "string"
+        })),
+        commitsComplete: commitsResult.complete,
+        filesComplete: filesResult.complete,
+        dataComplete: commitsResult.complete && filesResult.complete
+    };
+}
+
+async function getPullRequestFileComparison(input, pullRequestNumber, filePath, {
+    signal,
+    fetchImpl = globalThis.fetch
+} = {}) {
+    const repository = parseRepositoryUrl(input);
+    const number = validatePullRequestNumber(pullRequestNumber);
+    if (typeof filePath !== "string" || !filePath || filePath.length > 4096 || filePath.includes("\0")) {
+        throw new Error("The changed file path is invalid.");
+    }
+
+    const { data: pullData } = await getGithubJson(
+        `${GITHUB_API}/repos/${repository.owner}/${repository.repo}/pulls/${number}`,
+        repository,
+        signal,
+        fetchImpl
+    );
+    const pullRequest = normalizePullRequest(pullData);
+    const { items: files } = await getPaginatedGithubData(
+        `${GITHUB_API}/repos/${repository.owner}/${repository.repo}/pulls/${number}/files?per_page=100&page=1`,
+        repository,
+        signal,
+        fetchImpl,
+        300
+    );
+    const file = files.find(item => item.filename === filePath || item.previous_filename === filePath);
+    if (!file) throw new Error("That file is not part of this pull request.");
+    const oldPath = file.previous_filename || file.filename;
+
+    async function readAtCommit(fileName, sha) {
+        const encodedPath = fileName.split("/").map(encodeURIComponent).join("/");
+        const url = `${GITHUB_API}/repos/${repository.owner}/${repository.repo}/contents/${encodedPath}?ref=${encodeURIComponent(sha)}`;
+        let response;
+        try {
+            response = await fetchImpl(url, {
+                signal,
+                headers: {
+                    Accept: "application/vnd.github+json",
+                    "X-GitHub-Api-Version": "2022-11-28",
+                    "User-Agent": "Checkpoint-Desktop"
+                }
+            });
+        } catch (error) {
+            if (signal?.aborted) throw new Error("GitHub request was cancelled.");
+            throw new Error(`Could not reach GitHub: ${error.message}`);
+        }
+        if (response.status === 404) return { exists: false, text: "" };
+        if (!response.ok) throw githubError(response, repository);
+        const content = await response.json();
+        if (content.type !== "file" || content.encoding !== "base64" || typeof content.content !== "string") {
+            return { exists: true, text: null, unsupported: true };
+        }
+        const buffer = Buffer.from(content.content.replace(/\s/g, ""), "base64");
+        if (buffer.includes(0)) return { exists: true, text: null, binary: true };
+        const text = buffer.toString("utf8");
+        if (!Buffer.from(text, "utf8").equals(buffer)) {
+            return { exists: true, text: null, unsupported: true };
+        }
+        return { exists: true, text };
+    }
+
+    const [before, after] = await Promise.all([
+        readAtCommit(oldPath, pullRequest.baseSha),
+        readAtCommit(file.filename, pullRequest.headSha)
+    ]);
+    return {
+        pullRequest,
+        file: {
+            filename: file.filename,
+            previousFilename: file.previous_filename || null,
+            status: file.status,
+            additions: Number(file.additions) || 0,
+            deletions: Number(file.deletions) || 0
+        },
+        before,
+        after,
+        comparisonKind: "original-pull-request",
+        baseSha: pullRequest.baseSha,
+        headSha: pullRequest.headSha
+    };
+}
+
 function createZipFile(zipPath, options) {
     return new Promise((resolve, reject) => {
         yauzl.open(zipPath, {
@@ -494,6 +728,9 @@ async function cleanupIncompleteImports(userDataDirectory, olderThanMs = 24 * 60
 module.exports = {
     cleanupIncompleteImports,
     getRepositoryBranches,
+    getPullRequestDetails,
+    getPullRequestFileComparison,
+    listPullRequests,
     importRepository,
     parseRepositoryUrl,
     validateBranchName

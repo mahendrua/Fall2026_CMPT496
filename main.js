@@ -20,8 +20,11 @@ const { CommandRequestTracker } = require("./command_requests");
 const { assertAuthenticatedRenderer, assertMainRenderer } = require("./ipc_auth");
 const {
     cleanupIncompleteImports,
+    getPullRequestDetails,
+    getPullRequestFileComparison,
     getRepositoryBranches,
-    importRepository
+    importRepository,
+    listPullRequests
 } = require("./github_import");
 const {
     getFirebaseConfig,
@@ -190,6 +193,21 @@ ipcMain.handle("auth:save-profile", (event, professionalRole) => {
 
 registerProtectedHandler("github:get-branches", async (_event, repositoryUrl) => {
     return getRepositoryBranches(repositoryUrl);
+});
+
+registerProtectedHandler("github:list-pull-requests", async (_event, request = {}) => {
+    return listPullRequests(request.url, request.baseBranch, {
+        state: request.state || "all",
+        page: request.page ?? 1
+    });
+});
+
+registerProtectedHandler("github:get-pull-request", async (_event, request = {}) => {
+    return getPullRequestDetails(request.url, request.number);
+});
+
+registerProtectedHandler("github:get-pull-request-file", async (_event, request = {}) => {
+    return getPullRequestFileComparison(request.url, request.number, request.filePath);
 });
 
 registerProtectedHandler("github:import", async (event, request = {}) => {

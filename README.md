@@ -95,6 +95,8 @@ Firebase sign-in identifies the Checkpoint account; it does not make an untruste
 
 From the project source screen, choose **GitHub Repository**, enter a public GitHub repository URL, fetch its branches, and select the revision to import. Checkpoint downloads the selected branch's resolved commit archive into the application's local user-data directory and passes that workspace through the existing analysis pipeline. Private repositories, GitHub credentials, and automatic updates are not supported; import again to analyze a newer revision.
 
+After connecting, **Full Branch Analysis** continues to use the existing Checkpoint operations. **Latest Pull Request** opens the most recently merged pull request for a selected target branch, while **Browse Pull Requests** provides status filtering, title/number search, sorting, and pagination. Pull request overviews include available metadata, commits, and changed files. Code comparison reads file contents from the pull request's immutable base and head commit SHAs; binary or GitHub-limited files are identified when their contents cannot be shown. These pull-request views do not run AI analysis or modify the repository.
+
 An imported repository is still untrusted project code. Importing it does not run its code, but later project operations such as starting an application for GUI testing can execute local repository files with your Windows user permissions. Review the source and only run operations on projects you trust. Existing Docker and GUI-testing restrictions remain in effect.
 
 ## Deactivate Virtual Environment

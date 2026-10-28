@@ -14,6 +14,9 @@ contextBridge.exposeInMainWorld(
         getUserProfile: () => ipcRenderer.invoke("auth:get-profile"),
         saveUserProfile: role => ipcRenderer.invoke("auth:save-profile", role),
         getGithubBranches: repositoryUrl => ipcRenderer.invoke("github:get-branches", repositoryUrl),
+        listGithubPullRequests: request => ipcRenderer.invoke("github:list-pull-requests", request),
+        getGithubPullRequest: request => ipcRenderer.invoke("github:get-pull-request", request),
+        getGithubPullRequestFile: request => ipcRenderer.invoke("github:get-pull-request-file", request),
         importGithubRepository: request => ipcRenderer.invoke("github:import", request),
         cancelGithubImport: requestId => ipcRenderer.invoke("github:cancel-import", requestId),
         onGithubImportProgress: callback => {

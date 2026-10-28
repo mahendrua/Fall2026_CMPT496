@@ -433,24 +433,155 @@
             <form id="githubRepositoryForm" class="github-url-form">
                 <input id="githubRepositoryUrl" type="url" autocomplete="url" placeholder="https://github.com/owner/repository" required>
                 <button class="btn-primary" id="fetchGithubBranchesBtn" type="submit">Fetch Repository</button>
-            </form>
-            <p id="githubRepositoryError" class="project-source-error" role="alert" aria-live="polite"></p>
-            <p id="githubRepositoryProgress" class="project-source-progress" aria-live="polite"></p>
-            <div id="githubBranchPanel" class="github-branch-panel hidden">
-                <label for="githubBranchSelect">Available Branches</label>
-                <select id="githubBranchSelect"></select>
-                <p id="githubRepositoryName" class="github-repository-caption"></p>
-                <button class="btn-primary" id="importGithubBtn" type="button">Import and Continue</button>
-            </div>
-            <div id="githubImportProgressPanel" class="github-import-progress hidden">
-                <span class="project-source-spinner" aria-hidden="true"></span>
-                <p id="githubImportProgressText" aria-live="polite">Connecting to GitHub...</p>
-                <button class="btn-secondary" id="cancelGithubImportBtn" type="button">Cancel Import</button>
-            </div>
+                </form>
+                <p id="githubRepositoryError" class="project-source-error" role="alert" aria-live="polite"></p>
+                <p id="githubRepositoryProgress" class="project-source-progress" aria-live="polite"></p>
         </section>
 
         <button class="btn-primary back-btn project-source-cancel" id="codebaseBackBtn" type="button">Back</button>
 
+    </div>
+
+    <div id="githubAnalysisModePage" class="page hidden github-workflow-page">
+        <header class="project-source-header">
+            <p class="operations-section-eyebrow">GITHUB REPOSITORY</p>
+            <h1>Choose Analysis Mode</h1>
+            <p>Choose whether to analyze a branch or explore pull requests.</p>
+        </header>
+        <div class="github-mode-grid">
+            <button class="github-mode-card" id="fullBranchModeBtn" type="button">
+                <span class="project-source-icon" aria-hidden="true">⌘</span>
+                <strong>Full Branch Analysis</strong>
+                <span>Import a branch and use the existing Checkpoint operations.</span>
+            </button>
+            <button class="github-mode-card" id="latestPullRequestModeBtn" type="button">
+                <span class="project-source-icon" aria-hidden="true">↻</span>
+                <strong>Latest Pull Request</strong>
+                <span>Open the most recently merged pull request for a target branch.</span>
+            </button>
+            <button class="github-mode-card" id="browsePullRequestsModeBtn" type="button">
+                <span class="project-source-icon github-source-icon" aria-hidden="true">PR</span>
+                <strong>Browse Pull Requests</strong>
+                <span>Filter and select a pull request for an overview and comparison.</span>
+            </button>
+        </div>
+        <button class="btn-secondary github-workflow-back" id="githubModeBackBtn" type="button">Back to Repository URL</button>
+    </div>
+
+    <div id="githubBranchSelectionPage" class="page hidden github-workflow-page">
+        <header class="project-source-header">
+            <p class="operations-section-eyebrow" id="githubBranchEyebrow">GITHUB REPOSITORY</p>
+            <h1 id="githubBranchHeading">Select a Branch</h1>
+            <p id="githubBranchDescription">Choose a branch to continue.</p>
+        </header>
+        <section class="project-source-step github-branch-selection">
+            <label for="githubWorkflowBranchSelect">Target branch</label>
+            <select id="githubWorkflowBranchSelect"></select>
+            <p id="githubWorkflowBranchError" class="project-source-error" role="alert"></p>
+            <p id="githubWorkflowBranchProgress" class="project-source-progress" role="status" aria-live="polite"></p>
+            <button class="btn-primary" id="githubBranchContinueBtn" type="button">Continue</button>
+            <div id="githubImportProgressPanel" class="github-import-progress hidden">
+                <span class="project-source-spinner" aria-hidden="true"></span>
+                <p id="githubImportProgressText" aria-live="polite">Preparing branch import...</p>
+                <button class="btn-secondary" id="cancelGithubImportBtn" type="button">Cancel Import</button>
+            </div>
+        </section>
+        <button class="btn-secondary github-workflow-back" id="githubBranchBackBtn" type="button">Back to Analysis Mode</button>
+    </div>
+
+    <div id="githubPullRequestExplorerPage" class="page hidden github-workflow-page github-data-page">
+        <header class="project-source-header">
+            <p class="operations-section-eyebrow">PULL REQUEST EXPLORER</p>
+            <h1 id="githubExplorerHeading">Pull Requests</h1>
+            <p id="githubExplorerRepository"></p>
+        </header>
+        <div class="github-pr-controls">
+            <label>Filter
+                <select id="githubPrStatusFilter">
+                    <option value="all">All PRs</option>
+                    <option value="open">Open</option>
+                    <option value="merged">Merged</option>
+                    <option value="closed">Closed</option>
+                </select>
+            </label>
+            <label>Search
+                <input id="githubPrSearch" type="search" placeholder="Search title or PR number">
+            </label>
+            <label>Sort by
+                <select id="githubPrSort">
+                    <option value="updatedAt">Recently updated</option>
+                    <option value="createdAt">Recently created</option>
+                    <option value="mergedAt">Recently merged</option>
+                </select>
+            </label>
+        </div>
+        <p id="githubPrListMessage" class="github-pr-message" role="status" aria-live="polite"></p>
+        <div id="githubPrList" class="github-pr-list"></div>
+        <button class="btn-secondary github-load-more hidden" id="githubPrLoadMoreBtn" type="button">Load More Pull Requests</button>
+        <div class="github-workflow-actions">
+            <button class="btn-secondary" id="githubExplorerBackBtn" type="button">Back to Branch</button>
+            <button class="btn-secondary" id="githubExplorerSourcesBtn" type="button">Choose Another Repository</button>
+        </div>
+    </div>
+
+    <div id="githubPullRequestOverviewPage" class="page hidden github-workflow-page github-data-page">
+        <header class="project-source-header">
+            <p class="operations-section-eyebrow">CHECKPOINT — PULL REQUEST OVERVIEW</p>
+            <h1 id="githubOverviewTitle">Pull Request</h1>
+            <p id="githubOverviewRepository"></p>
+        </header>
+        <p id="githubOverviewMessage" class="github-pr-message" role="status" aria-live="polite"></p>
+        <div id="githubOverviewContent" class="github-overview-content hidden">
+            <section class="github-overview-card">
+                <div id="githubOverviewBadges" class="github-overview-badges"></div>
+                <p id="githubOverviewDescription" class="github-pr-description"></p>
+                <dl id="githubOverviewStats" class="github-overview-stats"></dl>
+            </section>
+            <section class="github-overview-card">
+                <h2>Commits</h2>
+                <div id="githubOverviewCommits" class="github-overview-list"></div>
+            </section>
+            <section class="github-overview-card">
+                <h2>Changed Files</h2>
+                <div id="githubOverviewFiles" class="github-overview-list"></div>
+            </section>
+            <p id="githubOverviewWarning" class="github-pr-warning hidden"></p>
+        </div>
+        <div class="github-workflow-actions">
+            <button class="btn-secondary" id="githubOverviewBackBtn" type="button">Back to Pull Requests</button>
+            <button class="btn-primary" id="githubViewComparisonBtn" type="button" disabled>View Code Comparison</button>
+        </div>
+    </div>
+
+    <div id="githubCodeComparisonPage" class="page hidden github-workflow-page github-data-page">
+        <header class="project-source-header github-comparison-header">
+            <p class="operations-section-eyebrow">PULL REQUEST CODE COMPARISON</p>
+            <h1 id="githubComparisonTitle">Code Comparison</h1>
+            <p id="githubComparisonMeta"></p>
+            <p id="githubComparisonWarning" class="github-pr-warning hidden"></p>
+        </header>
+        <div class="github-comparison-toolbar">
+            <button class="btn-secondary" id="githubComparisonViewToggle" type="button">View Unified Diff</button>
+            <button class="btn-secondary" id="githubPreviousFileBtn" type="button">Previous File</button>
+            <span id="githubComparisonFileIndex"></span>
+            <button class="btn-secondary" id="githubNextFileBtn" type="button">Next File</button>
+            <button class="btn-secondary" id="githubComparisonOverviewBtn" type="button">Back to PR Overview</button>
+        </div>
+        <div class="github-comparison-layout">
+            <aside class="github-changed-files">
+                <h2>Changed Files</h2>
+                <div id="githubComparisonFileList"></div>
+            </aside>
+            <section class="github-comparison-content">
+                <h2 id="githubComparisonFileTitle"></h2>
+                <div id="githubComparisonLoading" class="github-pr-message" role="status"></div>
+                <div id="githubSideBySide" class="github-side-by-side">
+                    <section><h3>BEFORE</h3><pre id="githubBeforeCode"></pre></section>
+                    <section><h3>AFTER</h3><pre id="githubAfterCode"></pre></section>
+                </div>
+                <pre id="githubUnifiedDiff" class="github-unified-diff hidden"></pre>
+            </section>
+        </div>
     </div>
 
     <!--  -->
