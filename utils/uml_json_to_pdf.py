@@ -171,9 +171,7 @@ def get_plantuml_runner(args: argparse.Namespace) -> list[str]:
     )
 
 
-# The diagram text comes from the AI, so PlantUML runs in its SANDBOX mode,
-# where !include cannot copy a local file (or a URL) into the picture. As an
-# environment variable it reaches both a `plantuml` command and java -jar.
+# A diagram that takes longer than this is skipped, so it cannot hang the step.
 RENDER_TIMEOUT_SECONDS = 120
 
 
@@ -200,6 +198,9 @@ def render_plantuml(
         [*base_cmd, "-Playout=smetana", "-tpng", str(puml_path)],
     ]
 
+    # The diagram text comes from the AI, so PlantUML runs in its SANDBOX mode,
+    # where !include cannot copy a local file (or a URL) into the picture. As an
+    # environment variable it reaches both a `plantuml` command and java -jar.
     env = {**os.environ, "PLANTUML_SECURITY_PROFILE": "SANDBOX"}
 
     last_error: Optional[subprocess.CalledProcessError] = None
