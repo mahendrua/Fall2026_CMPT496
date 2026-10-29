@@ -159,7 +159,10 @@ test("loads pull request commits and changed files with completeness indicators"
                 return jsonResponse([{ sha: headSha, commit: { message: "Add feature", author: { name: "Contributor", date: "2026-04-01T10:00:00Z" } } }]);
             }
             if (url.includes("/pulls/7/files")) {
-                return jsonResponse([{ filename: "src/app.js", status: "modified", additions: 2, deletions: 1 }]);
+                return jsonResponse([
+                    { filename: "src/app.js", status: "modified", additions: 2, deletions: 1, patch: "@@ -1 +1 @@\n-old\n+new" },
+                    { filename: "logo.png", status: "added", additions: 0, deletions: 0 }
+                ]);
             }
             throw new Error(`Unexpected request: ${url}`);
         }
@@ -170,6 +173,9 @@ test("loads pull request commits and changed files with completeness indicators"
     assert.equal(result.headSha, headSha);
     assert.equal(result.commits[0].message, "Add feature");
     assert.equal(result.files[0].filename, "src/app.js");
+    assert.equal(result.files[0].patch, "@@ -1 +1 @@\n-old\n+new");
+    assert.equal(result.files[1].patchAvailable, false);
+    assert.equal(result.files[1].patch, null);
     assert.equal(result.dataComplete, true);
 });
 

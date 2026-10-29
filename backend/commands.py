@@ -47,6 +47,7 @@ from agent.IT_agent import ITAgent
 from agent.UT_agent import UTAgent
 from agent.UTV_agent import UTVAgent
 from agent.gui_test_agent import GuiTestAgent
+from agent.pr_analysis_agent import PullRequestAnalysisAgent
 from agent.directory_agent import DirectoryAgent
 from agent.file_summary_agent import FileSummaryAgent
 from agent.llm import verify_llm_key
@@ -709,6 +710,18 @@ class Commands:
 
         return self._run_command(
             "repair_gui_test_case",
+            task,
+            individualStep=individualStep,
+        )
+
+    def analyze_pull_request(self, pull_request: dict, files: list, individualStep=True):
+        """Explain with AI what a GitHub pull request added, changed and removed."""
+
+        def task():
+            return PullRequestAnalysisAgent().run(pull_request, files)
+
+        return self._run_command(
+            "analyze_pull_request",
             task,
             individualStep=individualStep,
         )

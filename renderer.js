@@ -29,6 +29,10 @@ let githubPullRequestsHaveMore = false;
 let selectedGithubPullRequest = null;
 let selectedGithubPullRequestDetails = null;
 let githubOverviewRequest = 0;
+let githubAnalysisRequest = 0;
+// The pull request (repository, number and head commit) whose AI analysis is
+// shown or still running, so reopening it does not pay for a second analysis.
+let githubAnalysisKey = null;
 let selectedGithubComparisonFileIndex = 0;
 let githubComparisonFileRequest = 0;
 let githubComparisonUnified = false;
@@ -4308,6 +4312,7 @@ async function openPullRequestOverview(pullRequest) {
     document.getElementById("githubOverviewMessage").textContent = "Loading pull request details...";
     document.getElementById("githubOverviewContent").classList.add("hidden");
     document.getElementById("githubViewComparisonBtn").disabled = true;
+    document.getElementById("githubAiAnalysisBtn").disabled = true;
     showPage("githubPullRequestOverviewPage");
     try {
         const details = await window.electronAPI.getGithubPullRequest({
@@ -4365,6 +4370,7 @@ async function openPullRequestOverview(pullRequest) {
         document.getElementById("githubOverviewMessage").textContent = "";
         document.getElementById("githubOverviewContent").classList.remove("hidden");
         document.getElementById("githubViewComparisonBtn").disabled = details.files.length === 0;
+        document.getElementById("githubAiAnalysisBtn").disabled = !details.files.some(file => file.patchAvailable);
     } catch (error) {
         if (requestNumber !== githubOverviewRequest) return;
         document.getElementById("githubOverviewMessage").textContent =
@@ -4374,6 +4380,101 @@ async function openPullRequestOverview(pullRequest) {
 
 document.getElementById("githubOverviewBackBtn").addEventListener("click", () => showPage("githubPullRequestExplorerPage"));
 document.getElementById("githubViewComparisonBtn").addEventListener("click", openGithubComparison);
+document.getElementById("githubAiAnalysisBtn").addEventListener("click", () => openPullRequestAnalysis(false));
+document.getElementById("githubAnalysisRetryBtn").addEventListener("click", () => openPullRequestAnalysis(true));
+document.getElementById("githubAnalysisBackBtn").addEventListener("click", () => showPage("githubPullRequestOverviewPage"));
+
+async function openPullRequestAnalysis(retry) {
+    const details = selectedGithubPullRequestDetails;
+    if (!details) return;
+
+    const key = `${githubRepositoryUrl}#${details.number}@${details.headSha}`;
+    showPage("githubPullRequestAnalysisPage");
+    if (!retry && key === githubAnalysisKey) return;
+
+    const requestNumber = ++githubAnalysisRequest;
+    githubAnalysisKey = key;
+    const message = document.getElementById("githubAnalysisMessage");
+    const retryButton = document.getElementById("githubAnalysisRetryBtn");
+    document.getElementById("githubAnalysisTitle").textContent = `AI Analysis — PR #${details.number} ${details.title}`;
+    document.getElementById("githubAnalysisRepository").textContent =
+        `${githubRepositoryBranches.owner}/${githubRepositoryBranches.repo} · ${details.baseBranch} ← ${details.headBranch}`;
+    document.getElementById("githubAnalysisContent").classList.add("hidden");
+    retryButton.classList.add("hidden");
+    message.textContent = "Asking the AI to analyze this pull request. This can take a minute...";
+
+    const response = await backendCall("analyze_pull_request", {
+        pull_request: {
+            number: details.number,
+            title: details.title,
+            body: details.body,
+            author: details.author,
+            state: details.state,
+            baseBranch: details.baseBranch,
+            headBranch: details.headBranch,
+            commits: details.commits
+        },
+        files: details.files.map(file => ({
+            filename: file.filename,
+            previousFilename: file.previousFilename,
+            status: file.status,
+            additions: file.additions,
+            deletions: file.deletions,
+            patch: file.patch
+        }))
+    }, {
+        onEvent: event => {
+            if (requestNumber === githubAnalysisRequest && event.type === "progress" && event.stage) {
+                message.textContent = event.stage;
+            }
+        }
+    });
+    if (requestNumber !== githubAnalysisRequest) return;
+
+    const analysis = response?.success ? response.result : null;
+    if (!analysis) {
+        githubAnalysisKey = null;
+        message.textContent = response?.error || "The AI analysis could not be completed.";
+        retryButton.classList.remove("hidden");
+        return;
+    }
+
+    document.getElementById("githubAnalysisSummary").textContent = analysis.summary;
+    document.getElementById("githubAnalysisBefore").textContent = analysis.before;
+    document.getElementById("githubAnalysisAfter").textContent = analysis.after;
+    renderAnalysisList("githubAnalysisAdded", analysis.added, "Nothing new was added.");
+    renderAnalysisList("githubAnalysisChanged", analysis.changed, "No existing behaviour changed.");
+    renderAnalysisList("githubAnalysisRemoved", analysis.removed, "Nothing was removed.");
+    renderAnalysisList("githubAnalysisRisks", analysis.risks, "The AI found nothing specific to check.");
+
+    const notes = [];
+    if (analysis.files_omitted?.length) {
+        notes.push(`Not analyzed: ${analysis.files_omitted.map(file => `${file.filename} (${file.reason})`).join(", ")}.`);
+    }
+    if (!details.dataComplete) {
+        notes.push("GitHub did not provide every changed file, so this analysis may be incomplete.");
+    }
+    const warning = document.getElementById("githubAnalysisWarning");
+    warning.textContent = notes.join(" ");
+    warning.classList.toggle("hidden", notes.length === 0);
+
+    message.textContent = `AI-generated from the diff of ${analysis.files_analyzed.length} file(s). Check it against the code before relying on it.`;
+    document.getElementById("githubAnalysisContent").classList.remove("hidden");
+}
+
+function renderAnalysisList(containerId, items, emptyText) {
+    const container = document.getElementById(containerId);
+    container.replaceChildren();
+    const hasItems = Array.isArray(items) && items.length > 0;
+    (hasItems ? items : [emptyText]).forEach(text => {
+        const item = document.createElement("article");
+        item.className = "github-overview-item";
+        const line = document.createElement(hasItems ? "strong" : "p");
+        line.textContent = String(text);
+        item.appendChild(line);
+        container.appendChild(item);
+    });
+}
 document.getElementById("githubComparisonOverviewBtn").addEventListener("click", () => showPage("githubPullRequestOverviewPage"));
 document.getElementById("githubComparisonViewToggle").addEventListener("click", () => {
     githubComparisonUnified = !githubComparisonUnified;
