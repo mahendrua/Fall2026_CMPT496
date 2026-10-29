@@ -40,12 +40,60 @@ by `main.js`'s rules:
 
 1. the full pipeline (every stage, real dotnet build and test, real
    PlantUML);
-2. run usage and the review result;
+2. run usage, the review result, and a review decision whose note quotes a
+   secret;
 3. mutation testing (Stryker is not installed, so it reports `not_run`);
 4. a Consistency Review check of `docs/architecture.md`, in a run of its own;
 5. a directory step and a review check whose model calls are scripted to
    fail with errors quoting secrets;
-6. the error log.
+6. Electron filing an error of its own (`record_error`), and an unknown
+   command whose name quotes a secret;
+7. the error log;
+8. after the backend has exited, the Markdown export (`python -m
+   utils.json_to_markdown`). It is a terminal tool, so it runs outside any
+   backend run.
+
+**What is checked.** Every sink, read by type with the independent scanner:
+
+- What left the app: the provider requests and the model callbacks.
+- Electron's view: stdout (each line as JSON), stderr and `error_log.json`.
+- Run records: `last_run_log.json`, `run_logs/` and `token_usage_log.json`.
+- Saved outputs:
+  - file and directory summaries, and their business rules;
+  - validated and discarded rules;
+  - unit and integration tests, their results and HTML reports;
+  - the generated `UT_*.cs` and `IT_*.cs`;
+  - Consistency Review results and review notes.
+- Exports and what PlantUML drew:
+  - the UML PDFs;
+  - what PlantUML was given and drew (its PNGs and SVGs carry their
+    source);
+  - the run report and its diagram;
+  - the mutation report;
+  - the Markdown export.
+
+Each sink lists the artifacts it must hold. One that is missing or empty
+makes the run incomplete.
+
+**The checks also prove that something was at stake:**
+
+- The model's answers repeated every planted value.
+- Each sink they feed holds placeholders where the values were.
+- Saved summaries keep the structure of the model's answer and its
+  nonsecret text.
+- The validated evidence keeps its code.
+- The generated tests built and ran as scripted: one repaired by the AI, and
+  one failing on its placeholder.
+- The review finding keeps its source line.
+- The run log's counts add up.
+
+**Not assessed here:**
+
+- The vector stores and dotnet's build of the analysed code: storage
+  boundaries, kept by design.
+- Stryker's reports: Stryker.NET is not installed.
+
+These are listed as such in the evidence, never as clean.
 
 **Evidence:** `report.json` and `summary.md` go to `--out`. The default is
 `runs/<time>/`, which git ignores. They hold case IDs, counts and locations.

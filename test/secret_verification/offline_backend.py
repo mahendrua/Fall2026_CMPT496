@@ -7,7 +7,7 @@
 
 runs APP/main.py as __main__ in this process, so main.py itself installs
 the log and stream protection and serves request lines on stdin, exactly as
-under Electron. Before it starts, three things are put in place, and
+under Electron. Before it starts, four things are put in place, and
 nothing else is changed:
 
     provider    offline_model.install(): the Google provider package is the
@@ -22,6 +22,9 @@ nothing else is changed:
                 are refused and recorded (network.jsonl). Loopback stays
                 open: asyncio needs it on Windows. Child processes (dotnet,
                 java) are not covered; the harness configures them offline.
+    PlantUML    subprocess.run keeps a copy of what plantuml.jar is given
+                and what it draws (plantuml/), which the app deletes once
+                it is in the PDF or report. PlantUML still runs.
 
 The app's own modules are imported from APP, never from the repository.
 """
@@ -110,6 +113,52 @@ def guard_network(capture):
 
 
 # ---------------------------------------------------------------------------
+# PlantUML spy
+# ---------------------------------------------------------------------------
+
+PLANTUML_FOLDER = "plantuml"
+
+
+def spy_plantuml(capture):
+    """
+    Keep a copy of what PlantUML is given and what it draws. The UML step and
+    the run report run plantuml.jar on files and pipes that are deleted
+    afterwards; this copies them as they pass. PlantUML itself still runs.
+    """
+    import itertools
+    import shutil
+    import subprocess
+
+    real_run = subprocess.run
+    numbers = itertools.count(1)
+    folder = capture / PLANTUML_FOLDER
+
+    def run(args, *rest, **kwargs):
+        command = [str(a) for a in args] if isinstance(args, (list, tuple)) else [str(args)]
+        if not any(part.lower().endswith("plantuml.jar") for part in command):
+            return real_run(args, *rest, **kwargs)
+
+        number = next(numbers)
+        folder.mkdir(exist_ok=True)
+        sources = [Path(part) for part in command if part.endswith(".puml")]
+        for source in sources:
+            shutil.copyfile(source, folder / f"{number:03}_input.puml")
+        if kwargs.get("input") is not None:
+            (folder / f"{number:03}_input.puml").write_bytes(kwargs["input"])
+
+        result = real_run(args, *rest, **kwargs)
+
+        for source in sources:
+            for drawn in source.parent.glob(f"{source.stem}*.png"):
+                shutil.copyfile(drawn, folder / f"{number:03}_output.png")
+        if "-pipe" in command and isinstance(getattr(result, "stdout", None), bytes):
+            (folder / f"{number:03}_output.svg").write_bytes(result.stdout)
+        return result
+
+    subprocess.run = run
+
+
+# ---------------------------------------------------------------------------
 # Callback recorder
 # ---------------------------------------------------------------------------
 
@@ -138,7 +187,13 @@ def install_callback_recorder(capture):
         def on_llm_end(self, response, *, run_id, **kwargs):
             _append(capture, MODEL_CALLBACKS_FILE, {"event": "llm_end", "run_id": str(run_id)})
             # The answer itself is inbound: kept apart, for reference only.
-            _append(capture, INBOUND_FILE, {"run_id": str(run_id), "response": response})
+            # Each message is dumped as itself: dumped through LLMResult it
+            # would lose its tool calls, where structured answers are.
+            _append(capture, INBOUND_FILE, {"run_id": str(run_id), "generations": [
+                [{"text": g.text, "message": g.message.model_dump(mode="json") if hasattr(g, "message") else None}
+                 for g in batch]
+                for batch in response.generations
+            ]})
 
         def on_llm_error(self, error, *, run_id, **kwargs):
             _append(capture, MODEL_CALLBACKS_FILE, {
@@ -177,6 +232,7 @@ def main(argv=None):
     sys.path[:] = [str(app)] + [p for p in sys.path if p and Path(p).resolve() != HERE] + [str(HERE)]
 
     guard_network(capture)
+    spy_plantuml(capture)
 
     import offline_model
     offline_model.install(capture, args.codebase, args.seed)

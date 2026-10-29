@@ -133,7 +133,9 @@ class CommandDispatcher:
     def _record_error(self, command, message, code=None):
         self.error_log.append({
             "time": datetime.now().isoformat(timespec="seconds"),
-            "command": command,
+            # The name a request sent, which for an unknown command can be
+            # anything, so it is cleaned too (T-079).
+            "command": None if command is None else safe_text(str(command)),
             "code": code,
             # An error can quote the analysed code or a provider's answer;
             # only the cleaned text is kept (T-078).

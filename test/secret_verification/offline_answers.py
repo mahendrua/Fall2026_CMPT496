@@ -103,6 +103,13 @@ class Answers:
         if rel == "tools/report_export.py" and self._count("busy:" + rel) == 0:
             raise ProviderError(503, "503 Service Unavailable: the model is overloaded, try again")
 
+        answer = self.summary(rel)
+        if answer is None:
+            raise UnexpectedRequest(f"no scripted summary for {rel}")
+        return dict(answer, path=path)
+
+    def summary(self, rel):
+        """The scripted file summary for a fixture file (without its path), or None."""
         build = {
             "Billing/InvoiceService.cs": self._invoice_summary,
             "Integrations/PaymentClient.cs": self._payment_summary,
@@ -111,10 +118,7 @@ class Answers:
             "docs/SETUP.md": self._setup_summary,
             "docs/architecture.md": self._architecture_summary,
         }.get(rel)
-
-        if build is None:
-            raise UnexpectedRequest(f"no scripted summary for {rel}")
-        return dict(build(), path=path)
+        return build() if build else None
 
     def _invoice_summary(self):
         v = self.v
@@ -295,6 +299,12 @@ class Answers:
 
     def _DirectoryOutput(self, text, phase):
         path, rel = self._directory(text)
+        if phase == FAIL_DIRECTORY:
+            # The summarizer catches this, logs it and saves it as the purpose.
+            raise ProviderError(400, (
+                "400 Bad Request: could not read 'DATABASE_URL = "
+                f"\"postgresql://report_user:{self.v['S09']}@reports.ledger.internal:5432/ledger\"'"
+            ))
         purpose = self._PURPOSES.get(rel, "Supporting files.").format(**self.v)
         return {
             "directory_name": PurePath(path).name,

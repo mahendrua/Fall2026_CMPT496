@@ -596,7 +596,7 @@ never changed.
 |---|---|---|
 | Messages to Electron on stdout (progress, token counts, responses) | `progress_logging` | Framing, fields and request IDs are unchanged. A stray `print()` to stdout is cleaned too. |
 | stderr (Electron's console) | log factory, stream guard | Records from every logger and library, whichever handler they reach; warnings; tracebacks with their causes; uncaught exceptions in threads. |
-| `error_log.json` | `backend/dispatcher.py` | Electron's own entries are backend messages (already clean) or its own fixed text. |
+| `error_log.json` | `backend/dispatcher.py` | Electron's own entries are backend messages (already clean) or its own fixed text. The command name is cleaned too (T-079): for an unknown command it is whatever the request sent. |
 | `last_run_log.json`, `run_logs/` | `RunLog.save()` | Also records the redaction counts. |
 | File summaries, file-level `business_rules.json` | file summary agent | Includes `Error generating summary: ...` text. |
 | Directory summaries, directory-level `business_rules.json` | directory agent | |

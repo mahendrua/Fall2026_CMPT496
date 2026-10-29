@@ -249,3 +249,22 @@ def test_error_log_keeps_only_cleaned_messages(tmp_path):
     assert all(e["time"] for e in entries)
     # The response itself is cleaned on its way out, by send_response().
     assert response["success"] is False and response["command"] == "boom"
+
+
+def test_error_log_cleans_the_name_of_an_unknown_command(tmp_path):
+    # T-079: the name is whatever the request sent, and it is saved with the error.
+    dispatcher = CommandDispatcher()
+    dispatcher.commands.app_dir = tmp_path
+    dispatcher.error_log = []
+
+    response = dispatcher.dispatch(f"export --password={FAKE}")
+
+    saved = (tmp_path / ERROR_LOG_NAME).read_text(encoding="utf-8")
+    absent(saved)
+    [entry] = json.loads(saved)
+    assert entry["command"] == f"export --password={P1}"
+    assert entry["message"] == f"Unknown command: export --password={P1}"
+    # Known commands are recorded by name, unchanged.
+    dispatcher.record_error("generate_unit_tests", "failed", 500)
+    assert json.loads((tmp_path / ERROR_LOG_NAME).read_text(encoding="utf-8"))[1]["command"] == "generate_unit_tests"
+    assert response["success"] is False
