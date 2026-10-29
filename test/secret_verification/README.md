@@ -187,6 +187,59 @@ detector.
 - **Not read:** pixels in images, zip or gzip archives, and encodings not
   listed above.
 
+## Electron and the packaged backend
+
+**`run_electron_check.py` (about a minute; it opens a window).** It drives the
+real `main.js`, `preload.js` and `renderer.js` through `verify_electron.js`;
+only the backend's start-up is changed. It does four things:
+
+1. Presses the Run Operations pipeline button on the fixture.
+2. Records every message `main.js` sends the window.
+3. Reads the Complete screen and the Consistency Review screen.
+4. Checks all of it, and Electron's console, for the planted values.
+
+Your `error_log.json`, which `main.js` resets on start, is put back
+afterwards.
+
+**`check_package.py <dist>\main`.** It starts a PyInstaller build of the
+backend (`releases/main.spec`), built outside `releases/main/` so the app
+does not pick it up. A frozen build cannot load the offline model, so it
+sends only requests that need no AI provider:
+
+- an error Electron files;
+- an unknown command quoting a secret;
+- a UML PDF of a summary holding a PlantUML private field;
+- the error log.
+
+It checks stdout, stderr, `error_log.json` and the PDF.
+
+### Manual checks (NOT RUN unless done and recorded)
+
+These screens read files straight from the repository's `agent/` folders
+rather than through the backend, so no automated check reaches them.
+
+1. Run `run_verification.py --keep --workdir <dir>`.
+2. Copy only the outputs, never `<dir>/inputs`, into the repository:
+   - `<dir>\app\agent\*_output\LedgerLite` into `agent\`;
+   - `<dir>\app\run_reports\LedgerLite` into `run_reports\`.
+3. Start the app (`npm start`) and open View Insights for `LedgerLite`.
+4. Check each view:
+
+   | View | What to confirm |
+   |---|---|
+   | File Summaries | `InvoiceService.cs` shows `[REDACTED_PASSWORD_…]` where the admin password was, and keeps `ApprovalThreshold = 5000m` |
+   | Directory Summaries | `Billing` keeps "invoices above 5000 CAD need manager approval" and shows a placeholder |
+   | Business Rules | The validated evidence keeps `NeedsApproval(...)` and shows `AdminPassword = "[REDACTED_PASSWORD_…]"` |
+   | Unit Tests | `UT_*` shows `CanApprove("[REDACTED_PASSWORD_…]")`, and the HTML report shows the failed assertion without a value |
+   | UML | The `InvoiceService` diagram shows `-password : string = "[REDACTED_PASSWORD_…]"` |
+   | Errors | Entries show placeholders, never a value |
+   | Run Report | Opens, and its rules and diagram show placeholders |
+
+5. Delete what you copied, and `<dir>`. It holds the raw fixture.
+
+The fully packaged Electron app (`electron-builder`) was not built: it may
+download Electron binaries.
+
 ## Tests
 
 ```powershell

@@ -222,6 +222,8 @@ def main(argv=None):
     parser.add_argument("--capture", required=True)
     parser.add_argument("--codebase", required=True)
     parser.add_argument("--seed", type=int, default=79)
+    parser.add_argument("--without-request-redaction", action="store_true",
+                        help="negative control: build models without agent/llm.py's redaction, in this process only")
     args = parser.parse_args(argv)
 
     app = Path(args.app).resolve()
@@ -237,6 +239,13 @@ def main(argv=None):
     import offline_model
     offline_model.install(capture, args.codebase, args.seed)
     install_callback_recorder(capture)
+
+    if args.without_request_redaction:
+        # The negative control: every model is built as it was before T-077,
+        # so the harness must find the planted values in what is sent. Only
+        # this process is changed; the app has no such switch.
+        import agent.llm
+        agent.llm.redacting = lambda base: base
 
     import os
     os.chdir(app)

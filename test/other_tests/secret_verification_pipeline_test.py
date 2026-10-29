@@ -204,3 +204,46 @@ def test_full_run_evidence_holds_no_value(full_run):
         run_verification._random_key("lsv2_pt_", 32, data["seed"], "tracing"),
     ]
     assert sum(value in text for value in values) == 0
+
+
+@FULL
+def test_full_run_measures_the_storage_boundaries(full_run):
+    data, _ = full_run
+    stores = data["storage_boundaries"]
+    # The code index keeps raw source chunks by design: the values written
+    # inside methods, properties and JS pairs (S03, S07, S08) are there.
+    assert set(stores["vector_store_code"]["cases"]) == {"S03", "S07", "S08"}
+    assert stores["test_build_output"]["inspected"] > 0
+    # The summary index is built from cleaned summaries: an output, and clean.
+    assert data["sinks"]["vector_store_summary"]["leaks"] == 0
+    assert data["sinks"]["vector_store_summary"]["inspected"] > 0
+
+
+@FULL
+def test_the_checks_fail_when_request_redaction_is_removed(tmp_path):
+    # Negative control: the same run with agent/llm.py's redaction removed in
+    # the backend process only. The scanner must see every case being sent.
+    data, _ = run_verification.run(out=tmp_path / "negative", negative_control=True)
+
+    assert data["negative_control"] is True
+    assert data["verdict"].startswith("NEGATIVE CONTROL")
+    assert run_verification.exit_code(data) == 1
+    sent = data["sinks"]["provider_requests"]
+    assert sent["cases_leaked"] == [f"S{n:02}" for n in range(1, 11)]
+    # Evidence of a failing run is as value-free as any other.
+    text = (tmp_path / "negative" / "report.json").read_text(encoding="utf-8")
+    assert sum(s.value in text for s in make_secrets(data["seed"])) == 0
+
+
+ELECTRON = pytest.mark.skipif(not os.environ.get("T079_ELECTRON"),
+                              reason="opens the Electron window for about a minute; set T079_ELECTRON=1")
+
+
+@ELECTRON
+def test_the_electron_window_shows_and_is_sent_no_planted_value(tmp_path):
+    import run_electron_check
+
+    data = run_electron_check.run(tmp_path / "electron")
+
+    assert [r["label"] for r in data["electron"]["results"] if not r["ok"]] == []
+    assert data["ok"]

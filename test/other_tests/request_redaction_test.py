@@ -440,3 +440,31 @@ def test_known_secrets_do_not_touch_ordinary_text_in_a_later_request():
 
     assert out == [("user", "Tried letmein and Pw-12 again.")]
     assert report.total == 0
+
+
+def test_concurrent_runs_do_not_share_what_their_requests_learned():
+    # Two runs at once (two threads, as two backend commands would be): each
+    # one's later request is cleaned of its own secret only.
+    import threading
+
+    both_learned = threading.Barrier(2, timeout=10)
+    sent, errors = {}, []
+
+    def run(name, mine):
+        try:
+            with secret_scope():
+                redact_model_input(agent_prompt(f'string password = "{mine}";'))
+                both_learned.wait()
+                sent[name] = redact_model_input([("user", f"Saw {FAKE} and {OTHER}.")])[0][0][1]
+        except Exception as exc:  # reported below, without the values
+            errors.append(type(exc).__name__)
+
+    threads = [threading.Thread(target=run, args=args) for args in (("a", FAKE), ("b", OTHER))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert sent["a"] == f"Saw {P1} and {OTHER}."
+    assert sent["b"] == f"Saw {FAKE} and {P1}."

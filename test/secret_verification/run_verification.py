@@ -113,16 +113,22 @@ OUTPUT_CONTROLS = {
 
 PLACEHOLDER = re.compile(r"\[REDACTED_[A-Z_]+_\d+\]")
 
-# Kept by the app on purpose or outside what T-078 cleans; assessed in
-# Checkpoint 5 (storage boundaries), not counted here as clean or leaking.
+# Not produced in this environment, so neither clean nor leaking.
 NOT_ASSESSED = [
-    {"sink": "vector_stores", "where": "app/vectorStores/",
-     "why": "the code index holds raw source chunks by design; storage boundary, assessed separately"},
-    {"sink": "test_build_output", "where": "tmp/checkpoint-generated-tests/*/LedgerLite.Tests.artifacts/",
-     "why": "dotnet's build of the analysed codebase (its own compiled constants); storage boundary"},
     {"sink": "stryker_reports", "where": "app/agent/MT_output/LedgerLite/stryker/",
-     "why": "not produced: Stryker.NET is not installed (mutation testing reports not_run)"},
+     "why": "not produced: Stryker.NET is not installed (mutation testing reports not_run); Stryker's own "
+            "reports contain the mutated source files by design (see the storage boundaries in the README)"},
 ]
+
+# Local stores that keep the analysed code on purpose. Measured and reported
+# with every run; they never leave the machine and are not outputs, so what
+# they hold is listed, not counted as a leak. The summary index is not one of
+# them: it is built from the cleaned summaries and must be clean.
+STORAGE_BOUNDARIES = {
+    "vector_store_code": "the code index (ChromaDB): raw source chunks, so retrieval finds the real code",
+    "vector_store_files": "the vector store's files as bytes (SQLite pages, full-text index, HNSW)",
+    "test_build_output": "dotnet's build of the analysed codebase for the generated tests (its compiled constants)",
+}
 
 SUBSTITUTIONS = [
     {"what": "AI provider", "real": "Google Gemini through langchain_google_genai",
@@ -196,6 +202,7 @@ class Workspace:
         self.app = self.root / "app"
         self.tmp = self.root / "tmp"
         self.capture = self.root / "capture"
+        self.negative_control = False
 
         for folder in (self.app, self.tmp, self.capture):
             folder.mkdir(parents=True)
@@ -277,7 +284,8 @@ class Backend:
         self.process = subprocess.Popen(
             [sys.executable, "-u", str(HERE / "offline_backend.py"),
              "--app", str(ws.app), "--capture", str(ws.capture),
-             "--codebase", str(ws.fixture.root), "--seed", str(ws.seed)],
+             "--codebase", str(ws.fixture.root), "--seed", str(ws.seed)]
+            + (["--without-request-redaction"] if ws.negative_control else []),
             cwd=ws.app, env=ws.backend_env(),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
@@ -524,7 +532,9 @@ def evaluate(ws, session):
     else:
         names = [s["stage"] for s in log["stages"]]
         result["stages"] = {
-            s["stage"]: {"status": s["status"], "calls": s["calls"], "redacted_secrets": s["redacted_secrets"]}
+            s["stage"]: {"status": s["status"], "calls": s["calls"], "redacted_secrets": s["redacted_secrets"],
+                         # The run log's (already cleaned) error, masked again for diagnostics.
+                         "error_masked": _masked(s.get("error"), ws.needles()) if s["status"] != "success" else None}
             for s in log["stages"]
         }
         checks.add("every pipeline stage ran, in order", tuple(names) == PIPELINE_STAGES, ", ".join(names))
@@ -967,6 +977,78 @@ def evaluate_outputs(ws, session, scanner, checks, result, log):
         checks.add(f"placeholders where secrets were: {sink}", counts.get(sink, 0) > 0, f"{counts.get(sink, 0)}")
 
     result["not_assessed"] = NOT_ASSESSED
+    evaluate_storage(ws, scanner, checks, result)
+
+
+def _collection_documents(path):
+    """{collection name: [document text]} from a ChromaDB SQLite file, read-only."""
+    import sqlite3
+
+    uri = f"{Path(path).resolve().as_uri()}?mode=ro&immutable=1"
+    connection = sqlite3.connect(uri, uri=True)
+    try:
+        rows = connection.execute(
+            "SELECT c.name, m.string_value FROM embedding_metadata m "
+            "JOIN embeddings e ON e.id = m.id JOIN segments s ON s.id = e.segment_id "
+            "JOIN collections c ON c.id = s.collection "
+            "WHERE m.key = 'chroma:document' AND m.string_value IS NOT NULL"
+        ).fetchall()
+    finally:
+        connection.close()
+    documents = {}
+    for name, text in rows:
+        documents.setdefault(name, []).append(text)
+    return documents
+
+
+def evaluate_storage(ws, scanner, checks, result):
+    """
+    The vector store, collection by collection, and dotnet's build output.
+    The summary index is an output (the main scanner); the code index and the
+    build output keep the code on purpose (a scanner of their own).
+    """
+    storage = LeakScanner(ws.needles(), raw_roots=[ws.inputs])
+    store = ws.app / "vectorStores"
+    sqlite_file = store / "chroma.sqlite3"
+
+    documents = {}
+    if sqlite_file.is_file():
+        try:
+            documents = _collection_documents(sqlite_file)
+        except Exception as exc:
+            scanner.missing("vector_store_summary", "app/vectorStores/chroma.sqlite3", f"unreadable ({type(exc).__name__})")
+    else:
+        scanner.missing("vector_store_summary", "app/vectorStores/chroma.sqlite3")
+
+    code = documents.get(f"{CODEBASE}_code_db", [])
+    summary = documents.get(f"{CODEBASE}_summary_db", [])
+    checks.add("the vector store holds both indexes", bool(code) and bool(summary),
+               f"{len(code)} code and {len(summary)} summary document(s)")
+    for number, text in enumerate(summary, 1):
+        scanner.scan_text("vector_store_summary", text, f"{CODEBASE}_summary_db document {number}")
+    for number, text in enumerate(code, 1):
+        storage.scan_text("vector_store_code", text, f"{CODEBASE}_code_db document {number}")
+    if store.is_dir():
+        storage.scan_tree("vector_store_files", store, base=ws.root)
+
+    builds = sorted((ws.tmp / "checkpoint-generated-tests").glob(f"*/{CODEBASE}.Tests.artifacts"))
+    for build in builds:
+        storage.scan_tree("test_build_output", build, base=ws.root)
+    checks.add("dotnet's build output was produced and read", bool(builds))
+
+    report = storage.report()
+    result["storage_boundaries"] = {
+        sink: {
+            "what": what,
+            "inspected": report.for_sink(sink)["inspected"],
+            "planted_values_held": report.for_sink(sink)["leaks"],
+            "cases": report.for_sink(sink)["cases_leaked"],
+            "problems": len(report.for_sink(sink)["problems"]),
+        }
+        for sink, what in STORAGE_BOUNDARIES.items()
+    }
+    checks.add("storage boundaries were read without problems", not report.problems,
+               f"{len(report.problems)} problem(s)")
 
 
 def placeholder_counts(ws):
@@ -1027,6 +1109,28 @@ def _known_gap(finding, about):
     return ""
 
 
+def _masked(text, needles):
+    """text with every planted value and fragment replaced by its case ID, for diagnostics."""
+    if not text:
+        return text
+    parts = [(n.value, n.case_id) for n in needles]
+    parts += [(f, f"{n.case_id}.{i}") for n in needles for i, f in enumerate(n.fragments, 1)]
+    for value, case_id in sorted(parts, key=lambda p: len(p[0]), reverse=True):
+        text = text.replace(value, f"[{case_id}]")
+    return text[:2000]
+
+
+def _step_error(step):
+    """The error a step's response carried, including a failed pipeline stage's."""
+    response = step.get("response")
+    if not isinstance(response, dict):
+        return "no response" if not step.get("answered") else None
+    error = response.get("error")
+    if isinstance(error, (list, dict)):
+        error = json.dumps(error, default=str)
+    return error
+
+
 def build_report(ws, session, scanner, checks, result):
     report = scanner.report()
     about = result.pop("about", {})
@@ -1067,7 +1171,8 @@ def build_report(ws, session, scanner, checks, result):
         "task": "T-079 (US-034) ten-secret verification",
         "generated_at": datetime.now().isoformat(timespec="seconds"),
         "seed": ws.seed,
-        "verdict": verdict,
+        "verdict": ("NEGATIVE CONTROL (request redaction removed): " + verdict) if ws.negative_control else verdict,
+        "negative_control": ws.negative_control,
         "leaks": leaks,
         "unexpected_leaks": len(unexpected),
         "known_gap_leaks": leaks - len(unexpected),
@@ -1080,7 +1185,10 @@ def build_report(ws, session, scanner, checks, result):
             # A scripted command name can quote a secret: only real names are shown.
             "steps": [{**{k: s[k] for k in ("label", "phase", "answered", "success",
                                             "expected_success", "warning", "seconds")},
-                       "command": s["command"] if re.fullmatch(r"[a-z_]+", s["command"]) else "(withheld)"}
+                       "command": s["command"] if re.fullmatch(r"[a-z_]+", s["command"]) else "(withheld)",
+                       # Why a step did not do what was scripted, every planted value masked.
+                       "error_masked": _masked(_step_error(s), ws.needles())
+                       if s["success"] != s["expected_success"] else None}
                       for s in session["steps"]],
         },
         "app_copy": {k: ws.manifest[k] for k in ("files", "identical")},
@@ -1098,10 +1206,16 @@ def render_summary(data):
     lines = [
         f"# T-079 ten-secret verification: {data['verdict']}",
         "",
-        f"Generated {data['generated_at']}, seed {data['seed']}, session {data['session']['seconds']} s.",
+        f"Generated {data['generated_at']}, seed {data['seed']}, session {data['session']['seconds']} s, "
+        f"attempt {len(data.get('attempts', [1]))}"
+        + (" (the first hit the ChromaDB index race, an app defect, and was retried once)"
+           if len(data.get("attempts", [])) > 1 else "") + ".",
         f"Leaks: {data['leaks']} ({data['known_gap_leaks']} from known gaps, {data['unexpected_leaks']} unexpected). "
         f"Failed checks: {len(data['failed_checks'])}. Complete: {data['complete']}. "
         f"Sinks not assessed here: {len(data.get('not_assessed', []))} (listed below; not counted as clean).",
+        "Storage boundaries (local, kept on purpose, not outputs) hold "
+        f"{sum(s['planted_values_held'] for s in data.get('storage_boundaries', {}).values())} planted value(s): "
+        "see below. This verdict is about outputs, not about them.",
         "Workspace (raw fixture and captures): " + (
             "kept on request" if data["workspace"]["kept"]
             else "NOT fully removed" if data["workspace"]["left_behind"] else "removed"
@@ -1122,6 +1236,10 @@ def render_summary(data):
     for c in data["checks"]:
         mark = "ok" if c["ok"] else ("FAIL" if c["required"] else "note")
         lines.append(f"- [{mark}] {c['check']}" + (f" ({c['detail']})" if c["detail"] else ""))
+    lines += ["", "## Storage boundaries (measured; kept on purpose)", "",
+              "| Store | What it is | Inspected | Planted values held | Cases |", "|---|---|---|---|---|"]
+    for sink, s in data.get("storage_boundaries", {}).items():
+        lines.append(f"| {sink} | {s['what']} | {s['inspected']} | {s['planted_values_held']} | {', '.join(s['cases']) or '-'} |")
     lines += ["", "## Not assessed here", ""]
     for item in data.get("not_assessed", []):
         lines.append(f"- {item['sink']} ({item['where']}): {item['why']}.")
@@ -1164,13 +1282,22 @@ def write_evidence(out, data, needles):
 
 # ---------------------------------------------------------------------------
 
-def run(out=None, workdir=None, keep=False, seed=79):
-    root = Path(workdir) if workdir else Path(tempfile.mkdtemp(prefix="t079_"))
-    if workdir:
-        root.mkdir(parents=True, exist_ok=False)
+# ChromaDB 1.5 sometimes cannot open an index the stage before has just
+# written, and the directory step fails. It is an app defect, not part of
+# what is checked here: only this failure is retried, once, in a fresh
+# workspace, and both attempts are reported.
+CHROMA_RACE = "Error creating hnsw segment reader"
 
+
+def _chroma_race(data):
+    stage = data.get("stages", {}).get("generate_directory_summaries", {})
+    return CHROMA_RACE in (stage.get("error_masked") or "")
+
+
+def _attempt(root, keep, seed, negative_control):
     try:
         ws = Workspace(root, seed)
+        ws.negative_control = negative_control
         session = run_session(ws)
         scanner, checks, result = evaluate(ws, session)
         data = build_report(ws, session, scanner, checks, result)
@@ -1181,6 +1308,25 @@ def run(out=None, workdir=None, keep=False, seed=79):
 
     # The workspace holds the raw fixture and what was captured: say if any of it is left.
     data["workspace"] = {"kept": keep, "left_behind": root.exists() and not keep}
+    return data, ws, needles
+
+
+def run(out=None, workdir=None, keep=False, seed=79, negative_control=False):
+    def fresh(suffix=""):
+        if workdir:
+            root = Path(f"{workdir}{suffix}")
+            root.mkdir(parents=True, exist_ok=False)
+            return root
+        return Path(tempfile.mkdtemp(prefix="t079_"))
+
+    data, ws, needles = _attempt(fresh(), keep, seed, negative_control)
+    attempts = [{"verdict": data["verdict"], "chroma_race": _chroma_race(data)}]
+
+    if _chroma_race(data):
+        data, ws, needles = _attempt(fresh("_retry"), keep, seed, negative_control)
+        attempts.append({"verdict": data["verdict"], "chroma_race": _chroma_race(data)})
+
+    data["attempts"] = attempts
     if out is not None:
         write_evidence(Path(out), data, needles)
     return data, ws
@@ -1198,13 +1344,17 @@ def main(argv=None):
     parser.add_argument("--workdir", help="workspace folder to create (default: a new temporary folder)")
     parser.add_argument("--keep", action="store_true", help="keep the workspace (it holds the raw fixture and captures)")
     parser.add_argument("--seed", type=int, default=79)
+    parser.add_argument("--negative-control", action="store_true",
+                        help="run with agent/llm.py's request redaction removed in the backend process: the run must fail")
     args = parser.parse_args(argv)
 
     out = Path(args.out) if args.out else HERE / "runs" / datetime.now().strftime("%Y%m%d-%H%M%S")
-    data, ws = run(out, args.workdir, args.keep, args.seed)
+    data, ws = run(out, args.workdir, args.keep, args.seed, args.negative_control)
 
+    held = sum(s["planted_values_held"] for s in data.get("storage_boundaries", {}).values())
     print(f"{data['verdict']}: {data['leaks']} leak(s) ({data['known_gap_leaks']} known gap, "
-          f"{data['unexpected_leaks']} unexpected), {len(data['failed_checks'])} failed check(s).")
+          f"{data['unexpected_leaks']} unexpected), {len(data['failed_checks'])} failed check(s). "
+          f"Storage boundaries hold {held} planted value(s) by design.")
     for name in data["failed_checks"]:
         print(f"  failed: {name}")
     print(f"Evidence: {out}")
