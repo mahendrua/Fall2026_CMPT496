@@ -56,3 +56,7 @@ test("the label and note say what is counted and what is not", () => {
     assert.match(NOTE, /logs and saved outputs .* not counted here/);
     assert.equal(describe({ total: 1, by_category: { PASSWORD: 1 } }).note, NOTE);
 });
+
+test("one of a kind is written in the singular", () => {
+    assert.equal(describe({ total: 3, by_category: { PASSWORD: 2, TOKEN: 1 } }).detail, "2 passwords, 1 token");
+});

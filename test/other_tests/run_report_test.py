@@ -103,7 +103,7 @@ def finished_run(tmp_path, monkeypatch):
     monkeypatch.setattr(cmd, "_run_command", lambda name, task, **kw: {
         "success": True, "command": name, "result": {"steps": [], "message": "Full pipeline completed"}})
 
-    def report(codebase, app_dir, open_browser=False):
+    def report(codebase, app_dir, run_log_path=None, open_browser=False):
         calls.append(open_browser)
         return {"path": str(tmp_path / "run_report.html"), "error": None, "diagram_error": ""}
 

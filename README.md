@@ -719,6 +719,43 @@ Each stage has the same total for its own calls.
   their combined count on each of them. The agents never call it that way;
   `batch()` and `abatch()` are separate calls.
 
+### Where the count is shown
+
+After a full pipeline run, the run's total appears as **"Secret occurrences
+redacted from AI requests"**, with a breakdown by category:
+
+- **The Complete screen:** under the token count.
+- **The run report:**
+  - in the Business view, a tile and a short "Secrets kept out of the AI"
+    card;
+  - in the Developer view, a tile and a line in "The run".
+
+Both say how it is counted: a secret sent in several requests counts each
+time. It is not a number of unique secrets. Replacements in logs and saved
+outputs are not part of it.
+
+- **Where the number comes from:** the run's own record, so it is never
+  another run's:
+  - the Complete screen gets it in the pipeline's response, read from the
+    run (`token_usage.current_run_redactions()`) once its last AI call has
+    finished;
+  - the report is built from that run's own `run_logs/` copy, not from the
+    newest log on disk.
+- **What it shows when there is no count:**
+  - an explicit zero shows as **0**;
+  - a run log saved before the counts existed, or no run log at all, shows
+    **Not recorded**, never 0.
+- **Only these runs show it:**
+  - The Complete screen shows it for a full pipeline that finished (a
+    partial Consistency Review included).
+  - Failed and cancelled runs keep their error and cancel messages and have
+    no report. Their counts stay in `run_logs/`.
+  - Single steps run on their own show no count.
+  - Mutation testing rebuilds the report for the newest full run, as before.
+
+Only counts and category names travel; no value, prompt or
+placeholder-to-secret mapping.
+
 ### Outputs saved before T-078
 
 Files already on disk are **not** cleaned automatically, and none are rewritten
@@ -1026,11 +1063,17 @@ Older outputs are not cleaned in bulk; they stay as they were.
 |---|---|
 | Known secret patterns are replaced with a placeholder in prompts, logs and saved summaries | **Demonstrated** for the ten cases and every sink above, including requests, callbacks, stdout, stderr, logs, run records, summaries, rules, tests, reviews and exports |
 | A sample with 10 planted fake secrets shows 0 leaks (T-079: 0 secrets in prompts, logs or outputs) | **Demonstrated:** 0 leaks in requests and in every output. The storage boundaries above hold raw values on purpose, locally. |
-| The number of secrets removed is shown after the run | **Not demonstrated.** The counts are recorded per call, stage and run in `last_run_log.json`, but neither the Complete screen nor the run report shows them. |
+| The number of secrets removed is shown after the run | **Demonstrated** for full pipeline runs. The Complete screen and the run report both show "Secret occurrences redacted from AI requests" from that run's own record (see [Where the count is shown](#where-the-count-is-shown)). In the real Electron window the screen showed 134, the count the backend recorded for that run, and so did both views of the run report it opened. A zero shows as 0; a log without counts shows "Not recorded". |
 
-**US-034 is not yet complete.** The remaining blocker is showing the removed
-count after a run, for example on the Complete screen and in the run report.
-Those read the counts `last_run_log.json` already holds.
+**All three US-034 criteria are demonstrated** for the ten measured cases, the
+sinks above and full pipeline runs.
+
+This is a measured result, not a guarantee:
+
+- detection is pattern matching, with T-077's documented misses;
+- the storage boundaries keep raw values locally by design;
+- the screens listed under "Not covered or not run" were not checked by
+  hand.
 
 ## Packaging the backend using Pyinstaller
 

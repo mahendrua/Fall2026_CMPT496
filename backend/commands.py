@@ -109,6 +109,7 @@ from backend.token_usage import (
     track_command,
     status_code,
     current_run_redactions,
+    current_run_log_path,
     RUN_LOG_NAME,
 )
 
@@ -1213,6 +1214,9 @@ class Commands:
             / codebase_name
         )
 
+        # This run's own record, filled in by task(): the report must show
+        # this run, not whichever full run was logged last.
+        run_log = []
 
         def task():
 
@@ -1294,6 +1298,7 @@ class Commands:
             # this run's AI requests had replaced, from this run's own record,
             # now that its last call has finished. Counts only.
             summary["redactions"] = current_run_redactions()
+            run_log.append(current_run_log_path())
 
             pipeline_progress("Pipeline Complete", 100)
             return summary
@@ -1309,9 +1314,10 @@ class Commands:
         # "Open Report" button opens it from the path in run_report.
         # Built after _run_command so the run log is finished and the report
         # shows the final numbers. It makes no AI calls, and a report problem
-        # only adds a warning: the run itself has already succeeded.
+        # only adds a warning: the run itself has already succeeded. Built
+        # from this run's own log, not the newest one on disk.
         if result["success"]:
-            report = write_run_report(codebase_path, self.app_dir)
+            report = write_run_report(codebase_path, self.app_dir, run_log_path=run_log[0] if run_log else None)
             summary = result["result"]
 
             if report["path"]:

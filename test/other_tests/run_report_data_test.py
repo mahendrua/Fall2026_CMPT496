@@ -271,3 +271,48 @@ def test_mutation_results_older_than_the_run_get_a_note(tmp_path):
     data = collect("shop", app, codebase_path=root)
 
     assert any("mutation test report" in note and "older than this run" in note for note in data["notes"])
+
+
+# The count shown after a run (US-034): secret occurrences replaced in the
+# run's AI requests, as its run log totals them.
+
+def with_counts(app, counts, name="shop_20200101-100000-aaaaaa.json"):
+    path = app / "run_logs" / name
+    log = json.loads(path.read_text(encoding="utf-8"))
+    log["totals"]["redacted_secrets"] = counts
+    write(path, log)
+    return path
+
+
+def test_the_redaction_count_comes_from_the_run_log(tmp_path):
+    app, root = make_run(tmp_path)
+    with_counts(app, {"TOKEN": 1, "PASSWORD": 2})
+
+    run = collect("shop", app, codebase_path=root)["run"]
+
+    assert run["redactions"] == {"total": 3, "by_category": {"PASSWORD": 2, "TOKEN": 1}}
+
+
+def test_a_recorded_zero_is_zero(tmp_path):
+    app, root = make_run(tmp_path)
+    with_counts(app, {})
+
+    assert collect("shop", app, codebase_path=root)["run"]["redactions"] == {"total": 0, "by_category": {}}
+
+
+def test_an_older_run_log_without_counts_is_not_recorded_rather_than_zero(tmp_path):
+    app, root = make_run(tmp_path)   # its log was saved before counts were recorded
+
+    assert collect("shop", app, codebase_path=root)["run"]["redactions"] is None
+
+
+def test_a_given_run_log_is_used_even_when_a_newer_one_exists(tmp_path):
+    app, root = make_run(tmp_path)
+    own = with_counts(app, {"PASSWORD": 4})
+    newer = app / "run_logs" / "shop_20200105-100000-dddddd.json"
+    write(newer, dict(json.loads(own.read_text(encoding="utf-8")), run_id="20200105-100000-dddddd",
+                      totals={"calls": 1, "redacted_secrets": {"API_KEY": 9}}))
+
+    assert find_run_log(app, "shop") == newer
+    run = collect("shop", app, codebase_path=root, run_log_path=own)["run"]
+    assert (run["run_id"], run["redactions"]["total"]) == ("20200101-100000-aaaaaa", 4)

@@ -670,6 +670,16 @@ def current_run_id():
     return run.run_id if run is not None else None
 
 
+def current_run_log_path():
+    """
+    Where the run being logged keeps its own record (run_logs/<codebase>_<run
+    id>.json), or None outside a tracked command. Unlike last_run_log.json it
+    is never overwritten by a later run. Read-only.
+    """
+    run = _run_var.get()
+    return run.history_path if run is not None else None
+
+
 def current_run_redactions():
     """
     How many secret occurrences the run being logged has had replaced in its

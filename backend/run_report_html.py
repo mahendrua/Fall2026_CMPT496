@@ -557,10 +557,33 @@ button.more:hover { text-decoration: underline; }
       fmt(failed) + " failed · " + fmt(dropped) + " dropped", "#tests");
   }
 
+  // Secret occurrences replaced in the run's AI requests (US-034), from its
+  // own run log. A log without the counts reads "Not recorded", never 0.
+  var REDACTED_LABEL = "Secret occurrences redacted from AI requests";
+  var REDACTED_NOTE = "Counted per AI request: a secret sent in several requests counts each time. " +
+    "Not a count of unique secrets; logs and saved outputs are cleaned too, but not counted here.";
+  var REDACTED_KINDS = [["PASSWORD", "password", "passwords"], ["API_KEY", "API key", "API keys"],
+    ["TOKEN", "token", "tokens"], ["AUTHORIZATION", "authorization value", "authorization values"],
+    ["PRIVATE_KEY", "private key", "private keys"]];
+
+  function redacted(run) {
+    var r = run && run.redactions;
+    if (!r || typeof r.total !== "number") return { value: "Not recorded", detail: run ? "this run log has no count" : "no run log for this run" };
+    var counts = r.by_category || {};
+    var known = {};
+    var parts = REDACTED_KINDS.filter(function (k) { known[k[0]] = true; return counts[k[0]] > 0; })
+      .map(function (k) { return fmt(counts[k[0]]) + " " + (counts[k[0]] === 1 ? k[1] : k[2]); });
+    var other = Object.keys(counts).filter(function (k) { return !known[k] && counts[k] > 0; })
+      .reduce(function (sum, k) { return sum + counts[k]; }, 0);
+    if (other) parts.push(fmt(other) + " other");
+    return { value: fmt(r.total), detail: parts.join(", ") };
+  }
+
   function buildOverview() {
     var root = document.getElementById("tab-overview");
     var run = DATA.run;
     var tokens = run ? run.tokens : null;
+    var secrets = redacted(run);
 
     add(root, el("div", { class: "card" },
       el("h2", null, "What this project is"),
@@ -583,7 +606,8 @@ button.more:hover { text-decoration: underline; }
       tile("Code read", plural(COUNTS.files, "file"), plural(COUNTS.folders, "folder") + " · " + plural(COUNTS.types, "class", "classes"), "#folders"),
       tile("AI tokens", tokens ? fmt(tokens.total_tokens) : "–",
            tokens ? fmt(tokens.thinking_tokens) + " thinking · " + plural(tokens.calls, "AI call") : "no run log for this run", "#run"),
-      tile("Run time", run ? duration(run.elapsed_seconds) : "–", run ? "finished " + when(run.finished_at) : "no run log for this run", "#run")));
+      tile("Run time", run ? duration(run.elapsed_seconds) : "–", run ? "finished " + when(run.finished_at) : "no run log for this run", "#run"),
+      tile(REDACTED_LABEL, secrets.value, secrets.detail || "counted per AI request", "#run")));
 
     if (DATA.notes.length) {
       add(root, el("div", { class: "card" },
@@ -611,7 +635,9 @@ button.more:hover { text-decoration: underline; }
           el("dt", null, "Finished"), el("dd", null, when(run.finished_at)),
           el("dt", null, "Run id"), el("dd", { class: "mono" }, run.run_id || "–"),
           el("dt", null, "AI calls"), el("dd", null, fmt(tokens.calls) + (tokens.failed_calls ? " (" + fmt(tokens.failed_calls) + " failed)" : "") +
-            (tokens.waits ? " · waited " + duration(tokens.waited_seconds) + " for rate limits" : ""))),
+            (tokens.waits ? " · waited " + duration(tokens.waited_seconds) + " for rate limits" : "")),
+          el("dt", null, REDACTED_LABEL), el("dd", null, secrets.value + (secrets.detail ? " (" + secrets.detail + ")" : ""),
+            el("div", { class: "muted" }, REDACTED_NOTE))),
         el("div", { class: "table-wrap" }, el("table", null,
           el("thead", null, el("tr", null, el("th", null, "Step"), el("th", null, "Status"), el("th", { class: "num" }, "Time"),
             el("th", { class: "num" }, "AI calls"), el("th", { class: "num" }, "Tokens"), el("th", { class: "num" }, "of which thinking"))),
@@ -739,6 +765,7 @@ button.more:hover { text-decoration: underline; }
     var root = document.getElementById("tab-b-overview");
     var found = RULES.length, confirmed = COUNTS.rules_proven;
     var passed = countResult("passed"), look = countResult("look"), untested = countResult("untested");
+    var secrets = redacted(DATA.run);
 
     add(root, el("div", { class: "card" },
       el("h2", null, "What this project is"),
@@ -777,7 +804,17 @@ button.more:hover { text-decoration: underline; }
       tile("Confirmed and tested", fmt(passed), "a test for the rule passed", "#show-passed"),
       lookTile,
       tile("Not tested", fmt(untested), "confirmed, but no test ran", "#show-untested"),
-      strengthTile()));
+      strengthTile(),
+      tile(REDACTED_LABEL, secrets.value, secrets.detail || "counted per AI request", "#b-secrets")));
+
+    add(root, el("div", { class: "card", id: "b-secrets" },
+      el("h2", null, "Secrets kept out of the AI"),
+      el("p", { class: "plain" }, secrets.value === "Not recorded"
+        ? "This run's log does not record how many secret occurrences were replaced (" + secrets.detail + ")."
+        : secrets.value + " secret occurrence" + (secrets.value === "1" ? " was" : "s were") +
+          " replaced with placeholders before this run's AI requests were sent" +
+          (secrets.detail ? " (" + secrets.detail + ")." : ".")),
+      el("p", { class: "muted" }, REDACTED_NOTE)));
 
     var card = el("div", { class: "card", id: "b-strength" }, el("h2", null, "How strong are the tests?"), strengthExplained());
     if (MEASURED) {

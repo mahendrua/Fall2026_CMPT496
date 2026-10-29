@@ -26,13 +26,13 @@
 
     const NOT_RECORDED = "Not recorded";
 
-    // The backend's category names, in reading order.
+    // The backend's category names, in reading order: [name, one, several].
     const CATEGORIES = [
-        ["PASSWORD", "passwords"],
-        ["API_KEY", "API keys"],
-        ["TOKEN", "tokens"],
-        ["AUTHORIZATION", "authorization values"],
-        ["PRIVATE_KEY", "private keys"],
+        ["PASSWORD", "password", "passwords"],
+        ["API_KEY", "API key", "API keys"],
+        ["TOKEN", "token", "tokens"],
+        ["AUTHORIZATION", "authorization value", "authorization values"],
+        ["PRIVATE_KEY", "private key", "private keys"],
     ];
 
     const isCount = value => Number.isInteger(value) && value >= 0;
@@ -54,7 +54,7 @@
 
         const parts = CATEGORIES
             .filter(([name]) => isCount(counts[name]) && counts[name] > 0)
-            .map(([name, words]) => `${counts[name]} ${words}`);
+            .map(([name, one, several]) => `${counts[name]} ${counts[name] === 1 ? one : several}`);
 
         const other = Object.entries(counts)
             .filter(([name, count]) => !known.has(name) && isCount(count) && count > 0)

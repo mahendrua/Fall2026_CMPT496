@@ -411,7 +411,14 @@ def fake_pipeline(monkeypatch, requests_per_stage):
         monkeypatch.setattr(Commands, name, stage(name))
     monkeypatch.setattr(Commands, "_consistency_review_stage", lambda self, root, before: self._run_command(
         "consistency_review", lambda: {"message": "Reviewed."}, individualStep=False))
-    monkeypatch.setattr(commands_module, "write_run_report", lambda codebase, app_dir: {"path": None, "error": "not built in this test"})
+    reports = []
+
+    def report(codebase, app_dir, run_log_path=None):
+        reports.append(run_log_path)
+        return {"path": None, "error": "not built in this test"}
+
+    monkeypatch.setattr(commands_module, "write_run_report", report)
+    return reports
 
 
 def pipeline_log(app, run_id):
@@ -509,3 +516,20 @@ def test_concurrent_runs_each_get_their_own_count(tmp_path, monkeypatch, no_wait
 
 def test_outside_a_run_there_is_no_count():
     assert current_run_redactions() is None
+
+
+def test_the_pipelines_report_is_built_from_its_own_run_log(commands, tmp_path, monkeypatch, no_waiting):
+    reports = fake_pipeline(monkeypatch, {"generate_file_summaries": [REQUEST]})
+    # Another run's newer full-pipeline log is already there.
+    (tmp_path / RUN_HISTORY_DIR).mkdir()
+    (tmp_path / RUN_HISTORY_DIR / "Shop_29991231-235959-zzzzzz.json").write_text(json.dumps({
+        "run_id": "29991231-235959-zzzzzz", "codebase": "Shop", "command": "full_pipeline",
+        "totals": {"redacted_secrets": {"PASSWORD": 99}}}), encoding="utf-8")
+    root = tmp_path / "Shop"
+    root.mkdir()
+
+    shown = commands.full_pipeline(str(root))["result"]["redactions"]
+
+    [path] = reports
+    assert Path(path).name == f"Shop_{shown['run_id']}.json"
+    assert json.loads(Path(path).read_text(encoding="utf-8"))["totals"]["redacted_secrets"] == shown["by_category"]

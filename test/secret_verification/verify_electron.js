@@ -142,6 +142,46 @@ app.whenReady().then(async () => {
             "the count shown is the one the backend sent for this run", { shown: count.value });
         expect(/counts each time/.test(count.note), "the count says repeated occurrences count separately");
 
+        // The run report the Complete screen's Open Report button opens:
+        // the same count, for the same run.
+        const reportPath = pipelineResponse && pipelineResponse.result.run_report;
+        if (reportPath) {
+            const page = new BrowserWindow({ show: false, width: 1440, height: 960 });
+            await page.loadFile(reportPath);
+            await sleep(800);
+            await page.webContents.executeJavaScript(`(() => { const card = document.getElementById('b-secrets');
+                if (card) card.scrollIntoView({ block: 'center' }); return true; })()`, true);
+            await sleep(300);
+            fs.writeFileSync(path.join(outDir, "run_report_business.png"), (await page.webContents.capturePage()).toPNG());
+            // The page opens on the business view; the developer view is
+            // built when its button is pressed, as a reader would.
+            const shown = await page.webContents.executeJavaScript(`(async () => {
+                const tiles = sel => [...document.querySelectorAll(sel + ' .tile')]
+                    .find(t => t.textContent.includes('Secret occurrences redacted from AI requests'));
+                const business = tiles('#tab-b-overview');
+                const card = (document.getElementById('b-secrets') || {}).textContent || '';
+                document.querySelector('.view-switch button[data-view="developer"]').click();
+                await new Promise(resolve => setTimeout(resolve, 500));
+                const developer = tiles('#tab-overview');
+                const facts = document.querySelector('#run .facts');
+                return { tile: business ? business.textContent : null, developer: developer ? developer.textContent : null,
+                         card, facts: facts ? facts.textContent : '', text: document.body.textContent }; })()`, true);
+            fs.writeFileSync(path.join(outDir, "run_report.png"), (await page.webContents.capturePage()).toPNG());
+            page.destroy();
+            facts.report_tile = shown.tile ? shown.tile.replace(/\s+/g, " ").trim() : null;
+            expect(shown.tile && redactions && shown.tile.includes(String(redactions.total)),
+                "the run report's business view shows the same count", facts.report_tile);
+            expect(shown.developer && redactions && shown.developer.includes(String(redactions.total)),
+                "the run report's developer view shows the same count");
+            expect(/counts each time/.test(shown.card), "the business view explains how it is counted");
+            expect(redactions && shown.facts.includes(redactions.run_id),
+                "the run report is about the same run");
+            expect(/counts each time/.test(shown.facts), "the run report explains how it is counted");
+            expect(leaked(shown.text).length === 0, "the run report shows no planted value", leaked(shown.text));
+        } else {
+            expect(false, "the pipeline produced a run report");
+        }
+
         // Consistency Review, opened as from View Insights.
         await js(`(() => { document.getElementById('loadingOverlay').classList.add('hidden');
             showPage('mainViewPage'); document.getElementById('viewConsistencyBtn').click(); return true; })()`);

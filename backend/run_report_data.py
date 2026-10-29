@@ -206,6 +206,7 @@ def _read_run(app_dir, codebase_name, run_log_path, notes):
 
     return {
         "run_id": log.get("run_id"),
+        "redactions": _redactions(totals),
         "status": log.get("status"),
         "error": log.get("error"),
         "started_at": log.get("started_at"),
@@ -231,6 +232,26 @@ def _read_run(app_dir, codebase_name, run_log_path, notes):
             if isinstance(stage, dict)
         ],
     }
+
+
+def _redactions(totals):
+    """
+    The run's recorded count of secret occurrences replaced in its AI
+    requests (US-034), {"total", "by_category"}, as the run log totals it: a
+    secret sent in several requests counts in each, retries once. None for a
+    log saved before the counts were recorded, so it reads "Not recorded",
+    never 0.
+    """
+    counts = totals.get("redacted_secrets")
+    if not isinstance(counts, dict):
+        return None
+
+    by_category = {
+        str(category): count
+        for category, count in sorted(counts.items())
+        if isinstance(count, int) and not isinstance(count, bool) and count >= 0
+    }
+    return {"total": sum(by_category.values()), "by_category": by_category}
 
 
 def _run_start(run):
