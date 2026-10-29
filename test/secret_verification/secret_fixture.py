@@ -46,9 +46,10 @@ VENDOR = "vendor"          # only the token's own format says so
 ECHO = "echo"              # repeated with no context, in the same file
 PLANTUML = "plantuml"      # a PlantUML private field: -password : string = "..."
 
-# Reported gaps, reproduced here and fixed (or not) in later checkpoints.
+# Reported gaps, reproduced here. A was fixed in T-079; occurrences keep the
+# label so a regression is attributed to it.
 KNOWN_GAPS = {
-    "A": "PlantUML private field (-password : string = \"...\") is not detected",
+    "A": "PlantUML private field (-password : string = \"...\") was not detected (fixed in T-079)",
 }
 
 # Multi-line values (the private key) are also looked for line by line, so a

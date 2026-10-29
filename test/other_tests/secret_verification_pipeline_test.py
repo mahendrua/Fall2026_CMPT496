@@ -187,11 +187,10 @@ def test_full_run_leaks_only_through_known_gaps(full_run):
     unexpected = sorted({(f["case_id"], f["sink"]) for f in data["findings"] if not f["known_gap"]})
     assert unexpected == []
 
-    # Known gap A, in the review check of docs/architecture.md that runs on
-    # its own. Inside the pipeline the run already knows the value from
-    # Billing/InvoiceService.cs, so it is replaced there.
-    known = sorted({(f["case_id"], f["sink"], f["known_gap"]) for f in data["findings"]})
-    assert known == [("S01", "model_callbacks", "A"), ("S01", "provider_requests", "A")]
+    # Known gap A (fixed in T-079) leaked S01 from docs/architecture.md, in
+    # the review check of it that runs on its own; nothing leaks now.
+    assert data["findings"] == []
+    assert data["verdict"] == "PASS"
 
 
 @FULL

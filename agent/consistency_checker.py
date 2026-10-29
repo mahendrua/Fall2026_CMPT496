@@ -12,7 +12,8 @@ method in it) the checker:
        model, each artifact under a handle (SOURCE, SUMMARY, RULE_3, TEST_3);
     3. checks the answer: every artifact must be assessed, every handle must be
        one that was supplied, and every excerpt must be found in the artifact
-       it is attributed to (source excerpts at the lines given);
+       it is attributed to (source excerpts at the lines given), as the model
+       was sent it: with secrets replaced by placeholders (T-079);
     4. turns what passes into Part 1 Findings. Anything that does not pass is
        an error on the result, never a silent "no findings".
 
@@ -58,6 +59,7 @@ from agent.consistency_refs import (
 )
 from agent.consistency_store import save_check_result
 from agent.llm import DailyLimitError, RateLimitTimeoutError, make_llm
+from agent.request_redaction import redact_model_input
 from agent.structured_output.consistency_checker_output import ConsistencyAnalysisOutput
 from agent.structured_output.consistency_output import (
     ArtifactRef, Assessment, Claim, ConsistencyCheckResult, Evidence, Finding, Skipped,
@@ -116,7 +118,7 @@ class Item:
     handle: str
     ref: ArtifactRef
     kind_label: str
-    text: str           # exactly what the model sees; excerpts are checked against it
+    text: str           # what the model sees (secrets replaced once sent); excerpts are checked against it
 
 
 @dataclass
@@ -130,6 +132,9 @@ class Unit:
     helpers: list[tuple[str, int, int]] = field(default_factory=list)   # same-file methods the scope calls
     items: dict[str, Item] = field(default_factory=dict)
     caveats: dict[str, str] = field(default_factory=dict)
+    # Source lines as the model was sent them, by number: secrets replaced
+    # with placeholders. Empty until the request is built.
+    seen: dict[int, str] = field(default_factory=dict)
 
 
 class _Collected:
@@ -514,6 +519,12 @@ class ConsistencyChecker:
 
     def _analyze(self, unit, codebase_name):
         messages = self._messages(unit, codebase_name)
+        # agent/llm.py replaces the request's secrets before the model sees
+        # them, so the answer quotes placeholders. The same redaction, applied
+        # here to a copy, says what the model saw, and the answer is checked
+        # against that (T-079). Within one run it gives the same result as
+        # the model's own; what is sent, and counted, is unchanged.
+        _adopt_what_was_sent(unit, redact_model_input(messages)[0])
         structured = self._model()
 
         problem = None
@@ -744,7 +755,7 @@ class ConsistencyChecker:
                 origin="code_inspection",
                 description=f"Lines {first}-{last} of {unit.target.path}, read without running the code.",
                 artifact=source,
-                excerpt="\n".join(unit.lines[first - 1:last]),
+                excerpt="\n".join(_seen_line(unit, n) for n in range(first, last + 1)),
             )],
             uncertainty=uncertainty,
         )
@@ -859,6 +870,47 @@ def _long_enough(excerpt):
     return len(_norm(excerpt).replace(" ", "")) >= MIN_EXCERPT_CHARS
 
 
+# One delimited block of the request, as _messages() writes it.
+_BLOCK_RE = re.compile(
+    r"<<<BEGIN (?P<handle>\S+) (?P<nonce>[0-9a-f]+)>>> \([^\n]*\)\n(?P<body>.*?)\n<<<END (?P=handle) (?P=nonce)>>>",
+    re.S,
+)
+_NUMBERED_RE = re.compile(r"^ *(\d+) \| ?(.*)$")
+
+
+def _adopt_what_was_sent(unit, messages):
+    """
+    Check excerpts against the request as it is sent: the source lines and
+    artifact texts with their secrets replaced. A secret becomes a
+    placeholder on the same line, so line numbers do not change; a private
+    key's body becomes one placeholder, and the lines it covered are empty.
+    Nothing is put back: a quoted raw value never matches.
+    """
+    user = next((text for role, text in messages if role == "user"), "")
+    blocks = {m.group("handle"): m.group("body") for m in _BLOCK_RE.finditer(user)}
+
+    seen, last = {}, None
+    for line in blocks.get("SOURCE", "").split("\n"):
+        numbered = _NUMBERED_RE.match(line)
+        if numbered:
+            last = int(numbered.group(1))
+            seen[last] = numbered.group(2)
+        elif last is not None:
+            seen[last] += " " + line
+    unit.seen = seen
+
+    for handle, item in unit.items.items():
+        if handle in blocks:
+            item.text = blocks[handle]
+
+
+def _seen_line(unit, n):
+    """Source line n as the model was sent it (empty where a redacted key body was)."""
+    if unit.seen:
+        return unit.seen.get(n, "")
+    return unit.lines[n - 1]
+
+
 def _locate_excerpt(unit, excerpt, line_start, line_end):
     """
     The lines the source excerpt really occupies, within the lines supplied
@@ -871,7 +923,7 @@ def _locate_excerpt(unit, excerpt, line_start, line_end):
     def occurrences():
         offsets, parts, at = [], [], 0
         for n in range(first, last + 1):
-            text = " ".join(unit.lines[n - 1].split())
+            text = " ".join(_seen_line(unit, n).split())
             if not text:
                 continue
             offsets.append((at, n))

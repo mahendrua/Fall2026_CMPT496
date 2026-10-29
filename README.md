@@ -733,11 +733,9 @@ delete them and run the pipeline again.
 
 ### Limitations
 
-- **Detection is T-077's**, with the misses listed there. Found while testing
-  T-078: a PlantUML private field (`-password : string = "..."`) is missed,
-  because a `-` before the name reads as part of a hyphenated name. It is
-  cleaned only when the run found the value with context elsewhere. The
-  detector itself was not changed.
+- **Detection is T-077's**, with the misses listed there. A PlantUML private
+  field (`-password : string = "..."`), missed until then because the `-`
+  read as part of a hyphenated name, is detected from T-079 on.
 - **Not covered:**
   - **Vector stores** (`vectorStores/`): the code index holds raw source
     chunks, a copy of the source files themselves. The summary index is built
@@ -750,10 +748,24 @@ delete them and run the pipeline again.
   path or a dictionary key stays.
 - **Private keys:** the body of a private key becomes one placeholder, so an
   excerpt holding one has fewer lines. Line numbers are not affected.
-- **Consistency Review, verified:** the model sees placeholders, so a finding
-  that quotes a line that held a secret has an excerpt that does not match the
-  source, and the finding is rejected ("its source excerpt does not appear in
-  the code in scope"). T-078 does not change this.
+- **Consistency Review evidence.** The model sees placeholders, so a finding
+  that quotes a line that held a secret quotes the placeholder. Such findings
+  used to be rejected ("its source excerpt does not appear in the code in
+  scope").
+
+  From T-079, `agent/consistency_checker.py` checks every excerpt against
+  the request as the model was sent it. It applies the same redaction to a
+  copy. The finding keeps its file and lines, and its evidence shows the
+  placeholder, never the raw value.
+
+  The check is as strict as before:
+  - an excerpt quoting the raw value is rejected;
+  - so is one with a placeholder the request did not hold there;
+  - so is one that is in no version of the file.
+
+  Placeholder numbers are local to each saved file. A finding's excerpt keeps
+  the request's `[REDACTED_PASSWORD_1]`, so the same secret repeated in its
+  explanation is saved as `[REDACTED_PASSWORD_2]`.
 - **Electron does no detection of its own.** There is one detector, in
   Python.
 - **Cost on the development machine:** about 0.5 ms per KB of saved output,

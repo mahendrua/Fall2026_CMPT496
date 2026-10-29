@@ -377,6 +377,10 @@ def test_placeholder_pattern_matches_what_redaction_produces():
 LONG_INPUTS = {
     "identifier": "a" * 200_000,
     "dashed": "x-" * 100_000,
+    # A lone "-" may start a name (PlantUML private fields, T-079).
+    "dash-names": "-password" * 25_000,
+    "spaced-dash-names": " -password :" * 20_000,
+    "dash-letters": "-a" * 100_000,
     "password-words": "password" * 25_000,
     "quoted-keys": '"password' * 25_000,
     "prose-line": "password: " + "ab " * 60_000,
@@ -879,3 +883,60 @@ def test_reports_add_up_across_requests():
     assert total.replaced == {API_KEY: 1, PASSWORD: 3}
     assert total.distinct == {API_KEY: 1, PASSWORD: 3}
     assert RedactionReport({}, {}) + first == first
+
+
+# ---------------------------------------------------------------------------
+# PlantUML fields (T-079, known gap A)
+# ---------------------------------------------------------------------------
+# The file summaries, the UML PDF and the run report diagram write fields as
+# "<visibility>name : Type = value". "-" (private) read as part of a
+# hyphenated name, so private secret fields were missed.
+
+@pytest.mark.parametrize("field, category", [
+    (f'-password : string = "{FAKE}"', PASSWORD),
+    (f'  -password : string = "{FAKE}"', PASSWORD),
+    (f'{{static}} -adminPwd : string = "{FAKE}"', PASSWORD),
+    (f'-apiKey : string = "{FAKE}"', API_KEY),
+    (f'-accessToken : String = "{FAKE}"', TOKEN),
+    (f'+password : string = "{FAKE}"', PASSWORD),
+    (f'#password : string = "{FAKE}"', PASSWORD),
+    (f'~password : string = "{FAKE}"', PASSWORD),
+])
+def test_plantuml_fields_holding_a_secret_are_redacted(field, category):
+    out, report = redact_text(field)
+
+    assert FAKE not in out
+    assert out == field.replace(FAKE, f"[REDACTED_{category}_1]")
+    assert report.replaced == {category: 1}
+
+
+@pytest.mark.parametrize("field", [
+    '-cacheKey : string = "invoice-cache-v2"',
+    "-approvalThreshold : decimal = 5000",
+    '-passwordPolicy : string = "min-12"',
+    "-password : string",
+    "-password : SecureString",
+    "+ApproveInvoice(invoice : Invoice) : bool",
+    "-password : string = \"${DB_PASSWORD}\"",
+    "class InvoiceService {\n  -password : string\n  +CanApprove(in input : string) : bool\n}",
+])
+def test_ordinary_plantuml_fields_are_left_alone(field):
+    out, report = redact_text(field)
+
+    assert out == field
+    assert report.total == 0
+
+
+def test_a_whole_plantuml_class_keeps_its_layout():
+    diagram = (
+        "@startuml\nclass InvoiceService {\n"
+        f'  -password : string = "{FAKE}"\n'
+        "  -approvalThreshold : decimal = 5000\n"
+        "  +NeedsApproval(in amount : decimal) : bool\n"
+        "}\n@enduml\n"
+    )
+
+    out, report = redact_text(diagram)
+
+    assert out == diagram.replace(FAKE, P1)
+    assert report.replaced == {PASSWORD: 1}

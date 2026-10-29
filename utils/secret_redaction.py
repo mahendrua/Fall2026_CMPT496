@@ -446,12 +446,14 @@ _LITERAL_GROUPS = ("verbatim", "escaped", "dq", "sq", "bq")
 #
 # The lookbehind keeps a match from starting in the middle of a longer name.
 # Without it every character of a long run like a-b-c-... would start a scan
-# to the end of the run, which is quadratic. A quoted "name" straight after
+# to the end of the run, which is quadratic. A lone "-" before the name is
+# allowed: PlantUML marks a private field that way (-password : string =
+# "..."), as + # ~ mark the others (T-079). A quoted "name" straight after
 # ? is a ternary branch (ok ? "PASS" : "FAIL"), not a key.
 _ASSIGNMENT = re.compile(
     rf"""
     (?:
-        (?<![\w$@.\-])(?P<name>{_name(_SECRET_WORDS)})
+        (?:(?<![\w$@.\-])|(?<=(?<![\w$@.\-])-))(?P<name>{_name(_SECRET_WORDS)})
       | (?<!\?)(?<!\?[ ])(?P<kq>["'])(?P<qname>[^"'\\\r\n]{{0,200}}?(?:{_alternation(_SECRET_WORDS)})(?:[_\-]?\d{{1,3}})?)\\?(?P=kq)\]?
     )
     (?:[ \t]*\{{[ \t]*get;[^}}\r\n]*\}})?

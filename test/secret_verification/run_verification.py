@@ -878,15 +878,26 @@ def evaluate_outputs(ws, session, scanner, checks, result, log):
     line = next((n for n, text in enumerate(payment, 1) if "IsLargePayment(decimal amount)" in text), None)
     accepted = [f for f in review.get("findings", []) if any(
         r.get("kind") == "source" and r.get("path") == "Integrations/PaymentClient.cs" for r in _evidence_refs(f))]
-    problems = [a.get("problem") or "" for a in review.get("assessments", [])]
+    invoice = ws.fixture.text("Billing/InvoiceService.cs").splitlines()
+    secret_line = next((n for n, text in enumerate(invoice, 1) if "AdminPassword =" in text), None)
+    quoting_secret_line = [f for f in review.get("findings", []) if any(
+        r.get("kind") == "source" and r.get("path") == "Billing/InvoiceService.cs" for r in _evidence_refs(f))]
+    made_up_rejected = [e for e in review.get("errors", [])
+                        if "The summary describes a different password constant" in e
+                        and "source excerpt does not appear in the code in scope" in e]
     result["consistency_review"] = {
         "status": review.get("status"), "findings": len(review.get("findings", [])),
         "errors": len(review.get("errors", [])),
-        # Known gap B: a finding quoting a line that held a secret, as the model saw it.
-        "rejected_source_excerpts": sum("source excerpt does not appear" in p for p in problems),
+        # Known gap B: a finding quoting, as the model saw it, a line that held a secret.
+        "accepted_quoting_a_secret_line": len(quoting_secret_line),
+        "made_up_evidence_rejected": len(made_up_rejected),
     }
     checks.add("the review finding keeps its source location",
                any(line in _lines_of(f) for f in accepted), f"expected line {line}")
+    checks.add("a finding quoting a line that held a secret is accepted, at that line (gap B)",
+               len(quoting_secret_line) == 1 and secret_line in _lines_of(quoting_secret_line[0]),
+               f"{len(quoting_secret_line)} finding(s), expected line {secret_line}")
+    checks.add("a finding with made-up evidence is still rejected", len(made_up_rejected) == 1)
     reviews = _load(agent / "consistency_output" / CODEBASE / "reviews.json") or {}
     checks.add("the review note is saved, its secret replaced", PLACEHOLDER.search(_strings(reviews)) is not None)
 
@@ -1089,7 +1100,8 @@ def render_summary(data):
         "",
         f"Generated {data['generated_at']}, seed {data['seed']}, session {data['session']['seconds']} s.",
         f"Leaks: {data['leaks']} ({data['known_gap_leaks']} from known gaps, {data['unexpected_leaks']} unexpected). "
-        f"Failed checks: {len(data['failed_checks'])}. Complete: {data['complete']}.",
+        f"Failed checks: {len(data['failed_checks'])}. Complete: {data['complete']}. "
+        f"Sinks not assessed here: {len(data.get('not_assessed', []))} (listed below; not counted as clean).",
         "Workspace (raw fixture and captures): " + (
             "kept on request" if data["workspace"]["kept"]
             else "NOT fully removed" if data["workspace"]["left_behind"] else "removed"
@@ -1122,9 +1134,9 @@ def render_summary(data):
         lines.append("- Placeholders by sink: " + ", ".join(f"{k} {v}" for k, v in data["placeholders_by_sink"].items()) + ".")
     review = data.get("consistency_review")
     if review:
-        lines.append(f"- Consistency Review: status {review['status']}, {review['findings']} finding(s), "
-                     f"{review['rejected_source_excerpts']} rejected because the source excerpt did not match "
-                     "(known gap B).")
+        lines.append(f"- Consistency Review: status {review['status']}, {review['findings']} finding(s); "
+                     f"{review['accepted_quoting_a_secret_line']} accepted quoting a line that held a secret (gap B), "
+                     f"{review['made_up_evidence_rejected']} with made-up evidence rejected.")
     chain = data["diagnostics"].get("chain_callbacks", {})
     if chain:
         lines.append(f"- LangGraph chain callbacks (excluded): {chain['events']} event(s), {chain['leaks']} "

@@ -234,6 +234,8 @@ class RedactingFakeLLM(FakeLLM):
 
 
 SECRET_LINE = f'var password = "{FAKE}";'
+# The same line as the model is sent it, so as it quotes it.
+SEEN_LINE = f'var password = "{P1}";'
 
 
 @pytest.fixture
@@ -246,11 +248,49 @@ def review_env(tmp_path):
     return env
 
 
-def inconsistent_summary(title="Artifact disagrees with Discount"):
-    """The model reports a finding citing the line that holds the secret, then repeats it."""
-    finding = proposed("source_summary", [SUMMARY_CLAIM], excerpt=f"{SECRET_LINE}\n{ADD_LINE}", lines=(7, 8), title=title)
+def inconsistent_summary(title="Artifact disagrees with Discount", excerpt=f"{SEEN_LINE}\n{ADD_LINE}", lines=(7, 8)):
+    """The model reports a finding citing the line that holds the secret, then repeats the secret."""
+    finding = proposed("source_summary", [SUMMARY_CLAIM], excerpt=excerpt, lines=lines, title=title)
     finding.explanation = f"Unless the input is {FAKE}, the code adds 10%; the summary describes a reduction."
     return RedactingFakeLLM(lambda m: answer(handles_of(m), {"SUMMARY": "inconsistent"}, [finding]))
+
+
+# Known gap B (T-079): the model sees placeholders, so it quotes them, and the
+# finding used to be rejected because its excerpt was compared with the raw
+# source. It is now compared with what the model was sent, just as strictly.
+
+def test_a_finding_quoting_a_line_that_held_a_secret_is_accepted_at_its_lines(review_env):
+    with secret_scope():
+        result = check(review_env, inconsistent_summary(), save=True)
+
+    [finding] = result.findings
+    source = finding.claims[0].artifact
+    assert (source.path, source.line_start, source.line_end) == ("src/Pricing.cs", 7, 8)
+    assert finding.claims[0].excerpt == f"{SEEN_LINE}\n{ADD_LINE}"
+    # The evidence is the lines as the model saw them, never the raw source.
+    assert finding.evidence[0].excerpt.split("\n")[0].strip() == SEEN_LINE
+    absent(everything_under(review_env.app / "agent" / "consistency_output"))
+
+
+@pytest.mark.parametrize("excerpt, lines", [
+    # The raw value: the model was never sent it, so it cannot be evidence.
+    (f"{SECRET_LINE}\n{ADD_LINE}", (7, 8)),
+    # A placeholder the request did not hold there.
+    (f'var password = "[REDACTED_PASSWORD_2]";\n{ADD_LINE}', (7, 8)),
+    # A line that is in no version of the file.
+    ('var password = "letmein";', (7, 7)),
+    # Placeholders are not wildcards.
+    ("var password = [REDACTED_PASSWORD_1] + 1;", (7, 7)),
+])
+def test_made_up_or_raw_evidence_is_still_rejected(review_env, excerpt, lines):
+    with secret_scope():
+        result = check(review_env, inconsistent_summary(excerpt=excerpt, lines=lines))
+
+    assert result.findings == []
+    [assessment] = [a for a in result.assessments if a.artifact.kind == "summary"]
+    assert not assessment.accepted
+    assert "source excerpt does not appear in the code in scope" in assessment.problem
+    absent(json.dumps(result.model_dump(mode="json")))
 
 
 def test_review_results_keep_no_source_secret_and_still_link_and_load(review_env):
@@ -272,7 +312,9 @@ def test_review_results_keep_no_source_secret_and_still_link_and_load(review_env
     assert source.content_hash == finding.claims[0].artifact.content_hash
     excerpt = loaded.evidence[0].excerpt
     assert f'var password = "{P1}";' in excerpt and ADD_LINE in excerpt
-    assert loaded.explanation == f"Unless the input is {P1}, the code adds 10%; the summary describes a reduction."
+    # The excerpt keeps the request's placeholder, so the explanation's
+    # repetition is numbered after it: numbers are local to each file.
+    assert loaded.explanation == f"Unless the input is [REDACTED_PASSWORD_2], the code adds 10%; the summary describes a reduction."
 
     set_review("Shop", finding.id, "reviewed", note=f"The token {GITHUB} was rotated.", app_dir=env.app)
 

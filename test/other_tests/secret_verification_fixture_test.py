@@ -496,14 +496,10 @@ def test_missing_controls_names_changed_controls():
 # ---------------------------------------------------------------------------
 # Each file is redacted on its own, as one file summary request would carry
 # it. The fixture says what must go and what must stay; the scanner says
-# what is left.
+# what is left. docs/architecture.md holds known gap A (a PlantUML private
+# field), fixed in T-079; it was a strict xfail until then.
 
-GAP_A = pytest.mark.xfail(strict=True, reason="Known gap A: PlantUML -password : string = \"...\" is not detected")
-
-
-@pytest.mark.parametrize("path", [
-    pytest.param(p, marks=GAP_A) if p == "docs/architecture.md" else p for p in PIPELINE_TEMPLATES
-])
+@pytest.mark.parametrize("path", list(PIPELINE_TEMPLATES))
 def test_detector_on_each_pipeline_file(fixture, path):
     text = fixture.text(path)
     redactor = SecretRedactor()
