@@ -376,3 +376,136 @@ def test_concurrent_runs_clean_only_what_they_found(tmp_path):
             absent(text, mine)
             # Never learned in this run, so a bare repeat of it is not recognised.
             kept(text, theirs)
+
+
+# ---------------------------------------------------------------------------
+# The count shown after a run (US-034)
+# ---------------------------------------------------------------------------
+
+import backend.commands as commands_module  # noqa: E402
+from backend.token_usage import current_run_redactions  # noqa: E402
+
+GENERATION_STAGES = (
+    "build_database", "generate_file_summaries", "build_summary_database", "generate_directory_summaries",
+    "validate_business_rules", "generate_unit_tests", "generate_integration_tests", "generate_all_uml",
+)
+
+
+def fake_pipeline(monkeypatch, requests_per_stage):
+    """
+    Commands.full_pipeline as it is, with each generation stage replaced by
+    a task that sends requests_per_stage[stage] through a protected fake
+    provider. The review stage and the run report make no calls.
+    """
+    def stage(name):
+        def run(self, *args, **kwargs):
+            def task():
+                model = redacting(_retrying(FakeProvider, "Fake"))(failures=1 if name == "generate_file_summaries" else 0)
+                for request in requests_per_stage.get(name, []):
+                    model.invoke(request)
+                return {"message": f"{name} done"}
+            return self._run_command(name, task, individualStep=False)
+        return run
+
+    for name in GENERATION_STAGES:
+        monkeypatch.setattr(Commands, name, stage(name))
+    monkeypatch.setattr(Commands, "_consistency_review_stage", lambda self, root, before: self._run_command(
+        "consistency_review", lambda: {"message": "Reviewed."}, individualStep=False))
+    monkeypatch.setattr(commands_module, "write_run_report", lambda codebase, app_dir: {"path": None, "error": "not built in this test"})
+
+
+def pipeline_log(app, run_id):
+    [path] = (app / RUN_HISTORY_DIR).glob(f"*_{run_id}.json")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_the_pipeline_response_carries_its_own_runs_count(commands, tmp_path, monkeypatch, no_waiting):
+    fake_pipeline(monkeypatch, {
+        "generate_file_summaries": [REQUEST, REQUEST],          # the first is rate limited, then retried
+        "validate_business_rules": [REQUEST, [("user", "Nothing to replace here.")]],
+    })
+    root = tmp_path / "Shop"
+    root.mkdir()
+
+    result = commands.full_pipeline(str(root))
+
+    assert result["success"], result.get("error")
+    shown = result["result"]["redactions"]
+    log = pipeline_log(tmp_path, shown["run_id"])
+    # Exactly what this run's own record saved: each call once, retries included.
+    assert shown == {
+        "run_id": log["run_id"], "calls": 4, "total": 9,
+        "by_category": {"API_KEY": 3, "PASSWORD": 6},
+    }
+    assert shown["by_category"] == log["totals"]["redacted_secrets"]
+    assert shown["calls"] == log["totals"]["calls"]
+    absent(json.dumps(result))
+
+
+def test_a_run_with_nothing_to_replace_shows_zero(commands, tmp_path, monkeypatch, no_waiting):
+    fake_pipeline(monkeypatch, {"generate_file_summaries": [[("user", "Summarize the cart.")]]})
+    root = tmp_path / "Shop"
+    root.mkdir()
+
+    shown = commands.full_pipeline(str(root))["result"]["redactions"]
+
+    assert (shown["total"], shown["by_category"], shown["calls"]) == (0, {}, 1)
+
+
+def test_the_count_is_not_read_from_a_stale_run_log(commands, tmp_path, monkeypatch, no_waiting):
+    # An older run's record, already on disk, says something else entirely.
+    (tmp_path / RUN_LOG_NAME).write_text(json.dumps({
+        "run_id": "20250101-000000-old000", "command": "full_pipeline",
+        "totals": {"calls": 40, "redacted_secrets": {"PASSWORD": 99}},
+    }), encoding="utf-8")
+    fake_pipeline(monkeypatch, {"generate_file_summaries": [REQUEST]})
+    root = tmp_path / "Shop"
+    root.mkdir()
+
+    shown = commands.full_pipeline(str(root))["result"]["redactions"]
+
+    assert shown["run_id"] != "20250101-000000-old000"
+    assert (shown["total"], shown["by_category"]) == (3, REQUEST_COUNTS)
+
+
+def test_concurrent_runs_each_get_their_own_count(tmp_path, monkeypatch, no_waiting):
+    fake_pipeline(monkeypatch, {"generate_file_summaries": [REQUEST], "validate_business_rules": [REQUEST]})
+    started = threading.Barrier(2, timeout=30)
+    shown, errors = {}, []
+
+    def run(name, requests):
+        try:
+            commands = Commands()
+            commands.app_dir = tmp_path / name
+            commands.current_codebase_name = name
+            root = tmp_path / name / name
+            root.mkdir(parents=True)
+            original = commands.generate_file_summaries
+
+            def first_stage(*args, **kwargs):
+                started.wait()          # both runs are open at the same time
+                return original(*args, **kwargs)
+
+            commands.generate_file_summaries = first_stage
+            if requests == 0:
+                commands.validate_business_rules = lambda *a, **k: commands._run_command(
+                    "validate_business_rules", lambda: {"message": "none"}, individualStep=False)
+            shown[name] = commands.full_pipeline(str(root))["result"]["redactions"]
+        except Exception as exc:  # reported below, without the values
+            errors.append(type(exc).__name__)
+
+    threads = [threading.Thread(target=run, args=args) for args in (("A", 2), ("B", 0))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert shown["A"]["total"] == 6 and shown["B"]["total"] == 3
+    assert shown["A"]["run_id"] != shown["B"]["run_id"]
+    for name in ("A", "B"):
+        assert shown[name]["by_category"] == pipeline_log(tmp_path / name, shown[name]["run_id"])["totals"]["redacted_secrets"]
+
+
+def test_outside_a_run_there_is_no_count():
+    assert current_run_redactions() is None

@@ -122,6 +122,26 @@ app.whenReady().then(async () => {
         expect(/Full pipeline completed/.test(overlay), "the Complete screen says the pipeline completed");
         expect(leaked(overlay).length === 0, "the Complete screen shows no planted value", leaked(overlay));
 
+        // The redaction count (US-034): shown, labelled, and the number the
+        // backend sent for this very run.
+        const count = await js(`(() => ({
+            hidden: document.getElementById('redactionSummary').classList.contains('hidden'),
+            value: document.getElementById('redactionSummaryValue').textContent,
+            label: document.getElementById('redactionSummaryLabel').textContent,
+            note: document.getElementById('redactionSummaryNote').textContent }))()`);
+        const pipelineResponse = sent
+            .filter(m => m.channel === "backend-response")
+            .map(m => JSON.parse(m.text)[0])
+            .find(r => r && r.command === "full_pipeline" && r.success && r.result);
+        const redactions = pipelineResponse && pipelineResponse.result.redactions;
+        facts.redaction_count_shown = count.value;
+        facts.redaction_run_id = redactions ? redactions.run_id : null;
+        expect(!count.hidden && count.label === "Secret occurrences redacted from AI requests",
+            "the Complete screen shows the redaction count with its label", count);
+        expect(redactions && String(redactions.total) === count.value && Number(count.value) > 0,
+            "the count shown is the one the backend sent for this run", { shown: count.value });
+        expect(/counts each time/.test(count.note), "the count says repeated occurrences count separately");
+
         // Consistency Review, opened as from View Insights.
         await js(`(() => { document.getElementById('loadingOverlay').classList.add('hidden');
             showPage('mainViewPage'); document.getElementById('viewConsistencyBtn').click(); return true; })()`);

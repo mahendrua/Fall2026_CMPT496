@@ -386,6 +386,30 @@ function resetTokenMeter() {
         .textContent = "";
 
     showLoadingWarning(null);
+    showRedactionSummary(undefined, false);
+
+}
+
+
+// Shown on the Complete screen of a full pipeline run (US-034): how many
+// secret occurrences that run's AI requests had replaced, as the backend
+// recorded it for that run. redaction_summary.js decides the wording.
+function showRedactionSummary(redactions, visible = true) {
+
+    const box =
+        document.getElementById("redactionSummary");
+
+    if (!box) return;
+
+    box.classList.toggle("hidden", !visible);
+    if (!visible) return;
+
+    const shown = window.RedactionSummary.describe(redactions);
+
+    document.getElementById("redactionSummaryValue").textContent = shown.value;
+    document.getElementById("redactionSummaryLabel").textContent = shown.label;
+    document.getElementById("redactionSummaryDetail").textContent = shown.detail;
+    document.getElementById("redactionSummaryNote").textContent = shown.note;
 
 }
 
@@ -2896,6 +2920,7 @@ window.electronAPI.onBackendResponse(async (response) => {
         const review = window.ConsistencyReviewModel.pipelineReview(response.result.consistency_review);
 
         finishLoading(`${response.result.message || "Full pipeline completed"}. ${review.text}`);
+        showRedactionSummary(response.result.redactions);
         showLoadingWarning(response.result.warning);
         offerReview(reviewTarget ? reviewTarget.codebasePath : selectedCodebasePath, review.checkId);
         showReportButton(response.result.run_report);

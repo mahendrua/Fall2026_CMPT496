@@ -108,6 +108,7 @@ from backend.token_usage import (
     emit_stage_total,
     track_command,
     status_code,
+    current_run_redactions,
     RUN_LOG_NAME,
 )
 
@@ -1288,6 +1289,11 @@ class Commands:
 
             if warnings:
                 summary["warning"] = "\n\n".join(warnings)
+
+            # For the Complete screen (US-034): how many secret occurrences
+            # this run's AI requests had replaced, from this run's own record,
+            # now that its last call has finished. Counts only.
+            summary["redactions"] = current_run_redactions()
 
             pipeline_progress("Pipeline Complete", 100)
             return summary

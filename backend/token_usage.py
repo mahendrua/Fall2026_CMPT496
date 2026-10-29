@@ -670,6 +670,33 @@ def current_run_id():
     return run.run_id if run is not None else None
 
 
+def current_run_redactions():
+    """
+    How many secret occurrences the run being logged has had replaced in its
+    AI requests so far, for showing after the run (US-034):
+
+        {"run_id": ..., "calls": 52, "total": 134, "by_category": {"PASSWORD": 53, ...}}
+
+    The totals RunLog.to_dict() saves to last_run_log.json, taken from this
+    run itself rather than from a file, so they are the run's own: a call is
+    counted once whatever its retries, and a secret sent in several requests
+    counts in each (see "Secrets" above). Counts and category names only.
+    None outside a tracked command. Read-only.
+    """
+    run = _run_var.get()
+    if run is None:
+        return None
+
+    totals = run.to_dict()["totals"]
+    by_category = totals["redacted_secrets"]
+    return {
+        "run_id": run.run_id,
+        "calls": totals["calls"],
+        "total": sum(by_category.values()),
+        "by_category": by_category,
+    }
+
+
 def record_wait(reason, seconds):
     """
     Note in the current run's log that a call is waiting to retry.
