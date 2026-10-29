@@ -361,6 +361,7 @@ def plant_old_outputs(app, root):
 def test_the_run_report_does_not_copy_out_old_secrets(tmp_path, monkeypatch):
     app, root = make_run(tmp_path)
     old = plant_old_outputs(app, root)
+    stored = {path: path.read_bytes() for path in old}
     monkeypatch.setattr(run_report_diagram, "render_svg", lambda puml, jar: f"<svg><desc>{puml}</desc></svg>")
 
     result = write_run_report(root, app)
@@ -379,10 +380,9 @@ def test_the_run_report_does_not_copy_out_old_secrets(tmp_path, monkeypatch):
     page = (folder / "run_report.html").read_text(encoding="utf-8")
     assert f"admin password '{P1}'" in page
 
-    # Not bulk-edited: the old outputs themselves are as they were.
+    # Not bulk-edited: the old outputs themselves are byte for byte as they were.
     for path in old:
-        text = path.read_text(encoding="utf-8")
-        assert any(secret in text for secret in PLANTED), "an old output was rewritten"
+        assert path.read_bytes() == stored[path], "an old output was rewritten"
 
 
 def test_the_report_page_is_not_changed_when_nothing_is_secret(tmp_path):
@@ -458,3 +458,37 @@ def test_the_markdown_export_is_cleaned(tmp_path, capsys):
     absent(markdown)
     absent(printed)
     assert f"'{P1}'" in markdown and f"'{P1}'" in printed
+
+
+# ---------------------------------------------------------------------------
+# Outputs saved before T-078, read by today's exports (T-079, item D)
+# ---------------------------------------------------------------------------
+
+def test_older_outputs_are_cleaned_by_the_exports_and_themselves_left_unchanged(tmp_path, monkeypatch):
+    # Outside any backend run, so only contextual detection applies. The only
+    # trace of this secret is a PlantUML private field (known gap A).
+    import hashlib
+    import reportlab.rl_config as rl_config
+
+    path = tmp_path / "summaries" / "Vault-cs__1.json"
+    write(path, {
+        "path": "src/Vault.cs", "summary": "Opens the vault.", "dependencies": [],
+        "types": [{"name": "Vault", "kind": "class", "description": "Holds credentials.",
+                   "plantuml": f'class Vault {{\n  -password : string = "{FAKE}"\n  +Open() : bool\n}}'}],
+        "relationship_plantuml": "", "business_rules": [],
+    })
+    before = hashlib.sha256(path.read_bytes()).hexdigest()
+
+    snippets = []
+    monkeypatch.setattr(uml, "render_plantuml", lambda snippet, stem, temp_dir, args: snippets.append(snippet))
+    monkeypatch.setattr(rl_config, "pageCompression", 0)
+    monkeypatch.setattr(sys, "argv", ["uml_json_to_pdf", str(path), "-o", str(tmp_path / "Vault.pdf")])
+    uml.build_report(uml.parse_args())
+    markdown = json_to_markdown.process_file(path, path.parent, tmp_path / "markdown")
+
+    absent("\n".join(snippets), FAKE)
+    assert any(f'-password : string = "{P1}"' in s and "+Open() : bool" in s for s in snippets)
+    absent((tmp_path / "Vault.pdf").read_bytes().decode("latin-1"), FAKE)
+    absent(markdown.read_text(encoding="utf-8"), FAKE)
+    # Not cleaned in place: the older file is byte for byte as it was.
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == before

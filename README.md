@@ -554,9 +554,9 @@ contains a real-format token, which GitHub push protection would block.
 
 - **T-078:** done; see
   [Secret protection in logs and saved outputs](#secret-protection-in-logs-and-saved-outputs-us-034-t-078).
-- **T-079:** broader verification with ten planted fake secrets across file
-  types, run through the pipeline, reporting what is missed and what is
-  over-redacted (see [What T-079 still has to verify](#what-t-079-still-has-to-verify)).
+- **T-079:** done; see
+  [Secret protection verified](#secret-protection-verified-us-034-t-079),
+  including the acceptance verdict.
 
 T-077 alone does not complete US-034.
 
@@ -789,28 +789,248 @@ fake. The checks for a planted value fail with a count, never the value.
 | `generated_artifact_redaction_test.py` | Generated tests, `.cs` files and test reports; Consistency Review end to end, including reviews and a long title; the run report built from older planted outputs; the mutation report; the UML PDF; the Markdown export. |
 | `run_record_redaction_test.py` | Run logs and counts; offline tracing checks; echoes across stages; concurrent runs. |
 
-### What T-079 still has to verify
+### Verified end to end
 
-T-078 is tested piece by piece, with fake models. It does not show that no
-secret leaks anywhere. T-079 should:
-
-- run ten planted fake secrets, across file types, through a full pipeline
-  run and every output listed above, and report what is missed and what is
-  over-redacted;
-- check the detector gaps: T-077's list and the PlantUML `-password` case;
-- decide what to do about Consistency Review rejecting findings whose
-  excerpts contain placeholders;
-- decide how outputs saved before T-078 should be cleaned up;
-- check the packaged app and the Electron screens (`verify_screen.js`). They
-  were not built or run for T-078.
-
-T-078 does not complete US-034 on its own.
+T-078 is tested piece by piece above. T-079 runs the whole pipeline on ten
+planted secrets and checks every output in this table; see
+[Secret protection verified](#secret-protection-verified-us-034-t-079).
 
 ### Packaged app
 
 The new modules are imported by `main.py` and the agents, so PyInstaller
-should find them, and `releases/main.spec` was not changed. The backend was
-not rebuilt for T-078.
+finds them, and `releases/main.spec` was not changed. T-079 built the backend
+with it and checked the build; see
+[Secret protection verified](#secret-protection-verified-us-034-t-079).
+
+## Secret protection verified (US-034, T-079)
+
+T-079 plants ten fake secrets in a small sample codebase and runs Checkpoint's
+real backend on it, offline. It checks for the secrets in everything that
+leaves the app or is kept by it. The checker is independent of the app's
+detector.
+
+Zero leaks is a measured result for these cases and these sinks. It is not
+proof that every secret anywhere is found. The tools are in
+[`test/secret_verification/`](test/secret_verification/README.md).
+
+```powershell
+# The full run, about a minute: exit 0 clean and complete, 1 leak, 2 incomplete
+.venv\Scripts\python.exe test\secret_verification\run_verification.py
+# The same run with request redaction removed: it must fail
+.venv\Scripts\python.exe test\secret_verification\run_verification.py --negative-control
+# The real Electron window, about a minute
+.venv\Scripts\python.exe test\secret_verification\run_electron_check.py
+```
+
+Nothing needs an API key or the network. The evidence (`report.json`,
+`summary.md`) goes to `test/secret_verification/runs/`, which git ignores. It
+holds case IDs, counts and locations, never a value.
+
+### How it runs
+
+**Real:**
+- `main.py` over stdin and stdout, read by `main.js`'s rules;
+- every pipeline stage and agent;
+- `agent/llm.py`'s retries and redaction;
+- ChromaDB, with the cached embedding model;
+- dotnet build and test of the generated tests (offline NuGet);
+- PlantUML;
+- the run report and the Markdown export.
+
+**Substituted:**
+- The AI provider: an offline model in place of the Google package. The
+  app's own `build_chat_model()` wraps it.
+- The model's answers: scripted, and they repeat all ten secrets on purpose.
+- dotnet's build servers: switched off, so nothing holds the workspace open.
+
+**Not verified:**
+- Gemini's own structured-output mode and HTTP client;
+- what a real model would answer;
+- network use by child processes (dotnet, Java);
+- Stryker.NET, which is not installed.
+
+### The ten cases
+
+| Case | Category | Where | Planted | Leaks |
+|---|---|---|---|---|
+| S01 | PASSWORD | C# constant; a comment repeating it; Markdown prose; a PlantUML private field | 4 | 0 |
+| S02 | API_KEY | Python named key | 1 | 0 |
+| S03 | TOKEN | JavaScript property and query string | 2 | 0 |
+| S04 | API_KEY | Stripe format, under a name that says nothing | 1 | 0 |
+| S05 | API_KEY | AWS format, shell export | 1 | 0 |
+| S06 | TOKEN | GitHub format, shell variable | 1 | 0 |
+| S07 | AUTHORIZATION | Bearer value in C# and in a curl header | 2 | 0 |
+| S08 | PASSWORD | SQL Server connection string | 1 | 0 |
+| S09 | PASSWORD | PostgreSQL URL | 1 | 0 |
+| S10 | PRIVATE_KEY | PEM block in Markdown | 1 | 0 |
+
+The app's configured API key (K00) and a LangSmith key in the environment
+(K01) are checked too: 0 leaks.
+
+The same secrets in JSON, `.env`, YAML, XML, INI and PEM (file types the
+pipeline does not read) are detected by the detector alone. Three
+documented misses stay missed, as documented:
+- a password passed positionally;
+- a bare `"Key"` name;
+- a value repeated without context in a separate run.
+
+### Measured
+
+Final run on 2026-10-28, seed 79: **PASS**. There were 0 leaks, 134 checks
+passed, and 0 network attempts.
+
+- **What left the app:**
+  - 58 provider requests, covering all 12 request kinds;
+  - 57 model callbacks.
+- **Electron's view:** 284 stdout messages, 0 rejected by `main.js`'s rules;
+  stderr; `error_log.json`.
+- **Run records:** `last_run_log.json`, `run_logs/` and
+  `token_usage_log.json`.
+- **Saved outputs:**
+  - file and directory summaries, and their business rules;
+  - validated and discarded rules;
+  - unit and integration tests, their results and HTML reports;
+  - the generated `.cs` files;
+  - Consistency Review results and review notes.
+- **Exports and indexes:**
+  - 7 UML PDFs, and what PlantUML was given and drew;
+  - the run report and its diagram;
+  - the mutation report;
+  - the Markdown export;
+  - the summary index of the vector store.
+
+The 0 leaks mean something:
+
+- **Every value was in play.** The model's answers repeated all ten values
+  (40 times).
+- **Outputs were cleaned, not emptied.** Each output those answers feed holds
+  placeholders where the values were (run report 71, IPC 48, summaries 24,
+  UML PDF text 18 ...).
+- **Counts match the fixture:**
+  - Every file's request matched the fixture's own count of what had to be
+    replaced, with one count per call.
+  - The scripted 503 was retried with the same cleaned request and counted
+    once.
+  - The run log's totals add up: PASSWORD 53, AUTHORIZATION 35, TOKEN 32,
+    API_KEY 12 and PRIVATE_KEY 2, over 52 calls.
+- **Useful content kept:**
+  - All 26 nonsecret controls reached the provider unchanged: thresholds,
+    `primaryKey` and `cacheKey`, environment lookups, URLs, paths,
+    `YOUR_API_KEY`, an existing placeholder, PlantUML fields.
+  - Saved summaries keep the structure of the model's answer and its
+    nonsecret text.
+- **The pipeline still did its job:**
+  - Three rules were validated.
+  - The generated tests built and ran: 3 unit tests (one repaired by the AI,
+    one failing on its placeholder) and 1 integration test.
+  - The Consistency Review findings keep their source lines.
+- **Inputs untouched:** the source files, the codebase folder and the `.env`
+  were unchanged.
+
+**Storage boundaries.** These are local and kept on purpose. They are measured
+and listed with every run, never counted as clean:
+
+| Store | Holds |
+|---|---|
+| Code index (`vectorStores/`) | Raw source chunks, so retrieval finds the real code: S03, S07 and S08, the values inside methods, properties and JS pairs. As file bytes: 15 occurrences. |
+| dotnet build of the analysed code (the generated tests' artifacts folder, under TEMP) | Its compiled string constants: S01, S04, S07, S08 |
+| Stryker's own reports | Not produced (Stryker not installed). They contain the mutated source files. |
+
+Also measured, outside the result: LangGraph hands each node's raw input to
+chain callbacks, as T-077 noted. The app registers no handler that keeps it,
+and tracing is off in every run. Only the harness's recorder saw it (211
+events).
+
+**The checks can fail.** In the negative control, request redaction is
+removed in the backend process only; the app has no such switch.
+
+- The run fails (exit 1).
+- All ten cases are found in the provider requests and callbacks.
+- With no run memory left, values repeated without context leak into the
+  summaries, the run report, the Markdown export and the summary index.
+
+The scanner also finds a planted value in each of 18 encodings and file
+types: JSON (escaped twice), HTML entities, URL and base64 encoding, UTF-16,
+split lines, PDF text, PNG text chunks, SVG-embedded PlantUML, and SQLite
+rows. A missing or unreadable artifact makes a run incomplete, never clean.
+
+**Electron.** The real window ran the full pipeline from the Run Operations
+button. Each of these was checked for the planted values, and none was found:
+
+- every message `main.js` sent the renderer;
+- the Complete screen;
+- the Consistency Review screen, which shows placeholders and the finding at
+  its line;
+- Electron's console.
+
+**Packaged backend.** A PyInstaller build from `releases/main.spec`, built
+outside `releases/main/`, was checked. Its responses, stderr, `error_log.json`
+and a UML PDF from a summary with a PlantUML private field are clean, and
+every stdout line is a message `main.js` accepts. AI requests cannot run in a
+frozen build, so they were not checked there.
+
+### Fixed in T-079
+
+- **Answers sent back to the model.** The agents send a model's earlier
+  answers back: a directory summary to its judge, feedback to the refinement,
+  a broken test to its repair. Answers that repeated a secret without its
+  context reached the provider. The first run found 12 such occurrences in
+  requests, and the same 12 in their callbacks.
+
+  Inside a run, every AI request is now also cleaned of what the run already
+  found (`agent/request_redaction.py`). Runs never share it.
+- **`error_log.json`.** It saved an unknown command's name as received. It is
+  now cleaned like the message (`backend/dispatcher.py`).
+- **PlantUML private fields** (`-password : string = "..."`) are detected
+  (`utils/secret_redaction.py`). Other `-name` forms and nonsecret fields are
+  unchanged.
+- **Consistency Review evidence** is checked against what the model was sent,
+  so a finding quoting a line that held a secret is accepted at its lines. The
+  check is as strict as before:
+  - an excerpt quoting the raw value is rejected;
+  - so is one with a placeholder the request did not hold there;
+  - so is one that is in no version of the file.
+
+  See the T-078 limitations above.
+
+### Outputs saved before T-078
+
+Older outputs are not cleaned in bulk; they stay as they were.
+
+- **What T-079 checked:** today's exports read them and copy no secret out.
+  This covers the run report, the UML PDF and the Markdown export, with no
+  run open and including a PlantUML private field. The older files
+  themselves stay byte for byte as they were.
+- **To clean them:** delete them and run the pipeline again.
+- **Still showing old values:** Electron's file browser and View Insights,
+  which read some files directly.
+
+### Not covered or not run
+
+- **Detection is pattern matching.** T-077's documented misses remain.
+- **Manual, NOT RUN.** These View Insights screens read the repository's own
+  folders directly: File Summaries, Directory Summaries, Business Rules, Unit
+  Tests, UML, Errors and Run Report. A checklist is in
+  `test/secret_verification/README.md`.
+- **Not built:** the packaged Electron app (`electron-builder`). It may
+  download Electron binaries.
+- **Unrelated app defect, found here.** ChromaDB sometimes cannot open an
+  index the stage before has just written. The directory stage then fails
+  with "Error creating hnsw segment reader: Nothing found on disk" (2 of
+  about 20 runs). The harness retries that failure once and records it;
+  the app does not.
+
+### US-034 acceptance
+
+| Criterion (project tracker) | Result |
+|---|---|
+| Known secret patterns are replaced with a placeholder in prompts, logs and saved summaries | **Demonstrated** for the ten cases and every sink above, including requests, callbacks, stdout, stderr, logs, run records, summaries, rules, tests, reviews and exports |
+| A sample with 10 planted fake secrets shows 0 leaks (T-079: 0 secrets in prompts, logs or outputs) | **Demonstrated:** 0 leaks in requests and in every output. The storage boundaries above hold raw values on purpose, locally. |
+| The number of secrets removed is shown after the run | **Not demonstrated.** The counts are recorded per call, stage and run in `last_run_log.json`, but neither the Complete screen nor the run report shows them. |
+
+**US-034 is not yet complete.** The remaining blocker is showing the removed
+count after a run, for example on the Complete screen and in the run report.
+Those read the counts `last_run_log.json` already holds.
 
 ## Packaging the backend using Pyinstaller
 

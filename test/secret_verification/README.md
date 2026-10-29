@@ -111,7 +111,22 @@ They are checked for planted values before they are written.
 
 - `test/other_tests/secret_verification_pipeline_test.py` checks the
   harness's own parts.
-- `$env:T079_FULL = "1"` runs the full session too (about a minute).
+- `$env:T079_FULL = "1"` also runs the full session, the storage boundaries
+  and the negative control (about two minutes).
+- `$env:T079_ELECTRON = "1"` also runs the Electron check (about a minute).
+
+`--negative-control` runs the same session with `agent/llm.py`'s request
+redaction removed in the backend process (only there; the app has no such
+switch). The run must fail, with every case found in what the provider
+received.
+
+When ChromaDB cannot open the index the stage before has just written
+("Error creating hnsw segment reader"), the directory step fails. That is an
+app defect, not part of what is checked. That failure alone is retried once,
+in a fresh workspace, and both attempts are in the evidence.
+
+Measured results and the US-034 acceptance verdict are in the main README,
+under "Secret protection verified (US-034, T-079)".
 
 ## The ten cases
 
@@ -254,7 +269,8 @@ The tests check four things:
   above, and reports what it could not check as a problem.
 - The production detector, measured file by file on the fixture:
   - **Pipeline files:** every planted value is replaced, with the expected
-    counts, and every control stays, except known gap A, which is a strict
-    `xfail` until it is fixed.
+    counts, and every control stays. Known gap A (the PlantUML private
+    field in `docs/architecture.md`) was a strict `xfail` until T-079 fixed
+    it.
   - **Detector-only formats:** the expected values are replaced and the
     controls stay. The three documented misses are not asserted.
