@@ -65,6 +65,10 @@ ADDITIONAL_TIMEOUT_MS = 3000
 # Stryker.NET mutates C# only.
 CODE_EXTENSIONS = (".cs",)
 
+# The test framework the unit test step records in test_report.json, and the
+# language it means. Only xUnit (C#) tests can be measured.
+HARNESS_LANGUAGES = {"xunit": "C#", "pytest": "Python"}
+
 INSTALL_HINT = "Install it with: dotnet tool install -g dotnet-stryker"
 
 # Stryker's console output (version 5.0.0), as the progress is read from it:
@@ -149,6 +153,15 @@ def _measure(report, codebase, app_dir, out_dir, test_dir, on_progress):
 
     if not codebase.is_dir():
         return _stop(report, "not_run", f"Codebase not found: {codebase}")
+
+    # Otherwise a Python project is told to run the unit test step it already ran,
+    # because its tests are not where the C# test project would be.
+    harness = _unit_test_harness(app_dir, name)
+    if harness and harness != "xunit":
+        return _stop(report, "not_run", (
+            "Test Strength can only measure C# projects for now, and this project's unit tests "
+            f"are written in {HARNESS_LANGUAGES.get(harness, harness)}."
+        ))
 
     test_dir = Path(test_dir or project_dir_for(codebase, name))
     report["test_project"] = str(test_dir)
@@ -342,6 +355,16 @@ def select_tests(app_dir, codebase_name, test_dir):
         left_out.append({"name": stem, "rule_id": None, "why": why, "reason": reason})
 
     return used, left_out
+
+
+def _unit_test_harness(app_dir, codebase_name):
+    """The test framework of the last unit test run ("xunit", "pytest"), or None when not known."""
+    path = Path(app_dir) / "agent" / "UT_agent_output" / codebase_name / "test_report.json"
+    try:
+        harness = json.loads(path.read_text(encoding="utf-8")).get("harness")
+    except (OSError, ValueError, AttributeError):
+        return None
+    return harness if isinstance(harness, str) and harness else None
 
 
 def _why_left_out(test):

@@ -417,6 +417,8 @@ button.more:hover { text-decoration: underline; }
 
   var MUTATION = DATA.mutation || null;
   var MEASURED = !!(MUTATION && MUTATION.status === "finished" && MUTATION.overall && MUTATION.overall.score !== null);
+  // Measured on tests and rules that a later run replaced, so no numbers are shown.
+  var OUT_OF_DATE = !!(MUTATION && MUTATION.status === "out_of_date");
   var mutationByRule = new Map(((MUTATION && MUTATION.rules) || []).map(function (r) { return [String(r.id), r]; }));
   var mutationByTest = new Map(((MUTATION && MUTATION.tests_used) || []).map(function (t) { return [t.name, t]; }));
   var leftOutByTest = new Map(((MUTATION && MUTATION.tests_left_out) || []).map(function (t) { return [t.name, t]; }));
@@ -427,6 +429,7 @@ button.more:hover { text-decoration: underline; }
       return tile("Test strength", Math.round(MUTATION.overall.score) + "%",
         "of " + plural(MUTATION.overall.scored, "planted mistake") + " caught", "#strength");
     }
+    if (OUT_OF_DATE) return tile("Test strength", "Out of date", "the tests changed since the last check", "#strength");
     return tile("Test strength", "Not measured", MUTATION ? "the last check did not finish" : "not checked yet", "#strength");
   }
 
@@ -651,7 +654,8 @@ button.more:hover { text-decoration: underline; }
       return card;
     }
     if (!MEASURED) {
-      add(card, el("p", { class: "muted" }, "Not measured: " + (MUTATION.message || "the last check did not finish.")));
+      add(card, el("p", { class: "muted" }, "Not measured: " + (MUTATION.message || "the last check did not finish.") +
+        (OUT_OF_DATE && MUTATION.finished_at ? " Last check: " + when(MUTATION.finished_at) + "." : "")));
       return card;
     }
 
@@ -812,6 +816,9 @@ button.more:hover { text-decoration: underline; }
         plural(MUTATION.tests_used.length, "unit test") + " that pass" + (MUTATION.tests_used.length === 1 ? "es" : "") +
         (left ? ". These were left out:" : ".")));
       add(card, left);
+    } else if (OUT_OF_DATE) {
+      add(card, el("p", { class: "plain" }, "Out of date: the tests changed after the last check, so its result is not shown. " +
+        "Run it again from the app: Run Operations, then Test Strength (Mutation Testing)."));
     } else {
       add(card, el("p", { class: "plain" }, "Not checked yet for this project" +
         (MUTATION ? " (the last check did not finish)." : ". Run it from the app: Run Operations, then Test Strength (Mutation Testing).")));
