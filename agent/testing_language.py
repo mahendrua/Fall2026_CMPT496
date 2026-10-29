@@ -30,7 +30,9 @@ def detect_test_language(
         Path(source_path).suffix.lower()
         for source_files in source_file_groups
         for source_path in source_files
-        if Path(source_path).suffix
+        # Only code files say which language the tests need; a rule can
+        # also cite documentation such as README.md.
+        if Path(source_path).suffix.lower() in _LANGUAGE_SUFFIXES
     }
 
     if suffixes == {".py"}:

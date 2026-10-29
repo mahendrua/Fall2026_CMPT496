@@ -10,6 +10,8 @@ import json
 import os
 import time
 
+import pytest
+
 from backend.run_report_data import collect, find_run_log, save
 
 
@@ -255,6 +257,40 @@ def test_unfinished_mutation_run_keeps_its_reason(tmp_path):
     mutation = collect("shop", app, codebase_path=root)["mutation"]
 
     assert (mutation["status"], mutation["message"], mutation["overall"]) == ("not_run", "Stryker.NET is not installed.", None)
+
+
+@pytest.mark.parametrize("newer", ["UT_agent_output/shop/test_report.json", "BR_agent_output/shop/validated_rules.json"])
+def test_mutation_results_measured_on_replaced_tests_or_rules_are_out_of_date(tmp_path, newer):
+    app, root = make_run(tmp_path)
+    report = app / "agent" / "MT_output" / "shop" / "mutation_report.json"
+    write(report, MUTATION_REPORT)
+    now = time.time()
+    for rel, age in (("UT_agent_output/shop/test_report.json", 7200),
+                     ("BR_agent_output/shop/validated_rules.json", 7200),
+                     ("MT_output/shop/mutation_report.json", 3600)):
+        os.utime(app / "agent" / rel, (now - age, now - age))
+    os.utime(app / "agent" / newer, (now, now))  # a later run wrote this one again
+
+    mutation = collect("shop", app, codebase_path=root)["mutation"]
+
+    assert mutation["status"] == "out_of_date" and "Run Test Strength" in mutation["message"]
+    # Nothing that could be read against the new tests and rule ids.
+    assert (mutation["overall"], mutation["by_file"], mutation["rules"]) == (None, {}, [])
+    assert (mutation["tests_used"], mutation["tests_left_out"], mutation["html_report"]) == ([], [], None)
+    assert mutation["finished_at"] == "2020-01-01T10:10:00"  # when the last check was made
+
+
+def test_mutation_results_newer_than_tests_and_rules_are_shown(tmp_path):
+    app, root = make_run(tmp_path)
+    report = app / "agent" / "MT_output" / "shop" / "mutation_report.json"
+    write(report, MUTATION_REPORT)
+    an_hour_ago = time.time() - 3600
+    for rel in ("UT_agent_output/shop/test_report.json", "BR_agent_output/shop/validated_rules.json"):
+        os.utime(app / "agent" / rel, (an_hour_ago, an_hour_ago))
+
+    mutation = collect("shop", app, codebase_path=root)["mutation"]
+
+    assert (mutation["status"], mutation["overall"]["score"]) == ("finished", 75.0)
 
 
 def test_mutation_results_older_than_the_run_get_a_note(tmp_path):

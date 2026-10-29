@@ -149,7 +149,11 @@ def build_database(source_path: str) -> None:
     # Verification before upsert
     if not (len(ids) == len(embeddings) == len(metadatas)):
         logger.critical(f"CRITICAL ERROR: Data mismatch! IDs: {len(ids)}, Docs: {len(embeddings)}, Meta: {len(metadatas)}")
-        sys.exit(1)
+        # Raise rather than sys.exit(), which would end the backend.
+        raise RuntimeError(
+            f"Code database data mismatch: {len(ids)} IDs, {len(embeddings)} documents, "
+            f"{len(metadatas)} metadata entries."
+        )
 
     if not ids:
         message = empty_code_index_message(source_dir, len(bundles))

@@ -34,7 +34,9 @@ def test_function_lab_produces_function_chunks(tmp_path):
 
 def test_script_lab_produces_module_body_matching_executable_statements(tmp_path):
     lab = _copy_lab(tmp_path, "script_lab")
-    source = (lab / "grade_script.py").read_text(encoding="utf-8")
+    # Exact text, line endings included: Git can check fixtures out with
+    # Windows line endings, which read_text() would turn into "\n".
+    source = (lab / "grade_script.py").read_bytes().decode("utf-8")
     bundle, chunks = _chunks_for(lab, "grade_script.py")
     bodies = [chunk for chunk in chunks if chunk["type"] == "module_body"]
     assert bundle.path.name == "grade_script.py"

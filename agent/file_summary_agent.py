@@ -123,7 +123,8 @@ class FileSummaryAgent:
             "filename_counters": {},
             "file_summaries": [],
             "current_files": [],
-            "business_rules_by_file": {}
+            "business_rules_by_file": {},
+            "failed_files": []
         }
 
         self._loop = asyncio.new_event_loop()
@@ -208,9 +209,13 @@ class FileSummaryAgent:
             60
         )
 
+        root = state.get("directory_path")
         summaries = []
+        failed = []
         for file_path, output, err in results:
             if err is not None:
+                # Kept for the step's warning, which used to say nothing.
+                failed.append(f"{os.path.relpath(file_path, root) if root else Path(file_path).name}: {err}")
                 summaries.append(FileSummaryOutput(path=file_path, summary=f"Error generating summary: {err}"))
             elif isinstance(output, FileSummaryOutput):
                 summaries.append(output)
@@ -228,6 +233,7 @@ class FileSummaryAgent:
             "file_summaries": summaries,
             "current_files": [Path(p).name for p in batch],
             "business_rules_by_file": batch_rules,
+            "failed_files": failed,
         }
 
         

@@ -10,6 +10,8 @@ Everything is inside the one file -- styles, script, the run's data and the
 diagram -- so it opens in any browser without Checkpoint or a network.
 """
 
+import base64
+import hashlib
 import json
 import re
 from html import escape
@@ -36,10 +38,11 @@ def render(data, diagram=None):
         "CODEBASE": escape(str(data.get("codebase", "Project"))),
         "DATA": data_json,
         "SVG": svg,
+        "CSP": CONTENT_SECURITY_POLICY,
     }
 
     # One pass, so a marker that happens to appear in the data is left alone.
-    return re.sub(r"@@(TITLE|CODEBASE|DATA|SVG)@@", lambda match: parts[match.group(1)], TEMPLATE)
+    return re.sub(r"@@(TITLE|CODEBASE|DATA|SVG|CSP)@@", lambda match: parts[match.group(1)], TEMPLATE)
 
 
 TEMPLATE = r"""<!doctype html>
@@ -47,6 +50,7 @@ TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="@@CSP@@">
 <title>@@TITLE@@</title>
 <style>
 :root {
@@ -413,6 +417,8 @@ button.more:hover { text-decoration: underline; }
 
   var MUTATION = DATA.mutation || null;
   var MEASURED = !!(MUTATION && MUTATION.status === "finished" && MUTATION.overall && MUTATION.overall.score !== null);
+  // Measured on tests and rules that a later run replaced, so no numbers are shown.
+  var OUT_OF_DATE = !!(MUTATION && MUTATION.status === "out_of_date");
   var mutationByRule = new Map(((MUTATION && MUTATION.rules) || []).map(function (r) { return [String(r.id), r]; }));
   var mutationByTest = new Map(((MUTATION && MUTATION.tests_used) || []).map(function (t) { return [t.name, t]; }));
   var leftOutByTest = new Map(((MUTATION && MUTATION.tests_left_out) || []).map(function (t) { return [t.name, t]; }));
@@ -423,6 +429,7 @@ button.more:hover { text-decoration: underline; }
       return tile("Test strength", Math.round(MUTATION.overall.score) + "%",
         "of " + plural(MUTATION.overall.scored, "planted mistake") + " caught", "#strength");
     }
+    if (OUT_OF_DATE) return tile("Test strength", "Out of date", "the tests changed since the last check", "#strength");
     return tile("Test strength", "Not measured", MUTATION ? "the last check did not finish" : "not checked yet", "#strength");
   }
 
@@ -647,7 +654,8 @@ button.more:hover { text-decoration: underline; }
       return card;
     }
     if (!MEASURED) {
-      add(card, el("p", { class: "muted" }, "Not measured: " + (MUTATION.message || "the last check did not finish.")));
+      add(card, el("p", { class: "muted" }, "Not measured: " + (MUTATION.message || "the last check did not finish.") +
+        (OUT_OF_DATE && MUTATION.finished_at ? " Last check: " + when(MUTATION.finished_at) + "." : "")));
       return card;
     }
 
@@ -808,6 +816,9 @@ button.more:hover { text-decoration: underline; }
         plural(MUTATION.tests_used.length, "unit test") + " that pass" + (MUTATION.tests_used.length === 1 ? "es" : "") +
         (left ? ". These were left out:" : ".")));
       add(card, left);
+    } else if (OUT_OF_DATE) {
+      add(card, el("p", { class: "plain" }, "Out of date: the tests changed after the last check, so its result is not shown. " +
+        "Run it again from the app: Run Operations, then Test Strength (Mutation Testing)."));
     } else {
       add(card, el("p", { class: "plain" }, "Not checked yet for this project" +
         (MUTATION ? " (the last check did not finish)." : ". Run it from the app: Run Operations, then Test Strength (Mutation Testing).")));
@@ -1379,3 +1390,19 @@ button.more:hover { text-decoration: underline; }
 </body>
 </html>
 """
+
+
+def _script_source(page):
+    """CSP source for the page's one inline code block: its SHA-256, base64."""
+    script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
+    return "'sha256-" + base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode("ascii") + "'"
+
+
+# Only the page's own code may run, nothing is fetched from outside (images
+# only as data: URIs) and styles stay inline. Text from the outputs is already
+# escaped; this stops anything that slips through from running code or sending
+# data anywhere. The code block has no @@ markers, so its hash is fixed.
+CONTENT_SECURITY_POLICY = (
+    f"default-src 'none'; script-src {_script_source(TEMPLATE)}; style-src 'unsafe-inline'; "
+    "img-src data:; base-uri 'none'; form-action 'none'"
+)

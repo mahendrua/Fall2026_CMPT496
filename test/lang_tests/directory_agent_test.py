@@ -193,53 +193,28 @@ def test_context_analyser_node_sufficient(directory_agent):
     assert result["file_summary_k"] == 10
 
 def test_summarizer_node(directory_agent):
-    # Simulate the state after crawling
+    shapes = str(Path(__file__).parent / "TestCodebase" / "Shapes")
+    math = str(Path(__file__).parent / "TestCodebase" / "Math")
     state = {
-        "current_directory": str(Path(__file__).parent / "TestCodebase" / "Shapes"),
-        "directories": deque([
-            str(Path(__file__).parent / "TestCodebase" / "Math"),
-            str(Path(__file__).parent / "TestCodebase" / "Circles"),
-            str(Path(__file__).parent / "TestCodebase")
-        ]),
+        "current_directory": shapes,
         "code_context": ["Test1", "Test2", "Test3", "Test4", "Test5"],
         "summary_context": ["Test1", "Test2", "Test3", "Test4", "Test5"],
-        "sufficient_code_context": True,
-        "sufficient_summary_context": True,
-        "codebase_k": 50,
-        "file_summary_k": 49
+        "child_summaries": {},
     }
 
-    # simulate 1st summarizer_node call
+    # The summarizer only produces the summary; writer_node clears the
+    # directory-specific context afterwards (checked in test_writer_node).
     result1 = directory_agent.summarizer_node(state)
-    # make sure that summarizer_node clears directory specific info after it is called
-    assert "directory_summary" in result1
-    assert result1["code_context"] == []
-    assert result1["summary_context"] == []
-    assert result1["sufficient_code_context"] is False
-    assert result1["sufficient_summary_context"] is False
-    assert result1["codebase_k"] == 10
-    assert result1["file_summary_k"] == 10
-    # make sure that directory summary did not get reset back to nothing
     assert result1["directory_summary"].purpose == "Summary for directory 1..."
-    assert result1["directory_summary"].directory_path == str(Path(__file__).parent / "TestCodebase" / "Shapes")
+    assert result1["directory_summary"].directory_path == shapes
     assert result1["directory_summary"].directory_name == "Shapes"
 
     # simulate graph advancing to next directory
-    state["current_directory"] = state["directories"].popleft()
+    state["current_directory"] = math
 
-    # simulate 2nd summarizer_node call
     result2 = directory_agent.summarizer_node(state)
-    # make sure that summarizer_node clears directory specific info after it is called
-    assert "directory_summary" in result2
-    assert result2["code_context"] == []
-    assert result2["summary_context"] == []
-    assert result2["sufficient_code_context"] is False
-    assert result2["sufficient_summary_context"] is False
-    assert result2["codebase_k"] == 10
-    assert result2["file_summary_k"] == 10
-    # make sure that directory summary did not get reset back to nothing
     assert result2["directory_summary"].purpose == "Summary for directory 2..."
-    assert result2["directory_summary"].directory_path == str(Path(__file__).parent / "TestCodebase" / "Math")
+    assert result2["directory_summary"].directory_path == math
     assert result2["directory_summary"].directory_name == "Math"
 
 def test_writer_node(directory_agent, tmp_path):
@@ -256,14 +231,25 @@ def test_writer_node(directory_agent, tmp_path):
             "output_directory": str(output_dir),
             "codebase_name": "repo",
             "directory_path": "/repo",
-            "directories": deque([]),
+            "current_directory": f"/repo/{d}",
+            "directories": deque(["/repo"]),
             "directory_summary": DirectoryOutput(
                 directory_name=d,
                 directory_path=f"/repo/{d}",
                 purpose=f"{d} utilities"
             )
         }
-        directory_agent.writer_node(state)
+        result = directory_agent.writer_node(state)
+
+        # the writer moves on to the next queued directory and clears the
+        # directory-specific context, so the next summary starts fresh
+        assert result["current_directory"] == "/repo"
+        assert result["code_context"] == []
+        assert result["summary_context"] == []
+        assert result["sufficient_code_context"] is False
+        assert result["sufficient_summary_context"] is False
+        assert result["codebase_k"] == 10
+        assert result["file_summary_k"] == 10
 
     repo_dir = output_dir / "repo"
     # make sure that tmp_path/summaries/repo exists 

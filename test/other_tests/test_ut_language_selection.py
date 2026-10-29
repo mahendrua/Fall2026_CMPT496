@@ -45,6 +45,21 @@ def test_rejects_mixed_language_rule_selection():
     with pytest.raises(ValueError, match="one language at a time"):
         detect_test_language(source_file_groups)
 
+
+def test_documentation_paths_do_not_count_as_a_language():
+    source_file_groups = [
+        ["src/Program.cs", "README.md"],
+        ["docs/usage.md"],
+    ]
+
+    assert detect_test_language(source_file_groups) == "csharp"
+
+
+def test_documentation_only_rules_fall_back_to_the_project_scan(tmp_path):
+    write_source(tmp_path / "Program.cs", "class Program {}\n")
+    write_source(tmp_path / "README.md", "# docs\n")
+    assert detect_test_language([["README.md"]], codebase_path=str(tmp_path)) == "csharp"
+
 def test_python_generation_instructions_request_pytest():
     instructions = unit_test_generation_instructions("python")
 
@@ -195,6 +210,18 @@ def test_unit_test_language_from_csharp_paths_and_xunit_body():
     tests = [
         make_test(
             source_file_paths=["src/Calculator.cs"],
+            imports=["using Xunit;"],
+            unit_test="[Fact]\npublic void Adds()\n{\n    Assert.Equal(2, 1 + 1);\n}\n",
+        )
+    ]
+
+    assert detect_unit_test_language(tests) == "csharp"
+
+
+def test_unit_test_language_ignores_documentation_paths():
+    tests = [
+        make_test(
+            source_file_paths=["src/Calculator.cs", "README.md"],
             imports=["using Xunit;"],
             unit_test="[Fact]\npublic void Adds()\n{\n    Assert.Equal(2, 1 + 1);\n}\n",
         )

@@ -280,8 +280,14 @@ def build_database(codebase_name: str) -> None:
     )
 
     if not json_dir.exists() or not json_dir.is_dir():
-        logger.error(f"Error: The provided JSON directory '{json_dir}' does not exist or is not a directory.")
-        sys.exit(1)
+        # Raise rather than sys.exit(): exiting would end the backend for the
+        # rest of the app session, while an error is reported for this step.
+        message = (
+            f"No file summaries found for '{codebase_name}' (looked in {json_dir}). "
+            "Create the file summaries first."
+        )
+        logger.error(message)
+        raise FileNotFoundError(message)
 
     client = chromadb.PersistentClient(path=str(db_dir))
 

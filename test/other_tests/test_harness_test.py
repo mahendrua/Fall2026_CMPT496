@@ -280,7 +280,7 @@ def test_project_error_message_says_nothing_ran():
     assert "none ran" in run.message()
 
 
-def _scripted_check(monkeypatch, tmp_path, builds, cases, fix):
+def _scripted_check(monkeypatch, tmp_path, builds, cases, fix, rejected=()):
     """Run check_tests() with dotnet replaced by a scripted list of builds."""
     import agent.test_harness as harness
 
@@ -290,7 +290,9 @@ def _scripted_check(monkeypatch, tmp_path, builds, cases, fix):
     monkeypatch.setattr(harness, "run_tests", lambda *args: (len(cases), 0, 0, [], ""))
     Path(harness.project_dir_for(tmp_path, "demo")).mkdir(parents=True)
 
-    return harness.check_tests("Unit", "UT", cases, [], str(tmp_path), "demo", str(tmp_path / "out"), fix=fix)
+    return harness.check_tests(
+        "Unit", "UT", cases, list(rejected), str(tmp_path), "demo", str(tmp_path / "out"), fix=fix
+    )
 
 
 def test_each_test_gets_its_own_repair_tries(monkeypatch, tmp_path):
@@ -321,6 +323,24 @@ def test_test_still_broken_after_its_tries_is_dropped(monkeypatch, tmp_path):
 
     assert run.kept == []
     assert run.dropped[0].reason.startswith("still does not compile after 2 AI repair(s)")
+
+
+def test_run_message_names_why_tests_were_dropped(monkeypatch, tmp_path):
+    # A test whose AI answer could not be used never reaches the compiler, so
+    # the message must not say it did not compile.
+    stubborn = TestCase(name="UT_3", imports=[], body=GOOD_TEST)
+    too_long = TestCase(name="UT_4", imports=[], body="", reason="the AI's answer was 81,735 characters long")
+    builds = [{"UT_3": ["line 5: CS0122: inaccessible"]}] * 3 + [{}]
+
+    async def fix(case, namespace):
+        return ["Xunit"], GOOD_TEST
+
+    run = _scripted_check(monkeypatch, tmp_path, builds, [stubborn], fix, rejected=[too_long])
+
+    assert run.message() == (
+        "Unit tests: 0 of 2 kept (1 dropped because they did not compile, "
+        "1 dropped because the AI's answer could not be used)."
+    )
 
 
 def test_run_summary_identifies_xunit_harness():
