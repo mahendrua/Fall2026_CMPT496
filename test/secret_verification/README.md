@@ -8,6 +8,62 @@ with the app's own detector (`utils/secret_redaction.py`), so it can judge it.
 |---|---|
 | `secret_fixture.py` | The LedgerLite codebase: the ten secrets, where each is written, and the nonsecret controls around them. Also detector-only samples in file types the pipeline does not read. |
 | `leak_scanner.py` | The independent scanner. Standard library only; imports nothing from the app. |
+| `run_verification.py` | The offline run: builds a workspace, starts the real backend on the fixture, sends it a scripted session, scans what came out and writes the evidence. |
+| `offline_backend.py` | Starts the app's own `main.py` as Electron does, with the offline model, a callback recorder and a network guard installed first. |
+| `offline_model.py` | The model that stands in for the Google provider package. The app's `build_chat_model()` still wraps it with its real retries and redaction; it records exactly what it is sent. |
+| `offline_answers.py` | Its scripted answers. They are valid for every schema the pipeline uses, and repeat planted secrets on purpose. They also script a 503 that is retried and 400 errors that quote secrets. |
+
+## The offline run
+
+```powershell
+.venv\Scripts\python.exe test\secret_verification\run_verification.py
+```
+
+It takes about a minute. It needs the `.venv` packages, the cached
+`all-MiniLM-L6-v2` model, dotnet (with xUnit in the local NuGet cache) and
+Java. It needs no API key and no network, and installs nothing.
+
+**The workspace** is a new temporary folder:
+
+- the fixture;
+- a byte-for-byte copy of the app's Python files and `plantuml.jar`, with
+  its own `.env` selecting the offline model;
+- `TEMP` for the generated test project;
+- the captures: what the provider received, what callbacks were handed,
+  stdout, stderr and network attempts.
+
+It is deleted afterwards, unless `--keep` is given. Kept, it holds raw
+values: do not share it.
+
+**The session** goes through the real `main.py` over stdin and stdout, read
+by `main.js`'s rules:
+
+1. the full pipeline (every stage, real dotnet build and test, real
+   PlantUML);
+2. run usage and the review result;
+3. mutation testing (Stryker is not installed, so it reports `not_run`);
+4. a Consistency Review check of `docs/architecture.md`, in a run of its own;
+5. a directory step and a review check whose model calls are scripted to
+   fail with errors quoting secrets;
+6. the error log.
+
+**Evidence:** `report.json` and `summary.md` go to `--out`. The default is
+`runs/<time>/`, which git ignores. They hold case IDs, counts and locations.
+They are checked for planted values before they are written.
+
+**Exit status:**
+
+| Status | Meaning |
+|---|---|
+| 0 | Clean and complete. |
+| 1 | A planted value leaked. |
+| 2 | Something required is missing: a stage, a request kind, a check. That is incomplete, never clean. |
+
+**The tests:**
+
+- `test/other_tests/secret_verification_pipeline_test.py` checks the
+  harness's own parts.
+- `$env:T079_FULL = "1"` runs the full session too (about a minute).
 
 ## The ten cases
 

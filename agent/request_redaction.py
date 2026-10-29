@@ -34,7 +34,10 @@ of being passed through unchecked.
 
 Inside utils.output_redaction.secret_scope(), what each request's redactor
 found is also kept for the rest of the run, in memory, so the answers and
-errors that come back can be cleaned of it too (T-078).
+errors that come back can be cleaned of it too (T-078), and so can every
+later request: the agents send a model's earlier answers back (a directory
+summary to its judge and to the parent directory, a broken test to its
+repair), and an answer can repeat a secret without its context (T-079).
 """
 
 import re
@@ -57,7 +60,7 @@ from langchain_core.messages import (
 )
 from langchain_core.prompt_values import ChatPromptValue, StringPromptValue
 
-from utils.output_redaction import remember
+from utils.output_redaction import remember, teach
 from utils.secret_redaction import RedactionReport, SecretRedactionError, SecretRedactor
 
 
@@ -214,7 +217,8 @@ def _walk_input(model_input, visit):
 def _redact_request(walk):
     """
     Run walk(visit) twice with one redactor: first only to learn every secret
-    in the request, then to build the redacted copy.
+    in the request, then to build the redacted copy. In between, the run's
+    known secrets are added, numbered after the request's own placeholders.
     """
     redactor = SecretRedactor()
 
@@ -223,6 +227,7 @@ def _redact_request(walk):
         return text
 
     walk(learn)
+    teach(redactor)
     redacted = walk(redactor.redact_field)
     remember(redactor)
     return redacted, redactor.report()

@@ -475,3 +475,22 @@ def test_openai_http_request_is_redacted_and_still_authenticated(monkeypatch):
 
     assert usage.summary()["calls"] == 3
     assert usage.summary()["input_tokens"] == 60
+
+
+def test_inside_a_run_an_answer_sent_back_cannot_carry_a_secret_the_run_found():
+    # T-079: the directory agent sends a summary back to its judge, and the
+    # summary repeats the secret with no "password =" before it.
+    from backend.run_protection import protected_run
+
+    model, recorder = protected(), RecordingCallbacks()
+
+    with protected_run():
+        model.invoke(PROMPT, config={"callbacks": [recorder]})
+        model.invoke([("user", f"Judge this summary: approval needs {FAKE}.")], config={"callbacks": [recorder]})
+
+    assert len(model.sent) == 2
+    assert FAKE not in model.sent_text()
+    assert FAKE not in recorder.seen_text()
+    assert [m[REDACTION_METADATA_KEY] for kind, _, m in recorder.events if kind == "chat_model_start"] == [
+        {"PASSWORD": 2}, {"PASSWORD": 1},
+    ]

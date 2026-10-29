@@ -32,12 +32,12 @@ A secret is found by its context (password = "..."). An answer, an error
 message or an excerpt cut out of a file can repeat it without that context.
 Inside secret_scope(), every request agent/request_redaction.py cleans and
 every output cleaned here adds what it found to the scope, and every output
-cleaned later in the scope is also cleaned of those values wherever they
-appear. Only values of 8 or more characters mixing letters with digits or
-symbols are kept that way, the rule T-077 uses within one request, so
-ordinary words are never blanked out. The values stay in memory on the
-scope's own object and go when it closes. Each run opens its own scope, and
-scopes never share secrets.
+cleaned and every request sent later in the scope is also cleaned of those
+values wherever they appear (requests from T-079). Only values of 8 or more
+characters mixing letters with digits or symbols are kept that way, the
+rule T-077 uses within one request, so ordinary words are never blanked
+out. The values stay in memory on the scope's own object and go when it
+closes. Each run opens its own scope, and scopes never share secrets.
 
 When something cannot be checked
 --------------------------------
@@ -120,6 +120,21 @@ def remember(redactor):
 
     if known is not None:
         known.learn(redactor)
+
+
+def teach(redactor):
+    """
+    Let a redactor also replace what the open scope already knows, if any.
+
+    agent/request_redaction.py calls this for every AI request, after
+    scanning it, so a model's answer sent back in a later request (a
+    directory summary to its judge, a test to its repair) cannot carry a
+    secret the run already found, even without its context (T-079).
+    """
+    known = _scope_var.get()
+
+    if known is not None:
+        known.teach(redactor)
 
 
 # ---------------------------------------------------------

@@ -635,6 +635,12 @@ and in every cleaned output are remembered, in memory only. Every later output
 in the same run is also cleaned of those values wherever they appear. When the
 run ends, they are dropped. They are never saved, logged or shown.
 
+So is every later AI request in the run (from T-079). The agents send a
+model's earlier answers back: a directory summary to its judge and to the
+parent directory, a judge's feedback to the refinement, a broken test to its
+repair. The T-079 ten-secret run found answers repeating a secret without its
+context reaching the provider that way.
+
 **Limits:**
 
 - Only values of 8 or more characters mixing letters with digits or symbols

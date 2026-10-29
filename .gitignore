@@ -16,6 +16,8 @@ agent/MT_output/
 agent/consistency_output/
 # Consistency Review evaluation runs
 test/consistency_eval/runs/
+# T-079 secret verification evidence (value-free reports)
+test/secret_verification/runs/
 
 .env
 .vscode/

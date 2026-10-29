@@ -21,6 +21,7 @@ from langchain_core.messages import (
 from langchain_core.prompt_values import ChatPromptValue, ImagePromptValue, StringPromptValue
 
 from agent.request_redaction import redact_messages, redact_model_input, redact_prompts
+from utils.output_redaction import secret_scope
 from utils.secret_redaction import SecretRedactionError
 
 FAKE = "Fake-Pass-111!"
@@ -384,3 +385,58 @@ def test_report_is_safe_to_log():
         assert TOKEN_VALUE not in shown
 
     assert all(isinstance(m, BaseMessage) for m in out)
+
+
+# ---------------------------------------------------------------------------
+# Inside a run, later requests know what earlier ones found (T-079)
+# ---------------------------------------------------------------------------
+# The agents send a model's earlier answers back: a directory summary to its
+# judge and to the parent directory, a broken test to its repair. An answer
+# can repeat a secret without the name that identified it.
+
+def test_a_secret_found_earlier_in_the_run_is_replaced_in_a_later_request():
+    with secret_scope():
+        redact_model_input(agent_prompt(f'string password = "{FAKE}";'))
+        out, report = redact_model_input([("user", f"Judge this summary: approval needs {FAKE}.")])
+
+    assert out == [("user", f"Judge this summary: approval needs {P1}.")]
+    assert report.replaced == {"PASSWORD": 1}
+
+
+def test_a_later_request_numbers_known_secrets_after_its_own_placeholders():
+    with secret_scope():
+        redact_model_input(agent_prompt(f'string password = "{OTHER}";'))
+        out, report = redact_model_input([("user", f"Earlier: {P1}. Now: {OTHER}.")])
+
+    assert out == [("user", f"Earlier: {P1}. Now: {P2}.")]
+    assert report.replaced == {"PASSWORD": 1}
+
+
+def test_outside_a_run_each_request_only_has_its_own_context():
+    # Unchanged: with no run open (a key check, a terminal tool), nothing
+    # is remembered from one request to the next.
+    redact_model_input(agent_prompt(f'string password = "{FAKE}";'))
+    out, report = redact_model_input([("user", f"approval needs {FAKE}.")])
+
+    assert out == [("user", f"approval needs {FAKE}.")]
+    assert report.total == 0
+
+
+def test_a_new_run_does_not_know_an_earlier_runs_secrets():
+    with secret_scope():
+        redact_model_input(agent_prompt(f'string password = "{FAKE}";'))
+
+    with secret_scope():
+        out, _ = redact_model_input([("user", f"approval needs {FAKE}.")])
+
+    assert out == [("user", f"approval needs {FAKE}.")]
+
+
+def test_known_secrets_do_not_touch_ordinary_text_in_a_later_request():
+    # Only values long and mixed enough to stand on their own are kept.
+    with secret_scope():
+        redact_model_input(agent_prompt('smtp_pass = "letmein"\nstring password = "Pw-12";'))
+        out, report = redact_model_input([("user", "Tried letmein and Pw-12 again.")])
+
+    assert out == [("user", "Tried letmein and Pw-12 again.")]
+    assert report.total == 0
