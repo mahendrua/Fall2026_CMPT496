@@ -68,6 +68,37 @@ Download Dotnet:
    npm.cmd start
    ```
 
+## Firebase Authentication (Checkpoint)
+
+Checkpoint includes the Firebase Web app configuration for the `checkpoint-cmpt497` project. Before signing in, make sure Email/Password is enabled:
+
+1. In Firebase Console, open the `checkpoint-cmpt497` project.
+2. Open **Authentication → Sign-in method** and enable **Email/Password**.
+3. If you use another Firebase project, create `firebase-config.json` in Checkpoint's Electron user-data directory. Checkpoint displays the exact full path on the sign-in screen; on Windows it is under `%APPDATA%`. Use this shape, replacing every value with that project's Web app settings:
+
+   ```json
+   {
+     "apiKey": "YOUR_FIREBASE_WEB_API_KEY",
+     "authDomain": "YOUR_FIREBASE_AUTH_DOMAIN",
+     "projectId": "YOUR_FIREBASE_PROJECT_ID",
+     "appId": "YOUR_FIREBASE_APP_ID"
+   }
+   ```
+
+4. Restart Checkpoint after adding or changing the override. New users can then register, and existing users can sign in or request a Firebase password-reset email.
+
+The Firebase Web app configuration in `firebase-config.json` is public client configuration, not an Admin SDK credential. A per-user override takes precedence over the bundled settings. Never put a service-account key in this application. Firebase Authentication sessions are stored using Electron's operating-system-backed `safeStorage`; persistent sign-in requires the OS keychain/credential store to be available. The **Remember me** checkbox controls whether the Firebase session is kept securely between launches. User role records are stored locally under the app's `profiles` user-data folder, keyed by Firebase UID; they are not synchronized to Firebase. Passwords are handled only by Firebase Authentication and are never included in those profile files.
+
+Firebase sign-in identifies the Checkpoint account; it does not make an untrusted local project safe to execute. The existing Docker and GUI-testing execution boundaries remain in effect.
+
+## Import a GitHub Repository
+
+From the project source screen, choose **GitHub Repository**, enter a public GitHub repository URL, fetch its branches, and select the revision to import. Checkpoint downloads the selected branch's resolved commit archive into the application's local user-data directory and passes that workspace through the existing analysis pipeline. Private repositories, GitHub credentials, and automatic updates are not supported; import again to analyze a newer revision.
+
+After connecting, **Full Branch Analysis** continues to use the existing Checkpoint operations. **Latest Pull Request** opens the most recently merged pull request for a selected target branch, while **Browse Pull Requests** provides status filtering, title/number search, sorting, and pagination. Pull request overviews include available metadata, commits, and changed files. Code comparison reads file contents from the pull request's immutable base and head commit SHAs; binary or GitHub-limited files are identified when their contents cannot be shown. These pull-request views do not run AI analysis or modify the repository.
+
+An imported repository is still untrusted project code. Importing it does not run its code, but later project operations such as starting an application for GUI testing can execute local repository files with your Windows user permissions. Review the source and only run operations on projects you trust. Existing Docker and GUI-testing restrictions remain in effect.
+
 ## Deactivate Virtual Environment
 ```powershell
 deactivate

@@ -3,10 +3,118 @@
 <head>
     <title>Checkpoint</title>
 
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com; frame-src 'self' data:;">
     <link rel="stylesheet" href="style.css">
 </head>
 
 <body>
+
+    <div id="registrationSuccessToast" class="auth-success-toast hidden" role="status" aria-live="polite">
+        Account created successfully. Welcome to Checkpoint.
+    </div>
+    <section id="authScreen" class="auth-screen" aria-label="Checkpoint authentication">
+        <div class="auth-brand-panel">
+            <div class="auth-brand">
+                <span class="auth-logo" aria-hidden="true">C</span>
+                <span>Checkpoint</span>
+            </div>
+            <div class="auth-brand-message">
+                <p class="auth-overline">YOUR SOFTWARE QUALITY WORKSPACE</p>
+                <h1>Build with confidence.<br><span>Ship with clarity.</span></h1>
+                <p>AI-powered analysis and testing tools to help your team deliver better software.</p>
+            </div>
+            <div class="auth-art" aria-hidden="true">
+                <div class="auth-art-orbit auth-orbit-one"></div>
+                <div class="auth-art-orbit auth-orbit-two"></div>
+                <div class="auth-art-core"><span>✓</span></div>
+                <div class="auth-art-node auth-node-one">AI</div>
+                <div class="auth-art-node auth-node-two">&lt;/&gt;</div>
+                <div class="auth-art-node auth-node-three">QA</div>
+                <div class="auth-art-line auth-line-one"></div>
+                <div class="auth-art-line auth-line-two"></div>
+            </div>
+            <p class="auth-brand-footer">ANALYZE · TEST · DELIVER</p>
+        </div>
+
+        <div class="auth-form-panel">
+            <div class="auth-form-wrap">
+                <div id="authSetupNotice" class="auth-notice hidden" role="alert"></div>
+                <div id="authFormContent">
+                    <section id="loginFormView" class="auth-view">
+                        <p class="auth-overline">WELCOME TO CHECKPOINT</p>
+                        <h2>Welcome Back to Checkpoint</h2>
+                        <p class="auth-subtitle">Sign in to continue your development workflow.</p>
+                        <form id="loginForm" novalidate>
+                            <label class="auth-field">
+                                <span>Email Address</span>
+                                <input id="loginEmail" type="email" autocomplete="email" placeholder="you@company.com" required>
+                            </label>
+                            <label class="auth-field">
+                                <span>Password</span>
+                                <span class="auth-password-wrap">
+                                    <input id="loginPassword" type="password" autocomplete="current-password" placeholder="Enter your password" required>
+                                    <button class="auth-show-password" type="button" data-password-toggle="loginPassword" aria-label="Show password">Show</button>
+                                </span>
+                            </label>
+                            <div class="auth-form-options">
+                                <label class="auth-checkbox"><input type="checkbox" id="rememberMe" checked><span>Remember me</span></label>
+                                <button id="forgotPasswordBtn" class="auth-text-button" type="button">Forgot Password?</button>
+                            </div>
+                            <p id="loginError" class="auth-error" role="alert" aria-live="polite"></p>
+                            <button id="signInBtn" class="auth-submit" type="submit"><span>Sign In</span></button>
+                        </form>
+                        <p class="auth-switch">Don't have an account? <button id="showRegistrationBtn" class="auth-text-button" type="button">Create Account</button></p>
+                    </section>
+
+                    <section id="registrationFormView" class="auth-view hidden">
+                        <p class="auth-overline">GET STARTED</p>
+                        <h2>Create Your Checkpoint Account</h2>
+                        <p class="auth-subtitle">Join Checkpoint and simplify your software testing workflow.</p>
+                        <form id="registrationForm" novalidate>
+                            <label class="auth-field">
+                                <span>Full Name</span>
+                                <input id="registrationName" type="text" autocomplete="name" placeholder="Your full name" maxlength="200" required>
+                            </label>
+                            <label class="auth-field">
+                                <span>Email Address</span>
+                                <input id="registrationEmail" type="email" autocomplete="email" placeholder="you@company.com" required>
+                            </label>
+                            <label class="auth-field">
+                                <span>Password</span>
+                                <span class="auth-password-wrap">
+                                    <input id="registrationPassword" type="password" autocomplete="new-password" placeholder="At least 6 characters" required>
+                                    <button class="auth-show-password" type="button" data-password-toggle="registrationPassword" aria-label="Show password">Show</button>
+                                </span>
+                            </label>
+                            <label class="auth-field">
+                                <span>Confirm Password</span>
+                                <span class="auth-password-wrap">
+                                    <input id="registrationConfirmPassword" type="password" autocomplete="new-password" placeholder="Re-enter your password" required>
+                                    <button class="auth-show-password" type="button" data-password-toggle="registrationConfirmPassword" aria-label="Show password">Show</button>
+                                </span>
+                            </label>
+                            <label class="auth-field">
+                                <span>Professional Role</span>
+                                <select id="professionalRole" required>
+                                    <option value="">Select your role</option>
+                                    <option>Software Developer</option>
+                                    <option>Software Tester / QA Engineer</option>
+                                    <option>Project Manager</option>
+                                    <option>Software Engineer</option>
+                                    <option>Team Lead</option>
+                                    <option>Student</option>
+                                    <option>Other</option>
+                                </select>
+                            </label>
+                            <p id="registrationError" class="auth-error" role="alert" aria-live="polite"></p>
+                            <button id="createAccountBtn" class="auth-submit" type="submit"><span>Create Account</span></button>
+                        </form>
+                        <p class="auth-switch">Already have an account? <button id="showLoginBtn" class="auth-text-button" type="button">Sign In</button></p>
+                    </section>
+                </div>
+            </div>
+        </div>
+    </section>
 
     <!-- HOME PAGE -->
     <div id="homePage" class="page active">
@@ -26,16 +134,6 @@
             <span class="home-header-divider" aria-hidden="true"></span>
             <p class="home-intro">Choose where you want to go</p>
         </header>
-
-        <section class="home-codebase-summary" aria-live="polite" aria-label="Selected codebase">
-            <div class="home-codebase-copy">
-                <p class="home-codebase-select-label">Selected Codebase <span aria-hidden="true">⌄</span></p>
-                <p class="home-codebase-name" id="homeCodebaseName">No codebase selected</p>
-            </div>
-            <button class="home-connect-button" id="homeConnectCodebaseBtn" type="button">
-                Connect Codebase <span aria-hidden="true">+</span>
-            </button>
-        </section>
 
         <main class="home-destinations">
             <article class="home-action-card">
@@ -96,6 +194,7 @@
             <div class="home-footer-actions">
                 <button class="home-footer-button" id="apiBtn" type="button"><span aria-hidden="true">↑</span> Upload API Key</button>
                 <button class="home-footer-button" id="faqAndSupportBtn" type="button"><span class="home-question-icon" aria-hidden="true">?</span> FAQ &amp; Support</button>
+                <button class="home-footer-button" id="logoutBtn" type="button">Sign Out</button>
             </div>
             <button class="home-footer-button home-exit-button back-btn" id="exitBtn" type="button"><span aria-hidden="true">↳</span> Exit</button>
         </footer>
@@ -230,6 +329,7 @@
                 <span class="operations-heading-divider" aria-hidden="true">|</span>
                 <p>Select analysis tasks or run full automated pipeline</p>
             </div>
+            <button class="operations-back-button operations-cancel-project" id="cancelProjectSelectionBtn" type="button" title="Clear the selected project and return to the dashboard. Imported files are not deleted.">Cancel Project</button>
         </header>
 
         <div id="analysisOptions" class="operations-content">
@@ -240,6 +340,7 @@
                     <div><dt>Language</dt><dd><span class="operations-language-dot" aria-hidden="true"></span>Not detected</dd></div>
                     <div class="operations-path-detail"><dt>Path</dt><dd id="operationsCodebasePath">No path selected</dd></div>
                 </dl>
+                <div id="operationsProjectSourceInfo" class="operations-project-source-info">Source: Local folder</div>
             </section>
 
             <section class="operations-pipeline-hero" aria-labelledby="operationsPipelineTitle">
@@ -289,18 +390,198 @@
 
     <!--Codebase Analysis Pipeline input and output page-->
     <div id="codebasePipelinePage" class="page hidden">
-        <h1>Codebase Analysis Pipeline</h1>
+        <header class="project-source-header">
+            <p class="operations-section-eyebrow">PROJECT SETUP</p>
+            <h1>Choose a project source</h1>
+            <p>Select a local folder or import a public GitHub repository for your existing Checkpoint operations.</p>
+        </header>
 
-        <a>Click the file button and select a directory: </a>
-        <div id="pathInputContainer">
-            <input class="input-glass" id="codebasePath" type="text" readonly/>
-            <button id="browseCodebaseBtn" class="btn-primary">📂</button>
+        <div id="projectSourceChoices" class="project-source-grid">
+            <article class="project-source-card">
+                <span class="project-source-icon" aria-hidden="true">⌂</span>
+                <h2>Local Project</h2>
+                <p>Select a project folder from your computer.</p>
+                <button class="btn-primary" id="browseCodebaseBtn" type="button">Browse Folder</button>
+            </article>
+            <article class="project-source-card">
+                <span class="project-source-icon github-source-icon" aria-hidden="true">&lt;/&gt;</span>
+                <h2>GitHub Repository</h2>
+                <p>Import and analyze a project directly from GitHub.</p>
+                <button class="btn-primary" id="connectGithubBtn" type="button">Connect Repository</button>
+            </article>
         </div>
-        <button class="btn-primary" id="submitPathBtn">Submit</button>
-        <button class="btn-primary back-btn" id="codebaseBackBtn">Back</button>
 
-       
+        <section id="localFolderPanel" class="project-source-step hidden">
+            <button class="project-source-back" id="backToProjectSourcesBtn" type="button">&#8592; Project sources</button>
+            <p class="operations-section-eyebrow">LOCAL PROJECT</p>
+            <h2>Choose a folder</h2>
+            <p>Select the project folder you want Checkpoint to analyze.</p>
+            <div class="project-local-path-row">
+                <input class="input-glass" id="codebasePath" type="text" readonly placeholder="No folder selected"/>
+                <button class="btn-secondary" id="browseLocalAgainBtn" type="button">Browse</button>
+            </div>
+            <p id="localFolderError" class="project-source-error" role="alert"></p>
+            <button class="btn-primary" id="submitPathBtn" type="button" disabled>Continue to Operations</button>
+        </section>
 
+        <section id="githubConnectPanel" class="project-source-step hidden">
+            <button class="project-source-back" id="backFromGithubBtn" type="button">&#8592; Project sources</button>
+            <p class="operations-section-eyebrow">CHECKPOINT &mdash; CONNECT GITHUB</p>
+            <h2>Connect a repository</h2>
+            <p>Only public GitHub repositories are supported in this phase.</p>
+            <label class="github-url-label" for="githubRepositoryUrl">Enter Repository URL</label>
+            <form id="githubRepositoryForm" class="github-url-form">
+                <input id="githubRepositoryUrl" type="url" autocomplete="url" placeholder="https://github.com/owner/repository" required>
+                <button class="btn-primary" id="fetchGithubBranchesBtn" type="submit">Fetch Repository</button>
+                </form>
+                <p id="githubRepositoryError" class="project-source-error" role="alert" aria-live="polite"></p>
+                <p id="githubRepositoryProgress" class="project-source-progress" aria-live="polite"></p>
+        </section>
+
+        <button class="btn-primary back-btn project-source-cancel" id="codebaseBackBtn" type="button">Back</button>
+
+    </div>
+
+    <div id="githubAnalysisModePage" class="page hidden github-workflow-page">
+        <header class="project-source-header">
+            <p class="operations-section-eyebrow">GITHUB REPOSITORY</p>
+            <h1>Choose Analysis Mode</h1>
+            <p>Choose whether to analyze a branch or explore pull requests.</p>
+        </header>
+        <div class="github-mode-grid">
+            <button class="github-mode-card" id="fullBranchModeBtn" type="button">
+                <span class="project-source-icon" aria-hidden="true">⌘</span>
+                <strong>Full Branch Analysis</strong>
+                <span>Import a branch and use the existing Checkpoint operations.</span>
+            </button>
+            <button class="github-mode-card" id="latestPullRequestModeBtn" type="button">
+                <span class="project-source-icon" aria-hidden="true">↻</span>
+                <strong>Latest Pull Request</strong>
+                <span>Open the most recently merged pull request for a target branch.</span>
+            </button>
+            <button class="github-mode-card" id="browsePullRequestsModeBtn" type="button">
+                <span class="project-source-icon github-source-icon" aria-hidden="true">PR</span>
+                <strong>Browse Pull Requests</strong>
+                <span>Filter and select a pull request for an overview and comparison.</span>
+            </button>
+        </div>
+        <button class="btn-secondary github-workflow-back" id="githubModeBackBtn" type="button">Back to Repository URL</button>
+    </div>
+
+    <div id="githubBranchSelectionPage" class="page hidden github-workflow-page">
+        <header class="project-source-header">
+            <p class="operations-section-eyebrow" id="githubBranchEyebrow">GITHUB REPOSITORY</p>
+            <h1 id="githubBranchHeading">Select a Branch</h1>
+            <p id="githubBranchDescription">Choose a branch to continue.</p>
+        </header>
+        <section class="project-source-step github-branch-selection">
+            <label for="githubWorkflowBranchSelect">Target branch</label>
+            <select id="githubWorkflowBranchSelect"></select>
+            <p id="githubWorkflowBranchError" class="project-source-error" role="alert"></p>
+            <p id="githubWorkflowBranchProgress" class="project-source-progress" role="status" aria-live="polite"></p>
+            <button class="btn-primary" id="githubBranchContinueBtn" type="button">Continue</button>
+            <div id="githubImportProgressPanel" class="github-import-progress hidden">
+                <span class="project-source-spinner" aria-hidden="true"></span>
+                <p id="githubImportProgressText" aria-live="polite">Preparing branch import...</p>
+                <button class="btn-secondary" id="cancelGithubImportBtn" type="button">Cancel Import</button>
+            </div>
+        </section>
+        <button class="btn-secondary github-workflow-back" id="githubBranchBackBtn" type="button">Back to Analysis Mode</button>
+    </div>
+
+    <div id="githubPullRequestExplorerPage" class="page hidden github-workflow-page github-data-page">
+        <header class="project-source-header">
+            <p class="operations-section-eyebrow">PULL REQUEST EXPLORER</p>
+            <h1 id="githubExplorerHeading">Pull Requests</h1>
+            <p id="githubExplorerRepository"></p>
+        </header>
+        <div class="github-pr-controls">
+            <label>Filter
+                <select id="githubPrStatusFilter">
+                    <option value="all">All PRs</option>
+                    <option value="open">Open</option>
+                    <option value="merged">Merged</option>
+                    <option value="closed">Closed</option>
+                </select>
+            </label>
+            <label>Search
+                <input id="githubPrSearch" type="search" placeholder="Search title or PR number">
+            </label>
+            <label>Sort by
+                <select id="githubPrSort">
+                    <option value="updatedAt">Recently updated</option>
+                    <option value="createdAt">Recently created</option>
+                    <option value="mergedAt">Recently merged</option>
+                </select>
+            </label>
+        </div>
+        <p id="githubPrListMessage" class="github-pr-message" role="status" aria-live="polite"></p>
+        <div id="githubPrList" class="github-pr-list"></div>
+        <button class="btn-secondary github-load-more hidden" id="githubPrLoadMoreBtn" type="button">Load More Pull Requests</button>
+        <div class="github-workflow-actions">
+            <button class="btn-secondary" id="githubExplorerBackBtn" type="button">Back to Branch</button>
+            <button class="btn-secondary" id="githubExplorerSourcesBtn" type="button">Choose Another Repository</button>
+        </div>
+    </div>
+
+    <div id="githubPullRequestOverviewPage" class="page hidden github-workflow-page github-data-page">
+        <header class="project-source-header">
+            <p class="operations-section-eyebrow">CHECKPOINT — PULL REQUEST OVERVIEW</p>
+            <h1 id="githubOverviewTitle">Pull Request</h1>
+            <p id="githubOverviewRepository"></p>
+        </header>
+        <p id="githubOverviewMessage" class="github-pr-message" role="status" aria-live="polite"></p>
+        <div id="githubOverviewContent" class="github-overview-content hidden">
+            <section class="github-overview-card">
+                <div id="githubOverviewBadges" class="github-overview-badges"></div>
+                <p id="githubOverviewDescription" class="github-pr-description"></p>
+                <dl id="githubOverviewStats" class="github-overview-stats"></dl>
+            </section>
+            <section class="github-overview-card">
+                <h2>Commits</h2>
+                <div id="githubOverviewCommits" class="github-overview-list"></div>
+            </section>
+            <section class="github-overview-card">
+                <h2>Changed Files</h2>
+                <div id="githubOverviewFiles" class="github-overview-list"></div>
+            </section>
+            <p id="githubOverviewWarning" class="github-pr-warning hidden"></p>
+        </div>
+        <div class="github-workflow-actions">
+            <button class="btn-secondary" id="githubOverviewBackBtn" type="button">Back to Pull Requests</button>
+            <button class="btn-primary" id="githubViewComparisonBtn" type="button" disabled>View Code Comparison</button>
+        </div>
+    </div>
+
+    <div id="githubCodeComparisonPage" class="page hidden github-workflow-page github-data-page">
+        <header class="project-source-header github-comparison-header">
+            <p class="operations-section-eyebrow">PULL REQUEST CODE COMPARISON</p>
+            <h1 id="githubComparisonTitle">Code Comparison</h1>
+            <p id="githubComparisonMeta"></p>
+            <p id="githubComparisonWarning" class="github-pr-warning hidden"></p>
+        </header>
+        <div class="github-comparison-toolbar">
+            <button class="btn-secondary" id="githubComparisonViewToggle" type="button">View Unified Diff</button>
+            <button class="btn-secondary" id="githubPreviousFileBtn" type="button">Previous File</button>
+            <span id="githubComparisonFileIndex"></span>
+            <button class="btn-secondary" id="githubNextFileBtn" type="button">Next File</button>
+            <button class="btn-secondary" id="githubComparisonOverviewBtn" type="button">Back to PR Overview</button>
+        </div>
+        <div class="github-comparison-layout">
+            <aside class="github-changed-files">
+                <h2>Changed Files</h2>
+                <div id="githubComparisonFileList"></div>
+            </aside>
+            <section class="github-comparison-content">
+                <h2 id="githubComparisonFileTitle"></h2>
+                <div id="githubComparisonLoading" class="github-pr-message" role="status"></div>
+                <div id="githubSideBySide" class="github-side-by-side">
+                    <section><h3>BEFORE</h3><pre id="githubBeforeCode"></pre></section>
+                    <section><h3>AFTER</h3><pre id="githubAfterCode"></pre></section>
+                </div>
+                <pre id="githubUnifiedDiff" class="github-unified-diff hidden"></pre>
+            </section>
+        </div>
     </div>
 
     <!--  -->
@@ -943,6 +1224,7 @@
     <script src="consistency_review.js"></script>
     <script src="api_key_verify.js"></script>
     <script src="renderer.js"></script>
+    <script src="auth.bundle.js"></script>
 
 </body>
 </html>

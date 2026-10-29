@@ -15,6 +15,23 @@ let errorsMade = false;
 
 // Currently selected codebase
 let selectedCodebasePath = "";
+let selectedProjectSource = null;
+let githubBranchRequest = 0;
+let activeGithubImportRequest = null;
+let githubImportInProgress = false;
+let githubRepositoryUrl = "";
+let githubRepositoryBranches = null;
+let githubAnalysisMode = null;
+let githubTargetBranch = "";
+let githubPullRequests = [];
+let githubPullRequestPage = 1;
+let githubPullRequestsHaveMore = false;
+let selectedGithubPullRequest = null;
+let selectedGithubPullRequestDetails = null;
+let githubOverviewRequest = 0;
+let selectedGithubComparisonFileIndex = 0;
+let githubComparisonFileRequest = 0;
+let githubComparisonUnified = false;
 
 
 // Selections
@@ -296,7 +313,12 @@ document.getElementById('submitApiKeyBtn').addEventListener('click', async () =>
     });
 });
 
-refreshApiKeyList();
+window.addEventListener("checkpoint-authenticated", () => {
+    showPage("homePage");
+    refreshApiKeyList().catch(error => {
+        console.error("Could not load API key settings after authentication:", error);
+    });
+});
 
 // ============================================
 // Backend Communication Helpers
@@ -1810,6 +1832,12 @@ function renderUnitTestsPreview(data) {
 
 function showPage(pageId) {
 
+    if (pageId === "codebasePipelinePage") {
+        document.getElementById("projectSourceChoices").classList.remove("hidden");
+        document.getElementById("localFolderPanel").classList.add("hidden");
+        document.getElementById("githubConnectPanel").classList.add("hidden");
+    }
+
     document.querySelectorAll('.page').forEach(page => {
         page.classList.add('hidden');
     });
@@ -2500,9 +2528,6 @@ document.getElementById("loadingReportBtn").addEventListener("click", async () =
 });
 
 // MENU BUTTONS
-document.getElementById("homeConnectCodebaseBtn")
-    .addEventListener("click", () => showPage("codebasePipelinePage"));
-
 document.getElementById('analysisBtn')
     .addEventListener('click', () => {
 
@@ -2510,7 +2535,7 @@ document.getElementById('analysisBtn')
 
 
         if (!pathSubmitted) {
-            showPage('codebasePipelinePage');
+            showProjectSourcePicker();
         } else {
             showPage('analysisPage');
         }
@@ -3807,6 +3832,17 @@ document.getElementById('analysisBackBtn')
 
         showPage('homePage');
     });
+
+document.getElementById("cancelProjectSelectionBtn")
+    .addEventListener("click", () => {
+        selectedCodebasePath = "";
+        selectedProjectSource = null;
+        pathSubmitted = false;
+        document.getElementById("codebasePath").value = "";
+        document.getElementById("submitPathBtn").disabled = true;
+        updateSelectedCodebaseSummary("");
+        showPage("homePage");
+    });
 //======================================================
 //API PAGE BUTTONS
 //======================================================
@@ -3825,10 +3861,7 @@ document.getElementById('apiBackBtn')
 //======================================================
 document.getElementById('codebaseBackBtn')
     .addEventListener('click', () => {
-
-        
-
-        showPage('homePage');
+        showPage(pathSubmitted ? "analysisPage" : "homePage");
     });
 
 document.getElementById('faqAndSupportBackBtn')
@@ -3873,61 +3906,664 @@ document.getElementById("faqBtn")
 
 document.getElementById('submitPathBtn')
 .addEventListener('click', () => {
-
-
-    
-
-
-    showPage('analysisPage');
-
-
-    selectedCodebasePath =
-        document.getElementById(
-            'codebasePath'
-        ).value;
-
-    updateHomeCodebaseSummary(selectedCodebasePath);
-
-
+    if (!selectedCodebasePath) {
+        document.getElementById("localFolderError").textContent = "Choose a project folder before continuing.";
+        return;
+    }
+    selectedProjectSource = null;
+    pathSubmitted = true;
+    updateSelectedCodebaseSummary(selectedCodebasePath);
+    showPage("analysisPage");
 });
 
 document.getElementById("browseCodebaseBtn")
-.addEventListener("click", async () => {
+.addEventListener("click", openLocalFolderPicker);
 
-    const path =
-        await window.electronAPI.selectCodebase();
+document.getElementById("browseLocalAgainBtn")
+    .addEventListener("click", openLocalFolderPicker);
 
-    if (!path)
-        return;
+document.getElementById("backToProjectSourcesBtn")
+    .addEventListener("click", () => showProjectSourcePicker());
 
-    document.getElementById("codebasePath").value = path;
+document.getElementById("connectGithubBtn")
+    .addEventListener("click", () => {
+        document.getElementById("githubRepositoryError").textContent = "";
+        document.getElementById("projectSourceChoices").classList.add("hidden");
+        document.getElementById("githubConnectPanel").classList.remove("hidden");
+        document.getElementById("localFolderPanel").classList.add("hidden");
+        document.getElementById("githubRepositoryUrl").focus();
+    });
 
-    selectedCodebasePath = path;
-    updateHomeCodebaseSummary(path);
+document.getElementById("backFromGithubBtn")
+    .addEventListener("click", () => {
+        if (githubImportInProgress) return;
+        showProjectSourcePicker();
+    });
+
+document.getElementById("githubRepositoryUrl")
+    .addEventListener("input", () => {
+        githubBranchRequest += 1;
+        githubRepositoryBranches = null;
+        githubRepositoryUrl = "";
+        document.getElementById("fetchGithubBranchesBtn").disabled = false;
+        document.getElementById("githubRepositoryError").textContent = "";
+        document.getElementById("githubRepositoryProgress").textContent = "";
+    });
+
+document.getElementById("githubRepositoryForm")
+    .addEventListener("submit", async event => {
+        event.preventDefault();
+        if (githubImportInProgress) return;
+
+        const repositoryUrl = document.getElementById("githubRepositoryUrl").value.trim();
+        const requestNumber = ++githubBranchRequest;
+        const fetchButton = document.getElementById("fetchGithubBranchesBtn");
+        const progress = document.getElementById("githubRepositoryProgress");
+        const error = document.getElementById("githubRepositoryError");
+        error.textContent = "";
+        progress.textContent = "Connecting to GitHub...";
+        fetchButton.disabled = true;
+
+        try {
+            const repository = await window.electronAPI.getGithubBranches(repositoryUrl);
+            if (requestNumber !== githubBranchRequest ||
+                repositoryUrl !== document.getElementById("githubRepositoryUrl").value.trim()) return;
+            githubRepositoryUrl = repositoryUrl;
+            githubRepositoryBranches = repository;
+            document.querySelector("#githubAnalysisModePage .project-source-header > p:last-child").textContent =
+                `${repository.owner}/${repository.repo} · Choose whether to analyze a branch or explore pull requests.`;
+            progress.textContent = "";
+            showPage("githubAnalysisModePage");
+        } catch (requestError) {
+            if (requestNumber === githubBranchRequest) {
+                error.textContent = requestError.message || "Could not fetch repository branches. Check the URL and retry.";
+                progress.textContent = "";
+            }
+        } finally {
+            if (requestNumber === githubBranchRequest) fetchButton.disabled = false;
+        }
+    });
+
+const removeGithubProgressListener = window.electronAPI.onGithubImportProgress(progress => {
+    if (progress?.requestId !== activeGithubImportRequest) return;
+    document.getElementById("githubImportProgressText").textContent = progress.message || "Importing repository...";
 });
+window.addEventListener("unload", removeGithubProgressListener, { once: true });
 
-function updateHomeCodebaseSummary(codebasePath) {
-    const cleaned = String(codebasePath || "").replace(/[\\/]+$/, "");
-    const codebaseName = cleaned ? cleaned.split(/[\\/]/).pop() : "No codebase selected";
-    const name = document.getElementById("homeCodebaseName");
-    const operationsName = document.getElementById("operationsProjectName");
-    const operationsPath = document.getElementById("operationsCodebasePath");
+document.getElementById("cancelGithubImportBtn")
+    .addEventListener("click", async () => {
+        if (!activeGithubImportRequest) return;
+        const cancelButton = document.getElementById("cancelGithubImportBtn");
+        cancelButton.disabled = true;
+        try {
+            await window.electronAPI.cancelGithubImport(activeGithubImportRequest);
+        } catch (error) {
+            document.getElementById("githubWorkflowBranchError").textContent =
+                error.message || "Could not cancel the repository import.";
+            cancelButton.disabled = false;
+        }
+    });
 
-    if (name) {
-        name.textContent = codebaseName;
-        name.title = cleaned || "";
+function showProjectSourcePicker() {
+    document.getElementById("projectSourceChoices").classList.remove("hidden");
+    document.getElementById("localFolderPanel").classList.add("hidden");
+    document.getElementById("githubConnectPanel").classList.add("hidden");
+    document.getElementById("localFolderError").textContent = "";
+    showPage("codebasePipelinePage");
+}
+
+function showGithubBranchSelection(mode) {
+    if (!githubRepositoryBranches || !githubRepositoryUrl) return;
+    githubAnalysisMode = mode;
+    const select = document.getElementById("githubWorkflowBranchSelect");
+    select.replaceChildren();
+    githubRepositoryBranches.branches.forEach(branch => {
+        const option = document.createElement("option");
+        option.value = branch;
+        option.textContent = branch;
+        option.selected = branch === githubRepositoryBranches.defaultBranch;
+        select.appendChild(option);
+    });
+    document.getElementById("githubBranchHeading").textContent =
+        mode === "full" ? "Select a Branch" : "Select a Target Branch";
+    document.getElementById("githubBranchDescription").textContent =
+        mode === "full"
+            ? `Choose a branch in ${githubRepositoryBranches.owner}/${githubRepositoryBranches.repo} to analyze.`
+            : `Choose the target branch in ${githubRepositoryBranches.owner}/${githubRepositoryBranches.repo}.`;
+    document.getElementById("githubBranchContinueBtn").textContent =
+        mode === "full" ? "Import and Continue" : mode === "latest" ? "Find Latest Merged PR" : "Browse Pull Requests";
+    document.getElementById("githubWorkflowBranchError").textContent = "";
+    document.getElementById("githubWorkflowBranchProgress").textContent = "";
+    document.getElementById("githubImportProgressPanel").classList.add("hidden");
+    showPage("githubBranchSelectionPage");
+}
+
+document.getElementById("githubModeBackBtn")
+    .addEventListener("click", () => {
+        if (githubImportInProgress) return;
+        showPage("codebasePipelinePage");
+        document.getElementById("projectSourceChoices").classList.add("hidden");
+        document.getElementById("githubConnectPanel").classList.remove("hidden");
+    });
+
+document.getElementById("fullBranchModeBtn")
+    .addEventListener("click", () => showGithubBranchSelection("full"));
+
+document.getElementById("latestPullRequestModeBtn")
+    .addEventListener("click", () => showGithubBranchSelection("latest"));
+
+document.getElementById("browsePullRequestsModeBtn")
+    .addEventListener("click", () => showGithubBranchSelection("browse"));
+
+document.getElementById("githubBranchBackBtn")
+    .addEventListener("click", () => showPage("githubAnalysisModePage"));
+
+document.getElementById("githubBranchContinueBtn")
+    .addEventListener("click", async () => {
+        if (githubImportInProgress) return;
+        githubTargetBranch = document.getElementById("githubWorkflowBranchSelect").value;
+        if (!githubTargetBranch) {
+            document.getElementById("githubWorkflowBranchError").textContent = "Select a branch to continue.";
+            return;
+        }
+        if (githubAnalysisMode === "full") {
+            await importSelectedGithubBranch(githubTargetBranch);
+        } else if (githubAnalysisMode === "latest") {
+            await openLatestMergedPullRequest();
+        } else {
+            await openPullRequestExplorer(true);
+        }
+    });
+
+async function importSelectedGithubBranch(branch = document.getElementById("githubWorkflowBranchSelect").value) {
+    if (githubImportInProgress) return;
+    if (!githubRepositoryUrl || !branch) {
+        document.getElementById("githubWorkflowBranchError").textContent = "Select a branch to continue.";
+        return;
     }
-    if (operationsName) {
-        operationsName.textContent = codebaseName;
-        operationsName.title = cleaned || "";
-    }
-    if (operationsPath) {
-        operationsPath.textContent = cleaned || "No path selected";
-        operationsPath.title = cleaned || "";
+
+    const requestId = crypto.randomUUID();
+    activeGithubImportRequest = requestId;
+    githubImportInProgress = true;
+    const importButton = document.getElementById("githubBranchContinueBtn");
+    const cancelButton = document.getElementById("cancelGithubImportBtn");
+    const progressPanel = document.getElementById("githubImportProgressPanel");
+    const progressText = document.getElementById("githubImportProgressText");
+    const error = document.getElementById("githubWorkflowBranchError");
+    importButton.disabled = true;
+    cancelButton.disabled = false;
+    progressPanel.classList.remove("hidden");
+    progressText.textContent = "Connecting to GitHub...";
+    error.textContent = "";
+
+    try {
+        const imported = await window.electronAPI.importGithubRepository({
+            url: githubRepositoryUrl,
+            branch,
+            requestId
+        });
+        selectedCodebasePath = imported.workspacePath;
+        selectedProjectSource = imported;
+        document.getElementById("codebasePath").value = imported.workspacePath;
+        pathSubmitted = true;
+        updateSelectedCodebaseSummary(selectedCodebasePath);
+        showPage("analysisPage");
+    } catch (importError) {
+        error.textContent = importError.message || "Could not import this repository. Retry or select another branch.";
+        progressText.textContent = "";
+    } finally {
+        githubImportInProgress = false;
+        activeGithubImportRequest = null;
+        importButton.disabled = false;
+        cancelButton.disabled = false;
+        progressPanel.classList.add("hidden");
     }
 }
 
-updateHomeCodebaseSummary(selectedCodebasePath);
+function formatGithubDate(value) {
+    if (!value) return "Not available";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "Not available" : date.toLocaleString();
+}
+
+function currentPullRequestStateFilter(pullRequest) {
+    return document.getElementById("githubPrStatusFilter").value === "merged"
+        ? pullRequest.state === "merged"
+        : document.getElementById("githubPrStatusFilter").value === "closed"
+            ? pullRequest.state === "closed"
+            : document.getElementById("githubPrStatusFilter").value === "open"
+                ? pullRequest.state === "open"
+                : true;
+}
+
+function renderPullRequestList() {
+    const list = document.getElementById("githubPrList");
+    const query = document.getElementById("githubPrSearch").value.trim().toLocaleLowerCase();
+    const sortKey = document.getElementById("githubPrSort").value;
+    const filtered = githubPullRequests
+        .filter(pullRequest => currentPullRequestStateFilter(pullRequest))
+        .filter(pullRequest =>
+            !query ||
+            String(pullRequest.number).includes(query) ||
+            pullRequest.title.toLocaleLowerCase().includes(query)
+        )
+        .sort((left, right) => (Date.parse(right[sortKey] || "") || 0) - (Date.parse(left[sortKey] || "") || 0));
+    list.replaceChildren();
+    if (!filtered.length) {
+        const empty = document.createElement("p");
+        empty.className = "github-pr-empty";
+        empty.textContent = githubPullRequests.length
+            ? "No pull requests match these filters."
+            : "No pull requests were found for this target branch.";
+        list.appendChild(empty);
+    }
+    filtered.forEach(pullRequest => {
+        const card = document.createElement("article");
+        card.className = "github-pr-card";
+        const heading = document.createElement("h2");
+        heading.textContent = `#${pullRequest.number} · ${pullRequest.title}`;
+        const meta = document.createElement("p");
+        meta.textContent = `${pullRequest.state.toUpperCase()} · ${pullRequest.author} · ${pullRequest.baseBranch} ← ${pullRequest.headBranch}`;
+        const stats = document.createElement("p");
+        stats.textContent = `Updated ${formatGithubDate(pullRequest.updatedAt)} · ${pullRequest.changedFiles ?? "?"} files · +${pullRequest.additions ?? "?"} / -${pullRequest.deletions ?? "?"}`;
+        const button = document.createElement("button");
+        button.className = "btn-primary";
+        button.type = "button";
+        button.textContent = "View Overview";
+        button.addEventListener("click", () => openPullRequestOverview(pullRequest));
+        card.append(heading, meta, stats, button);
+        list.appendChild(card);
+    });
+    document.getElementById("githubPrLoadMoreBtn").classList.toggle("hidden", !githubPullRequestsHaveMore);
+    document.getElementById("githubPrListMessage").textContent =
+        `${filtered.length} shown · ${githubPullRequests.length} loaded${githubPullRequestsHaveMore ? " · more available" : ""}`;
+}
+
+async function loadPullRequestPage(reset = false) {
+    if (!githubRepositoryUrl || !githubTargetBranch) return;
+    const message = document.getElementById("githubPrListMessage");
+    const loadMore = document.getElementById("githubPrLoadMoreBtn");
+    loadMore.disabled = true;
+    message.textContent = reset ? "Loading pull requests..." : "Loading more pull requests...";
+    try {
+        const response = await window.electronAPI.listGithubPullRequests({
+            url: githubRepositoryUrl,
+            baseBranch: githubTargetBranch,
+            state: "all",
+            page: reset ? 1 : githubPullRequestPage + 1
+        });
+        githubPullRequests = reset ? response.pullRequests : githubPullRequests.concat(response.pullRequests);
+        githubPullRequestPage = reset ? 1 : githubPullRequestPage + 1;
+        githubPullRequestsHaveMore = response.hasMore;
+        renderPullRequestList();
+        if (!response.pullRequests.length && reset) {
+            message.textContent = `No pull requests target ${githubTargetBranch}.`;
+        }
+    } catch (error) {
+        message.textContent = error.message || "Could not load pull requests. Check your connection and retry.";
+    } finally {
+        loadMore.disabled = false;
+    }
+}
+
+async function openPullRequestExplorer(reset) {
+    if (reset) {
+        githubPullRequests = [];
+        githubPullRequestPage = 0;
+        githubPullRequestsHaveMore = false;
+        document.getElementById("githubPrSearch").value = "";
+        document.getElementById("githubPrStatusFilter").value = "all";
+        document.getElementById("githubPrSort").value = "updatedAt";
+    }
+    document.getElementById("githubExplorerHeading").textContent = `Pull Requests · ${githubTargetBranch}`;
+    document.getElementById("githubExplorerRepository").textContent =
+        `${githubRepositoryBranches.owner}/${githubRepositoryBranches.repo}`;
+    document.getElementById("githubPullRequestExplorerPage").classList.remove("hidden");
+    showPage("githubPullRequestExplorerPage");
+    if (reset) await loadPullRequestPage(true);
+}
+
+async function openLatestMergedPullRequest() {
+    const error = document.getElementById("githubWorkflowBranchError");
+    const progress = document.getElementById("githubWorkflowBranchProgress");
+    const continueButton = document.getElementById("githubBranchContinueBtn");
+    error.textContent = "";
+    progress.textContent = "Finding the latest merged pull request...";
+    continueButton.disabled = true;
+    try {
+        let page = 1;
+        let hasMore = true;
+        const allPullRequests = [];
+        while (hasMore && page <= 1000) {
+            const response = await window.electronAPI.listGithubPullRequests({
+                url: githubRepositoryUrl,
+                baseBranch: githubTargetBranch,
+                state: "closed",
+                page
+            });
+            allPullRequests.push(...response.pullRequests);
+            hasMore = response.hasMore;
+            page += 1;
+        }
+        if (hasMore) throw new Error("The pull request history is too large to search completely. Use Browse Pull Requests instead.");
+        const merged = allPullRequests
+            .filter(pullRequest => pullRequest.state === "merged")
+            .sort((left, right) => Date.parse(right.mergedAt || "") - Date.parse(left.mergedAt || ""));
+        if (!merged.length) {
+            error.textContent = `No merged pull requests target ${githubTargetBranch}. Browse other pull requests instead.`;
+            const browse = document.createElement("button");
+            browse.className = "btn-secondary";
+            browse.type = "button";
+            browse.textContent = "Browse Pull Requests";
+            browse.addEventListener("click", () => {
+                githubAnalysisMode = "browse";
+                openPullRequestExplorer(true);
+            });
+            error.appendChild(browse);
+            return;
+        }
+        githubPullRequests = merged;
+        githubPullRequestPage = 1;
+        githubPullRequestsHaveMore = false;
+        document.getElementById("githubPrSearch").value = "";
+        document.getElementById("githubPrStatusFilter").value = "all";
+        document.getElementById("githubPrSort").value = "mergedAt";
+        document.getElementById("githubExplorerHeading").textContent = `Merged Pull Requests · ${githubTargetBranch}`;
+        document.getElementById("githubExplorerRepository").textContent =
+            `${githubRepositoryBranches.owner}/${githubRepositoryBranches.repo}`;
+        renderPullRequestList();
+        await openPullRequestOverview(merged[0]);
+    } catch (requestError) {
+        error.textContent = requestError.message || "Could not find a merged pull request.";
+    } finally {
+        progress.textContent = "";
+        continueButton.disabled = false;
+    }
+}
+
+document.getElementById("githubPrStatusFilter").addEventListener("change", renderPullRequestList);
+document.getElementById("githubPrSort").addEventListener("change", renderPullRequestList);
+document.getElementById("githubPrSearch").addEventListener("input", renderPullRequestList);
+document.getElementById("githubPrLoadMoreBtn").addEventListener("click", () => loadPullRequestPage(false));
+document.getElementById("githubExplorerBackBtn").addEventListener("click", () => showPage("githubBranchSelectionPage"));
+document.getElementById("githubExplorerSourcesBtn").addEventListener("click", () => showPage("codebasePipelinePage"));
+
+function addOverviewStat(container, label, value) {
+    const wrapper = document.createElement("div");
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const description = document.createElement("dd");
+    description.textContent = String(value);
+    wrapper.append(term, description);
+    container.appendChild(wrapper);
+}
+
+async function openPullRequestOverview(pullRequest) {
+    const requestNumber = ++githubOverviewRequest;
+    selectedGithubPullRequest = pullRequest;
+    selectedGithubPullRequestDetails = null;
+    document.getElementById("githubOverviewTitle").textContent = `PR #${pullRequest.number} — ${pullRequest.title}`;
+    document.getElementById("githubOverviewRepository").textContent =
+        `${githubRepositoryBranches.owner}/${githubRepositoryBranches.repo}`;
+    document.getElementById("githubOverviewMessage").textContent = "Loading pull request details...";
+    document.getElementById("githubOverviewContent").classList.add("hidden");
+    document.getElementById("githubViewComparisonBtn").disabled = true;
+    showPage("githubPullRequestOverviewPage");
+    try {
+        const details = await window.electronAPI.getGithubPullRequest({
+            url: githubRepositoryUrl,
+            number: pullRequest.number
+        });
+        if (requestNumber !== githubOverviewRequest) return;
+        selectedGithubPullRequestDetails = details;
+        const badges = document.getElementById("githubOverviewBadges");
+        badges.replaceChildren();
+        [details.state.toUpperCase(), `@${details.author}`, `${details.baseBranch} ← ${details.headBranch}`].forEach(value => {
+            const badge = document.createElement("span");
+            badge.textContent = value;
+            badges.appendChild(badge);
+        });
+        document.getElementById("githubOverviewDescription").textContent = details.body || "No description provided.";
+        const stats = document.getElementById("githubOverviewStats");
+        stats.replaceChildren();
+        addOverviewStat(stats, "Created", formatGithubDate(details.createdAt));
+        addOverviewStat(stats, "Updated", formatGithubDate(details.updatedAt));
+        addOverviewStat(stats, "Merged", formatGithubDate(details.mergedAt));
+        addOverviewStat(stats, "Files Changed", details.changedFiles ?? details.files.length);
+        addOverviewStat(stats, "Additions", `+${details.additions ?? "?"}`);
+        addOverviewStat(stats, "Deletions", `-${details.deletions ?? "?"}`);
+        addOverviewStat(stats, "Commits", details.commitsCount ?? details.commits.length);
+        const commits = document.getElementById("githubOverviewCommits");
+        commits.replaceChildren();
+        details.commits.forEach(commit => {
+            const item = document.createElement("article");
+            item.className = "github-overview-item";
+            const title = document.createElement("strong");
+            title.textContent = `${commit.sha.slice(0, 7)} · ${commit.message.split("\n")[0] || "No commit message"}`;
+            const meta = document.createElement("p");
+            meta.textContent = `${commit.author} · ${formatGithubDate(commit.date)}`;
+            item.append(title, meta);
+            commits.appendChild(item);
+        });
+        const files = document.getElementById("githubOverviewFiles");
+        files.replaceChildren();
+        details.files.forEach(file => {
+            const item = document.createElement("article");
+            item.className = "github-overview-item";
+            const title = document.createElement("strong");
+            title.textContent = `${file.status.toUpperCase()} · ${file.previousFilename ? `${file.previousFilename} → ` : ""}${file.filename}`;
+            const meta = document.createElement("p");
+            meta.textContent = `+${file.additions} / -${file.deletions}`;
+            item.append(title, meta);
+            files.appendChild(item);
+        });
+        const warning = document.getElementById("githubOverviewWarning");
+        warning.classList.toggle("hidden", details.dataComplete);
+        warning.textContent = details.dataComplete
+            ? ""
+            : "GitHub did not provide all commit or changed-file pages. The overview may be incomplete.";
+        document.getElementById("githubOverviewMessage").textContent = "";
+        document.getElementById("githubOverviewContent").classList.remove("hidden");
+        document.getElementById("githubViewComparisonBtn").disabled = details.files.length === 0;
+    } catch (error) {
+        if (requestNumber !== githubOverviewRequest) return;
+        document.getElementById("githubOverviewMessage").textContent =
+            error.message || "Could not load pull request details.";
+    }
+}
+
+document.getElementById("githubOverviewBackBtn").addEventListener("click", () => showPage("githubPullRequestExplorerPage"));
+document.getElementById("githubViewComparisonBtn").addEventListener("click", openGithubComparison);
+document.getElementById("githubComparisonOverviewBtn").addEventListener("click", () => showPage("githubPullRequestOverviewPage"));
+document.getElementById("githubComparisonViewToggle").addEventListener("click", () => {
+    githubComparisonUnified = !githubComparisonUnified;
+    document.getElementById("githubSideBySide").classList.toggle("hidden", githubComparisonUnified);
+    document.getElementById("githubUnifiedDiff").classList.toggle("hidden", !githubComparisonUnified);
+    document.getElementById("githubComparisonViewToggle").textContent =
+        githubComparisonUnified ? "View Side by Side" : "View Unified Diff";
+});
+document.getElementById("githubPreviousFileBtn").addEventListener("click", () => selectGithubComparisonFile(selectedGithubComparisonFileIndex - 1));
+document.getElementById("githubNextFileBtn").addEventListener("click", () => selectGithubComparisonFile(selectedGithubComparisonFileIndex + 1));
+
+async function openGithubComparison() {
+    if (!selectedGithubPullRequestDetails?.files.length) return;
+    const details = selectedGithubPullRequestDetails;
+    document.getElementById("githubComparisonTitle").textContent =
+        `PR #${details.number} — ${details.title}`;
+    document.getElementById("githubComparisonMeta").textContent =
+        `${details.repository || `${githubRepositoryBranches.owner}/${githubRepositoryBranches.repo}`} · ${details.baseBranch} (${details.baseSha.slice(0, 7)}) → ${details.headBranch} (${details.headSha.slice(0, 7)}) · Original PR changes`;
+    const fileList = document.getElementById("githubComparisonFileList");
+    fileList.replaceChildren();
+    details.files.forEach((file, index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "github-file-item";
+        const status = document.createElement("span");
+        status.className = `github-file-status status-${file.status}`;
+        status.textContent = ({ added: "A", modified: "M", removed: "D", renamed: "R" })[file.status] || "M";
+        const label = document.createElement("span");
+        label.textContent = file.filename;
+        button.append(status, label);
+        button.addEventListener("click", () => selectGithubComparisonFile(index));
+        fileList.appendChild(button);
+    });
+    githubComparisonUnified = false;
+    document.getElementById("githubComparisonViewToggle").textContent = "View Unified Diff";
+    document.getElementById("githubSideBySide").classList.remove("hidden");
+    document.getElementById("githubUnifiedDiff").classList.add("hidden");
+    showPage("githubCodeComparisonPage");
+    await selectGithubComparisonFile(0);
+}
+
+function renderComparisonLines(target, text, lineClass) {
+    target.replaceChildren();
+    if (text === null) return;
+    const lines = text.split("\n");
+    lines.forEach((line, index) => {
+        const span = document.createElement("span");
+        span.className = `github-code-line ${lineClass || ""}`;
+        span.textContent = `${String(index + 1).padStart(4, " ")}  ${line}`;
+        target.appendChild(span);
+    });
+}
+
+function createUnifiedDiff(before, after) {
+    const beforeLines = (before || "").split("\n");
+    const afterLines = (after || "").split("\n");
+    const maxCells = 750000;
+    if (beforeLines.length * afterLines.length > maxCells) {
+        return { diff: null, warning: "This file is too large for safe in-app diff alignment. Full before and after contents are available in Side by Side mode." };
+    }
+    const matrix = Array.from({ length: beforeLines.length + 1 }, () => new Uint32Array(afterLines.length + 1));
+    for (let i = beforeLines.length - 1; i >= 0; i--) {
+        for (let j = afterLines.length - 1; j >= 0; j--) {
+            matrix[i][j] = beforeLines[i] === afterLines[j]
+                ? matrix[i + 1][j + 1] + 1
+                : Math.max(matrix[i + 1][j], matrix[i][j + 1]);
+        }
+    }
+    const rows = [];
+    let i = 0;
+    let j = 0;
+    while (i < beforeLines.length || j < afterLines.length) {
+        if (i < beforeLines.length && j < afterLines.length && beforeLines[i] === afterLines[j]) {
+            rows.push(`  ${beforeLines[i]}`);
+            i += 1;
+            j += 1;
+        } else if (j < afterLines.length && (i === beforeLines.length || matrix[i][j + 1] >= matrix[i + 1][j])) {
+            rows.push(`+ ${afterLines[j++]}`);
+        } else {
+            rows.push(`- ${beforeLines[i++]}`);
+        }
+    }
+    return { diff: rows.join("\n"), warning: "" };
+}
+
+async function selectGithubComparisonFile(index) {
+    const details = selectedGithubPullRequestDetails;
+    if (!details || index < 0 || index >= details.files.length) return;
+    const requestNumber = ++githubComparisonFileRequest;
+    selectedGithubComparisonFileIndex = index;
+    const file = details.files[index];
+    document.getElementById("githubComparisonFileIndex").textContent = `${index + 1} of ${details.files.length}`;
+    document.getElementById("githubComparisonFileTitle").textContent =
+        file.previousFilename ? `${file.previousFilename} → ${file.filename}` : file.filename;
+    document.getElementById("githubPreviousFileBtn").disabled = index === 0;
+    document.getElementById("githubNextFileBtn").disabled = index === details.files.length - 1;
+    const loading = document.getElementById("githubComparisonLoading");
+    const beforePanel = document.getElementById("githubBeforeCode");
+    const afterPanel = document.getElementById("githubAfterCode");
+    beforePanel.replaceChildren();
+    afterPanel.replaceChildren();
+    loading.textContent = "Loading exact file contents from the pull request commits...";
+    document.getElementById("githubComparisonWarning").classList.add("hidden");
+    try {
+        const comparison = await window.electronAPI.getGithubPullRequestFile({
+            url: githubRepositoryUrl,
+            number: details.number,
+            filePath: file.filename
+        });
+        if (requestNumber !== githubComparisonFileRequest) return;
+        const warningParts = [];
+        if (comparison.before.binary || comparison.after.binary) warningParts.push("Binary file contents cannot be rendered as text.");
+        if (comparison.before.unsupported || comparison.after.unsupported) warningParts.push("GitHub does not expose the complete contents of this file through the public contents API.");
+        if (comparison.before.text === null && comparison.before.exists && !comparison.before.binary && !comparison.before.unsupported) warningParts.push("The before version is unavailable.");
+        if (comparison.after.text === null && comparison.after.exists && !comparison.after.binary && !comparison.after.unsupported) warningParts.push("The after version is unavailable.");
+
+        const beforeText = comparison.before.text;
+        const afterText = comparison.after.text;
+        if (!comparison.before.exists) {
+            beforePanel.textContent = "This file did not exist before the pull request.";
+        } else if (beforeText !== null) {
+            renderComparisonLines(beforePanel, beforeText);
+        }
+        if (!comparison.after.exists) {
+            afterPanel.textContent = "This file was deleted by the pull request.";
+        } else if (afterText !== null) {
+            renderComparisonLines(afterPanel, afterText);
+        }
+        if (beforeText !== null && afterText !== null) {
+            const diff = createUnifiedDiff(beforeText, afterText);
+            document.getElementById("githubUnifiedDiff").textContent =
+                diff.diff === null ? "Unified diff unavailable for this unusually large file." : diff.diff;
+            if (diff.warning) warningParts.push(diff.warning);
+        } else {
+            document.getElementById("githubUnifiedDiff").textContent =
+                "A text diff is unavailable for this file. Review its before/after status above.";
+        }
+        const warning = document.getElementById("githubComparisonWarning");
+        warning.textContent = warningParts.join(" ");
+        warning.classList.toggle("hidden", warningParts.length === 0);
+        loading.textContent = "";
+    } catch (error) {
+        if (requestNumber !== githubComparisonFileRequest) return;
+        loading.textContent = error.message || "Could not load the exact file contents.";
+    }
+}
+
+async function openLocalFolderPicker() {
+    const selectedPath = await window.electronAPI.selectCodebase();
+    if (!selectedPath) return;
+
+    selectedCodebasePath = selectedPath;
+    selectedProjectSource = null;
+    document.getElementById("codebasePath").value = selectedPath;
+    document.getElementById("submitPathBtn").disabled = false;
+    document.getElementById("localFolderError").textContent = "";
+    document.getElementById("projectSourceChoices").classList.add("hidden");
+    document.getElementById("githubConnectPanel").classList.add("hidden");
+    document.getElementById("localFolderPanel").classList.remove("hidden");
+}
+
+function updateSelectedCodebaseSummary(codebasePath) {
+    const cleaned = String(codebasePath || "").replace(/[\\/]+$/, "");
+    const codebaseName = selectedProjectSource?.repository
+        || (cleaned ? cleaned.split(/[\\/]/).pop() : "No codebase selected");
+    const operationsName = document.getElementById("operationsProjectName");
+    const operationsPath = document.getElementById("operationsCodebasePath");
+    const operationsSourceInfo = document.getElementById("operationsProjectSourceInfo");
+
+    if (operationsName) {
+        operationsName.textContent = codebaseName;
+        operationsName.title = selectedProjectSource?.repositoryUrl || cleaned || "";
+    }
+    if (operationsPath) {
+        operationsPath.textContent = selectedProjectSource
+            ? selectedProjectSource.repositoryUrl
+            : cleaned || "No path selected";
+        operationsPath.title = selectedProjectSource ? selectedProjectSource.repositoryUrl : cleaned || "";
+    }
+    if (operationsSourceInfo) {
+        operationsSourceInfo.textContent = selectedProjectSource
+            ? `Source: GitHub · ${selectedProjectSource.owner}/${selectedProjectSource.repository} · Branch: ${selectedProjectSource.branch} · Commit: ${selectedProjectSource.commitSha}`
+            : "Source: Local folder";
+        operationsSourceInfo.title = selectedProjectSource
+            ? `Imported ${selectedProjectSource.importedAt} · ${selectedProjectSource.workspacePath}`
+            : cleaned;
+    }
+}
+
+updateSelectedCodebaseSummary(selectedCodebasePath);
 
 
 

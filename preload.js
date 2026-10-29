@@ -5,6 +5,25 @@ contextBridge.exposeInMainWorld(
     "electronAPI",
     {
 
+        getFirebaseConfig: () => ipcRenderer.invoke("auth:get-config"),
+        readAuthSession: () => ipcRenderer.invoke("auth:read-session"),
+        writeAuthSession: session => ipcRenderer.invoke("auth:write-session", session),
+        clearAuthSession: () => ipcRenderer.invoke("auth:clear-session"),
+        establishAuthSession: idToken => ipcRenderer.invoke("auth:establish", idToken),
+        signOutAuthSession: () => ipcRenderer.invoke("auth:sign-out"),
+        getUserProfile: () => ipcRenderer.invoke("auth:get-profile"),
+        saveUserProfile: role => ipcRenderer.invoke("auth:save-profile", role),
+        getGithubBranches: repositoryUrl => ipcRenderer.invoke("github:get-branches", repositoryUrl),
+        listGithubPullRequests: request => ipcRenderer.invoke("github:list-pull-requests", request),
+        getGithubPullRequest: request => ipcRenderer.invoke("github:get-pull-request", request),
+        getGithubPullRequestFile: request => ipcRenderer.invoke("github:get-pull-request-file", request),
+        importGithubRepository: request => ipcRenderer.invoke("github:import", request),
+        cancelGithubImport: requestId => ipcRenderer.invoke("github:cancel-import", requestId),
+        onGithubImportProgress: callback => {
+            const listener = (_event, progress) => callback(progress);
+            ipcRenderer.on("github:import-progress", listener);
+            return () => ipcRenderer.removeListener("github:import-progress", listener);
+        },
 
         // ==================================
         // Backend Commands

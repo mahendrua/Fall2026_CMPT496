@@ -1,0 +1,274 @@
+
+Backend directory: D:\CMPT 496\Fall2026_CMPT496\releases\main
+Output directory: D:\CMPT 496\Fall2026_CMPT496
+Executable not found, falling back to Python script
+PASS  the full pipeline ran from the Run Operations button
+PASS  the Complete screen says the pipeline completed
+PASS  the Complete screen shows no planted value
+PASS  the review screen lists the run's findings
+PASS  the review screen shows placeholders where secrets were
+PASS  the review screen shows no planted value
+PASS  the window was sent the backend's progress and responses
+PASS  no message sent to the window holds a planted value
+
+8 passed, 0 failed.
+Backend exited: null
+
+Backend stderr:
+2026-10-28 22:57:26,935 | WARNING | backend.run_protection | LangSmith tracing is switched on in this environment, but Checkpoint does not trace its runs: a trace would upload the analysed code and summaries without their secrets removed (US-034). Other programs are not affected.
+
+Backend stderr:
+2026-10-28 22:57:29,407 | INFO | sentence_transformers.SentenceTransformer | Load pretrained SentenceTransformer: all-MiniLM-L6-v2
+
+Backend stderr:
+2026-10-28 22:57:29,764 | INFO | src.build_database | 
+--- Building Collection: LedgerLite_code_db ---
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00,  7.26it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00,  7.24it/s]
+
+Backend stderr:
+2026-10-28 22:57:30,041 | INFO | src.build_database | Finished indexing 12 unique items for LedgerLite_code_db
+
+Backend stderr:
+2026-10-28 22:57:32,539 | INFO | src.build_database_JSON | 
+--- Building Collection: LedgerLite_summary_db ---
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00,  1.74it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00,  1.73it/s]
+Backend stderr:
+
+
+Backend stderr:
+2026-10-28 22:57:33,269 | INFO | src.build_database_JSON | Finished indexing 28 unique items for LedgerLite
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 115.83it/s]
+Backend stderr:
+
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 156.94it/s]
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 160.70it/s]
+Backend stderr:
+
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 160.79it/s]
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 144.39it/s]
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 183.41it/s]
+Backend stderr:
+
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 149.47it/s]
+Backend stderr:
+
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 157.10it/s]
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 174.34it/s]
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 167.94it/s]
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 184.37it/s]
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 175.67it/s]
+Backend stderr:
+
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 178.91it/s]
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 156.73it/s]
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 148.44it/s]
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 114.94it/s]
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 99.81it/s]
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 116.55it/s]
+Backend stderr:
+
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 121.48it/s]
+Backend stderr:
+
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 143.84it/s]
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 129.28it/s]
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 126.83it/s]
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 154.20it/s]
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 137.39it/s]
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 115.53it/s]
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 114.98it/s]
+Backend stderr:
+
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 119.23it/s]
+Backend stderr:
+
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 154.43it/s]
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 116.87it/s]
+Backend stderr:
+
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 120.98it/s]
+Backend stderr:
+
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 125.70it/s]
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 131.38it/s]
+Backend stderr:
+
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 64.24it/s]
+Backend stderr:
+
+
+Backend stderr:
+Batches:   0%|          | 0/1 [00:00<?, ?it/s]
+Backend stderr:
+Batches: 100%|##########| 1/1 [00:00<00:00, 49.59it/s]
+Backend stderr:
+
+
+Backend stderr:
+PDF written to: C:\Users\kevin\AppData\Local\Temp\t079_electron_52e8knh2\app\agent\file_summary_agent_output\LedgerLite\architecture-md__1.pdf
+
+Backend stderr:
+PDF written to: C:\Users\kevin\AppData\Local\Temp\t079_electron_52e8knh2\app\agent\file_summary_agent_output\LedgerLite\deploy-sh__1.pdf
+
+Backend stderr:
+PDF written to: C:\Users\kevin\AppData\Local\Temp\t079_electron_52e8knh2\app\agent\file_summary_agent_output\LedgerLite\InvoiceService-cs__1.pdf
+
+Backend stderr:
+PDF written to: C:\Users\kevin\AppData\Local\Temp\t079_electron_52e8knh2\app\agent\file_summary_agent_output\LedgerLite\PaymentClient-cs__1.pdf
+
+Backend stderr:
+PDF written to: C:\Users\kevin\AppData\Local\Temp\t079_electron_52e8knh2\app\agent\file_summary_agent_output\LedgerLite\report_export-py__1.pdf
+
+Backend stderr:
+PDF written to: C:\Users\kevin\AppData\Local\Temp\t079_electron_52e8knh2\app\agent\file_summary_agent_output\LedgerLite\session-js__1.pdf
+
+Backend stderr:
+PDF written to: C:\Users\kevin\AppData\Local\Temp\t079_electron_52e8knh2\app\agent\file_summary_agent_output\LedgerLite\SETUP-md__1.pdf
+
+Backend stderr:
+2026-10-28 22:58:04,057 | INFO | backend.run_report | Run report written to C:\Users\kevin\AppData\Local\Temp\t079_electron_52e8knh2\app\run_reports\LedgerLite\run_report.html
+
