@@ -334,6 +334,23 @@ def test_no_test_project(tmp_path):
     assert report["status"] == "not_run" and "Run the unit test step first" in report["message"]
 
 
+def test_a_python_project_is_told_it_cannot_be_measured_yet(tmp_path):
+    app, codebase = tmp_path / "app", tmp_path / "labs" / "pricing"
+    write(codebase / "pricing" / "discount.py", "def discount(total):\n    return total * 0.9 if total > 100 else total\n")
+    write(app / "agent" / "BR_agent_output" / "pricing" / "validated_rules.json",
+          [{"id": 1, "rule": "Orders over 100 get 10% off.", "source_file_paths": ["pricing/discount.py"]}])
+    write(app / "agent" / "UT_agent_output" / "pricing" / "test_report.json",
+          {"generated": 1, "kept": 1, "dropped": [], "passed": 1, "failed": 0, "failed_tests": [],
+           "project_error": "", "harness": "pytest"})
+
+    report = run(codebase, app, on_progress=lambda m: None)
+
+    # Not "run the unit test step first": it ran, its tests are just not C#.
+    assert report["status"] == "not_run"
+    assert report["message"] == ("Test Strength can only measure C# projects for now, and this project's "
+                                 "unit tests are written in Python.")
+
+
 def test_no_passing_tests(tmp_path):
     app, codebase, test_dir = make_project(tmp_path)
     write(app / "agent" / "UT_agent_output" / "Shop" / "test_report.json",
