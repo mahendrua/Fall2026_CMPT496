@@ -81,7 +81,10 @@ def collect(codebase_name, app_dir, codebase_path=None, run_log_path=None):
     rules = _read_rules(agent_dir / "BR_agent_output" / codebase_name, paths, notes, since)
     unit = _read_unit_tests(agent_dir / "UT_agent_output" / codebase_name, paths, notes, since)
     integration = _read_integration_tests(agent_dir / "IT_agent_output" / codebase_name, notes, since)
-    mutation = _read_mutation(agent_dir / "MT_output" / codebase_name, notes, since)
+    mutation = _read_mutation(agent_dir / "MT_output" / codebase_name, notes, since, measured_on=[
+        agent_dir / "UT_agent_output" / codebase_name / "test_report.json",
+        agent_dir / "BR_agent_output" / codebase_name / "validated_rules.json",
+    ])
 
     _link_files_to_folders(files, folders)
     _link_tests_to_rules(rules, unit["tests"] + integration["tests"])
@@ -744,20 +747,32 @@ def _readable_code(code):
 # Mutation testing
 # ---------------------------------------------------------
 
-def _read_mutation(folder, notes, since):
+MUTATION_OUT_OF_DATE = (
+    "The unit tests or business rules were updated after this check was made, so its numbers "
+    "may no longer match them. Run Test Strength (Mutation Testing) again to measure the current tests."
+)
+
+
+def _read_mutation(folder, notes, since, measured_on=()):
     """
     The latest mutation testing results (backend/mutation_testing.py), or
     None when it has not been run. A run that could not measure keeps its
     status and message, so the report says why instead of showing 0%.
+
+    The numbers belong to the tests and rule ids it read (measured_on: the
+    unit test results and the rules). When either was written after it, a
+    later run has replaced them, so the numbers are left out and the status
+    is "out_of_date" rather than showing them against other tests and rules.
     """
-    report = _load(folder / "mutation_report.json", notes, "mutation test report", since, missing_ok=True)
+    path = folder / "mutation_report.json"
+    report = _load(path, notes, "mutation test report", since, missing_ok=True)
     if not isinstance(report, dict):
         return None
 
     tests = _as_dict(report.get("tests"))
     tool = _as_dict(report.get("tool"))
 
-    return {
+    mutation = {
         "status": report.get("status", ""),
         "message": report.get("message", ""),
         "finished_at": report.get("finished_at"),
@@ -770,6 +785,22 @@ def _read_mutation(folder, notes, since):
         "rules": _as_list(report.get("rules")),
         "html_report": _as_dict(report.get("stryker")).get("html_report"),
     }
+
+    if any(_written_after(source, path) for source in measured_on):
+        mutation.update(
+            status="out_of_date", message=MUTATION_OUT_OF_DATE, overall=None, by_file={},
+            tests_used=[], tests_left_out=[], rules=[], html_report=None,
+        )
+
+    return mutation
+
+
+def _written_after(path, other):
+    """True when path was saved later than other; False when either is missing."""
+    try:
+        return Path(path).stat().st_mtime > Path(other).stat().st_mtime
+    except OSError:
+        return False
 
 
 def _link_tests_to_rules(rules, tests):
