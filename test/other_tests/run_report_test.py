@@ -84,6 +84,14 @@ def test_page_only_runs_its_own_script():
     assert f"script-src 'sha256-{digest}';" in policy
 
 
+def test_page_does_its_own_embedding_in_checkpoint():
+    # View Insights may only mark <html>: the policy above would block any code
+    # it added, so the page's own script reads the mark and the app's theme.
+    script = re.search(r"<script>(.*?)</script>", render(minimal_data()), re.S).group(1)
+    assert 'document.documentElement.dataset.checkpointEmbedded === "true"' in script
+    assert '"checkpoint:set-report-theme"' in script
+
+
 # ---------- writing it (T-167) ----------
 
 def test_write_run_report_saves_the_page_and_its_data(tmp_path, monkeypatch):

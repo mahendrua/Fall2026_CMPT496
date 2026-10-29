@@ -1265,7 +1265,7 @@ button.more:hover { text-decoration: underline; }
       var a = e.target.closest && e.target.closest("a");
       if (!a) return;
       e.preventDefault();
-      if (!moved) location.hash = a.getAttribute("href");
+      if (!moved) openHash(a.getAttribute("href"));
     });
 
     function zoomCenter(f) { zoomAt(view.k * f, viewport.clientWidth / 2, viewport.clientHeight / 2); }
@@ -1281,7 +1281,7 @@ button.more:hover { text-decoration: underline; }
       if (!q) return;
       var hit = types.filter(function (t) { return t.name.toLowerCase() === q; })[0] ||
                 types.filter(function (t) { return t.name.toLowerCase().indexOf(q) >= 0; })[0];
-      if (hit) location.hash = "#type-" + hit.id;
+      if (hit) openHash("#type-" + hit.id);
     });
   }
 
@@ -1290,6 +1290,10 @@ button.more:hover { text-decoration: underline; }
   // Business view: Overview and Business rules, in plain words. Developer
   // view: every tab. The report opens on the business view; anything only a
   // developer would follow (a test, file, class, the diagram) switches over.
+
+  // View Insights shows the page inside Checkpoint, in a sandboxed frame, and
+  // marks <html> with data-checkpoint-embedded="true" (see "inside Checkpoint").
+  var EMBEDDED = document.documentElement.dataset.checkpointEmbedded === "true";
 
   var VIEW = "business";
   var DEV_ONLY = ["folders", "tests", "diagram"];
@@ -1317,9 +1321,11 @@ button.more:hover { text-decoration: underline; }
     });
   });
 
-  // Same hash twice fires no hashchange, so route it directly then.
+  // Same hash twice fires no hashchange, so route it directly then. Inside
+  // Checkpoint the frame has no address of its own, so always route directly.
   function openHash(hash) {
-    if (location.hash === hash) route(); else location.hash = hash;
+    if (EMBEDDED) route(hash);
+    else if (location.hash === hash) route(); else location.hash = hash;
   }
 
   var current = null;
@@ -1354,8 +1360,9 @@ button.more:hover { text-decoration: underline; }
     target.classList.remove("flash"); void target.offsetWidth; target.classList.add("flash");
   }
 
-  function route() {
-    var hash = decodeURIComponent(location.hash.slice(1));
+  // The hash given (from openHash), else the address's.
+  function route(target) {
+    var hash = decodeURIComponent((typeof target === "string" ? target : location.hash).slice(1));
     var tabs = ["overview", "folders", "rules", "tests", "diagram"];
     if (!hash || tabs.indexOf(hash) >= 0) { showTab(hash || "overview"); window.scrollTo(0, 0); return; }
     var dash = hash.indexOf("-"), kind = hash.slice(0, dash), key = hash.slice(dash + 1);
@@ -1383,6 +1390,31 @@ button.more:hover { text-decoration: underline; }
       : filters[{ "b-rules": "brules" }[current] || current] && filters[{ "b-rules": "brules" }[current] || current].search;
     if (box) { e.preventDefault(); box.focus(); }
   });
+
+  // ---------- inside Checkpoint ----------
+  //
+  // There is no window to go back from. A "#..." link would resolve against
+  // Checkpoint's own address and load that in the frame, so links are routed
+  // here and no other link may load. The app sends its light or dark theme.
+
+  if (EMBEDDED) {
+    backButton.remove();
+    backHelp.remove();
+    // After the page's own handlers (the diagram, "Show the code evidence"), which may have dealt with it.
+    document.addEventListener("click", function (e) {
+      var a = e.target.closest && e.target.closest("a[href]");
+      if (!a || e.defaultPrevented) return;
+      e.preventDefault();
+      var href = a.getAttribute("href");
+      if (href.charAt(0) === "#") openHash(href);
+    });
+    window.addEventListener("message", function (e) {
+      var data = e.data;
+      if (e.source !== window.parent || !data || data.type !== "checkpoint:set-report-theme") return;
+      if (data.theme === "light" || data.theme === "dark") document.documentElement.dataset.checkpointTheme = data.theme;
+    });
+  }
+
   setView("business");
   route();
 })();
