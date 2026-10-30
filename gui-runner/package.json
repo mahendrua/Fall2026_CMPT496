@@ -1,0 +1,9 @@
+{
+  "name": "checkpoint-gui-test-runner",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "@playwright/test": "1.56.1",
+    "ws": "8.18.3"
+  }
+}

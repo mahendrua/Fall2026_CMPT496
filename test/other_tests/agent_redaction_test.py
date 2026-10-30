@@ -186,7 +186,7 @@ def test_unit_test_generation_sends_redacted_rule_evidence_and_context():
     code, summaries = retrieved_context(model)
 
     _, output, error = asyncio.run(
-        generate_unit_test(model.with_structured_output(UnitTest), validated_rule(), code, summaries)
+        generate_unit_test(model.with_structured_output(UnitTest), validated_rule(), code, summaries, "csharp")
     )
 
     assert error is None and output.unit_test.startswith("[Fact]")
@@ -314,7 +314,7 @@ def test_failed_redaction_stops_every_agent_path(redaction_fails, tmp_path, caps
         _validate_single_rule(model.with_structured_output(ValidatorOutput), rule, code, summaries, False)
     )
     _, _, generate_error = asyncio.run(
-        generate_unit_test(model.with_structured_output(UnitTest), validated_rule(), code, summaries)
+        generate_unit_test(model.with_structured_output(UnitTest), validated_rule(), code, summaries, "csharp")
     )
     repaired = asyncio.run(make_fixer(model, lambda _case: SOURCE)(case, "Shop.Tests"))
 

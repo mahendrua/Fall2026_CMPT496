@@ -10,6 +10,8 @@ Everything is inside the one file -- styles, script, the run's data and the
 diagram -- so it opens in any browser without Checkpoint or a network.
 """
 
+import base64
+import hashlib
 import json
 import re
 from html import escape
@@ -36,10 +38,11 @@ def render(data, diagram=None):
         "CODEBASE": escape(str(data.get("codebase", "Project"))),
         "DATA": data_json,
         "SVG": svg,
+        "CSP": CONTENT_SECURITY_POLICY,
     }
 
     # One pass, so a marker that happens to appear in the data is left alone.
-    return re.sub(r"@@(TITLE|CODEBASE|DATA|SVG)@@", lambda match: parts[match.group(1)], TEMPLATE)
+    return re.sub(r"@@(TITLE|CODEBASE|DATA|SVG|CSP)@@", lambda match: parts[match.group(1)], TEMPLATE)
 
 
 TEMPLATE = r"""<!doctype html>
@@ -47,6 +50,7 @@ TEMPLATE = r"""<!doctype html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="@@CSP@@">
 <title>@@TITLE@@</title>
 <style>
 :root {
@@ -84,6 +88,9 @@ header { position: sticky; top: 0; z-index: 20; background: var(--panel); border
 .title-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; }
 .title-row h1 { font-size: 20px; margin: 0; }
 .title-row .sub { color: var(--muted); font-size: 13px; }
+.report-back { margin-left: auto; padding: 7px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); color: var(--text); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
+.report-back:hover, .report-back:focus-visible { border-color: var(--accent); outline: 2px solid transparent; }
+.report-back-help { flex-basis: 100%; color: var(--muted); font-size: 12px; }
 nav { display: flex; gap: 4px; margin-top: 10px; overflow-x: auto; }
 nav a { padding: 8px 12px; border-bottom: 2px solid transparent; color: var(--muted); font-weight: 600; font-size: 14px; white-space: nowrap; }
 nav a:hover { color: var(--text); text-decoration: none; }
@@ -207,6 +214,8 @@ button.more:hover { text-decoration: underline; }
     <div class="title-row">
       <h1>@@CODEBASE@@</h1>
       <span class="sub" id="run-line">Checkpoint run report</span>
+      <button type="button" class="report-back" id="report-back">Back to Checkpoint</button>
+      <span class="report-back-help" id="report-back-help" aria-live="polite"></span>
       <div class="view-switch" role="group" aria-label="Who is reading">
         <button type="button" data-view="business" aria-pressed="true">Business</button>
         <button type="button" data-view="developer" aria-pressed="false">Developer</button>
@@ -248,6 +257,22 @@ button.more:hover { text-decoration: underline; }
 <script>
 (function () {
   "use strict";
+
+  var backButton = document.getElementById("report-back");
+  var backHelp = document.getElementById("report-back-help");
+  backButton.addEventListener("click", function () {
+    backButton.disabled = true;
+    window.close();
+    window.setTimeout(function () {
+      if (window.closed) return;
+      if (window.history.length > 1) {
+        window.history.back();
+        return;
+      }
+      backButton.disabled = false;
+      backHelp.textContent = "This report is open on its own. Close this tab or window to return to Checkpoint.";
+    }, 250);
+  });
 
   var DATA = JSON.parse(document.getElementById("report-data").textContent);
   var COUNTS = DATA.overview.counts;
@@ -392,6 +417,8 @@ button.more:hover { text-decoration: underline; }
 
   var MUTATION = DATA.mutation || null;
   var MEASURED = !!(MUTATION && MUTATION.status === "finished" && MUTATION.overall && MUTATION.overall.score !== null);
+  // Measured on tests and rules that a later run replaced, so no numbers are shown.
+  var OUT_OF_DATE = !!(MUTATION && MUTATION.status === "out_of_date");
   var mutationByRule = new Map(((MUTATION && MUTATION.rules) || []).map(function (r) { return [String(r.id), r]; }));
   var mutationByTest = new Map(((MUTATION && MUTATION.tests_used) || []).map(function (t) { return [t.name, t]; }));
   var leftOutByTest = new Map(((MUTATION && MUTATION.tests_left_out) || []).map(function (t) { return [t.name, t]; }));
@@ -402,6 +429,7 @@ button.more:hover { text-decoration: underline; }
       return tile("Test strength", Math.round(MUTATION.overall.score) + "%",
         "of " + plural(MUTATION.overall.scored, "planted mistake") + " caught", "#strength");
     }
+    if (OUT_OF_DATE) return tile("Test strength", "Out of date", "the tests changed since the last check", "#strength");
     return tile("Test strength", "Not measured", MUTATION ? "the last check did not finish" : "not checked yet", "#strength");
   }
 
@@ -652,7 +680,8 @@ button.more:hover { text-decoration: underline; }
       return card;
     }
     if (!MEASURED) {
-      add(card, el("p", { class: "muted" }, "Not measured: " + (MUTATION.message || "the last check did not finish.")));
+      add(card, el("p", { class: "muted" }, "Not measured: " + (MUTATION.message || "the last check did not finish.") +
+        (OUT_OF_DATE && MUTATION.finished_at ? " Last check: " + when(MUTATION.finished_at) + "." : "")));
       return card;
     }
 
@@ -824,6 +853,9 @@ button.more:hover { text-decoration: underline; }
         plural(MUTATION.tests_used.length, "unit test") + " that pass" + (MUTATION.tests_used.length === 1 ? "es" : "") +
         (left ? ". These were left out:" : ".")));
       add(card, left);
+    } else if (OUT_OF_DATE) {
+      add(card, el("p", { class: "plain" }, "Out of date: the tests changed after the last check, so its result is not shown. " +
+        "Run it again from the app: Run Operations, then Test Strength (Mutation Testing)."));
     } else {
       add(card, el("p", { class: "plain" }, "Not checked yet for this project" +
         (MUTATION ? " (the last check did not finish)." : ". Run it from the app: Run Operations, then Test Strength (Mutation Testing).")));
@@ -1270,7 +1302,7 @@ button.more:hover { text-decoration: underline; }
       var a = e.target.closest && e.target.closest("a");
       if (!a) return;
       e.preventDefault();
-      if (!moved) location.hash = a.getAttribute("href");
+      if (!moved) openHash(a.getAttribute("href"));
     });
 
     function zoomCenter(f) { zoomAt(view.k * f, viewport.clientWidth / 2, viewport.clientHeight / 2); }
@@ -1286,7 +1318,7 @@ button.more:hover { text-decoration: underline; }
       if (!q) return;
       var hit = types.filter(function (t) { return t.name.toLowerCase() === q; })[0] ||
                 types.filter(function (t) { return t.name.toLowerCase().indexOf(q) >= 0; })[0];
-      if (hit) location.hash = "#type-" + hit.id;
+      if (hit) openHash("#type-" + hit.id);
     });
   }
 
@@ -1295,6 +1327,10 @@ button.more:hover { text-decoration: underline; }
   // Business view: Overview and Business rules, in plain words. Developer
   // view: every tab. The report opens on the business view; anything only a
   // developer would follow (a test, file, class, the diagram) switches over.
+
+  // View Insights shows the page inside Checkpoint, in a sandboxed frame, and
+  // marks <html> with data-checkpoint-embedded="true" (see "inside Checkpoint").
+  var EMBEDDED = document.documentElement.dataset.checkpointEmbedded === "true";
 
   var VIEW = "business";
   var DEV_ONLY = ["folders", "tests", "diagram"];
@@ -1322,9 +1358,11 @@ button.more:hover { text-decoration: underline; }
     });
   });
 
-  // Same hash twice fires no hashchange, so route it directly then.
+  // Same hash twice fires no hashchange, so route it directly then. Inside
+  // Checkpoint the frame has no address of its own, so always route directly.
   function openHash(hash) {
-    if (location.hash === hash) route(); else location.hash = hash;
+    if (EMBEDDED) route(hash);
+    else if (location.hash === hash) route(); else location.hash = hash;
   }
 
   var current = null;
@@ -1359,8 +1397,9 @@ button.more:hover { text-decoration: underline; }
     target.classList.remove("flash"); void target.offsetWidth; target.classList.add("flash");
   }
 
-  function route() {
-    var hash = decodeURIComponent(location.hash.slice(1));
+  // The hash given (from openHash), else the address's.
+  function route(target) {
+    var hash = decodeURIComponent((typeof target === "string" ? target : location.hash).slice(1));
     var tabs = ["overview", "folders", "rules", "tests", "diagram"];
     if (!hash || tabs.indexOf(hash) >= 0) { showTab(hash || "overview"); window.scrollTo(0, 0); return; }
     var dash = hash.indexOf("-"), kind = hash.slice(0, dash), key = hash.slice(dash + 1);
@@ -1388,6 +1427,31 @@ button.more:hover { text-decoration: underline; }
       : filters[{ "b-rules": "brules" }[current] || current] && filters[{ "b-rules": "brules" }[current] || current].search;
     if (box) { e.preventDefault(); box.focus(); }
   });
+
+  // ---------- inside Checkpoint ----------
+  //
+  // There is no window to go back from. A "#..." link would resolve against
+  // Checkpoint's own address and load that in the frame, so links are routed
+  // here and no other link may load. The app sends its light or dark theme.
+
+  if (EMBEDDED) {
+    backButton.remove();
+    backHelp.remove();
+    // After the page's own handlers (the diagram, "Show the code evidence"), which may have dealt with it.
+    document.addEventListener("click", function (e) {
+      var a = e.target.closest && e.target.closest("a[href]");
+      if (!a || e.defaultPrevented) return;
+      e.preventDefault();
+      var href = a.getAttribute("href");
+      if (href.charAt(0) === "#") openHash(href);
+    });
+    window.addEventListener("message", function (e) {
+      var data = e.data;
+      if (e.source !== window.parent || !data || data.type !== "checkpoint:set-report-theme") return;
+      if (data.theme === "light" || data.theme === "dark") document.documentElement.dataset.checkpointTheme = data.theme;
+    });
+  }
+
   setView("business");
   route();
 })();
@@ -1395,3 +1459,19 @@ button.more:hover { text-decoration: underline; }
 </body>
 </html>
 """
+
+
+def _script_source(page):
+    """CSP source for the page's one inline code block: its SHA-256, base64."""
+    script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
+    return "'sha256-" + base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode("ascii") + "'"
+
+
+# Only the page's own code may run, nothing is fetched from outside (images
+# only as data: URIs) and styles stay inline. Text from the outputs is already
+# escaped; this stops anything that slips through from running code or sending
+# data anywhere. The code block has no @@ markers, so its hash is fixed.
+CONTENT_SECURITY_POLICY = (
+    f"default-src 'none'; script-src {_script_source(TEMPLATE)}; style-src 'unsafe-inline'; "
+    "img-src data:; base-uri 'none'; form-action 'none'"
+)

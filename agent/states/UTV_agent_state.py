@@ -13,12 +13,15 @@ class UTVGraphState(TypedDict):
     """
     @brief Represents the shared state passed between nodes in the UTV Agent workflow graph.
 
+    @var target_language
+        "python" or "csharp", from detect_unit_test_language() on the saved tests.
+
     @var current_tests
         The list of UnitTest candidates being validated, as loaded from unit_tests.json.
 
     @var test_run
-        TestRun from agent/test_harness.py: which tests were kept, repaired, dropped,
-        passed and failed. Set by the validator node, written out by the writer node.
+        TestRun or PythonTestRun: which tests were kept, dropped, passed and failed.
+        Set by the validator node, written out by the writer node.
 
     @var code_collection
         ChromaDB collection handle for embedded code snippets, used to give the AI the
@@ -36,6 +39,7 @@ class UTVGraphState(TypedDict):
         ./agent/UT_agent_output if not specified, so the results show under
         "View unit tests".
     """
+    target_language: str
     current_tests: list[UnitTest]
     test_run: Any
     code_collection: Any

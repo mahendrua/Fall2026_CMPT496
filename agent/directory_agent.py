@@ -4,6 +4,7 @@ from agent.states.directory_agent_state import DirectoryGraphState
 from agent.structured_output.directory_output import DirectoryOutput, ContextAnalysisOutput, JudgementOutput, BusinessRulesOutput
 from langgraph.graph import StateGraph, START, END
 from agent.llm import make_llm
+from agent.file_summary_grounding import filter_directory_business_rules_against_source
 from agent.crawl_config import prune
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 import os
@@ -779,6 +780,17 @@ Show how the parts connect and the overall shape of the system, not just what ea
             # Manually set directory_name and directory_path for consistency
             output.directory_name = Path(current_dir).name
             output.directory_path = rel_dir
+            try:
+                output = filter_directory_business_rules_against_source(
+                    output,
+                    current_dir,
+                    root_directory,
+                )
+            except Exception as grounding_error:
+                progress(
+                    f"Skipped G2 business-rule grounding for {Path(current_dir).name}: "
+                    f"{grounding_error}"
+                )
 
             progress(f"Extracted business rules for directory {current_dir}", 90)
             return {

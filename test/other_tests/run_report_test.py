@@ -7,6 +7,8 @@ The full-pipeline tests stub out the pipeline itself: they check only what
 happens after it, that a report problem never fails a successful run.
 """
 
+import base64
+import hashlib
 import json
 import re
 
@@ -67,6 +69,27 @@ def test_page_without_a_diagram_still_renders():
     page = render(minimal_data(), {"svg": "", "error": "Java is not installed", "types": [], "edges": []})
     assert embedded_data(page)["diagram"]["error"] == "Java is not installed"
     assert '<div class="canvas" id="canvas"></div>' in page
+
+
+def test_page_only_runs_its_own_script():
+    # The Content-Security-Policy allows exactly the page's own code block and
+    # nothing from outside, so text that slipped past escaping could neither
+    # run code nor send data anywhere.
+    page = render(minimal_data())
+    policy = re.search(r'<meta http-equiv="Content-Security-Policy" content="([^"]+)">', page).group(1)
+    script = re.search(r"<script>(.*?)</script>", page, re.S).group(1)
+    digest = base64.b64encode(hashlib.sha256(script.encode("utf-8")).digest()).decode("ascii")
+
+    assert "default-src 'none'" in policy
+    assert f"script-src 'sha256-{digest}';" in policy
+
+
+def test_page_does_its_own_embedding_in_checkpoint():
+    # View Insights may only mark <html>: the policy above would block any code
+    # it added, so the page's own script reads the mark and the app's theme.
+    script = re.search(r"<script>(.*?)</script>", render(minimal_data()), re.S).group(1)
+    assert 'document.documentElement.dataset.checkpointEmbedded === "true"' in script
+    assert '"checkpoint:set-report-theme"' in script
 
 
 # ---------- writing it (T-167) ----------

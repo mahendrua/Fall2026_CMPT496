@@ -135,7 +135,8 @@ def test_file_summaries_and_their_rules_are_saved_clean(codebase):
     assert source_files(root) == before
 
     db = json.loads((out / "Db-cs__1.json").read_text(encoding="utf-8"))
-    assert db["path"] == "src/Db.cs"
+    # The agent saves the real source path, not the model's (cmpt-496, 441e38d).
+    assert Path(db["path"]) == root / "src" / "Db.cs"
     assert db["summary"] == f"Checks logins against the admin password '{P1}'."
     assert db["types"][0]["description"] == f"Calls the payment service with {K1}."
     assert db["types"][0]["plantuml"] == FILE_SUMMARY["types"][0]["plantuml"]
@@ -148,9 +149,9 @@ def test_file_summaries_and_their_rules_are_saved_clean(codebase):
     assert broken["path"] == str(root / "src" / "Broken.cs")
     assert broken["summary"] == f"Error generating summary: 400 Bad Request: could not parse 'password = \"{P1}\"'"
 
-    # Keyed by the path the model wrote back; each rule's source_file is the real one.
+    # Keyed by the summary's path, which is the real one, as is each rule's source_file.
     rules = json.loads((out / "business_rules" / "business_rules.json").read_text(encoding="utf-8"))
-    assert rules == {"src/Db.cs": db["business_rules"]}
+    assert rules == {db["path"]: db["business_rules"]}
 
     # The next stage still reads them.
     inputs = load_rule_candidates(root, out / "business_rules" / "business_rules.json", False, app_dir=app)

@@ -52,11 +52,16 @@ class CommandDispatcher:
             # Business rules / tests
             "validate_business_rules": self.commands.validate_business_rules,
             "generate_unit_tests": self.commands.generate_unit_tests,
+            "generate_gui_test_cases": self.commands.generate_gui_test_cases,
+            "repair_gui_test_case": self.commands.repair_gui_test_case,
             "validate_unit_tests": self.commands.validate_unit_tests,
             "generate_integration_tests": self.commands.generate_integration_tests,
 
             # Mutation testing (not part of the full pipeline: it takes minutes)
             "run_mutation_tests": self.commands.run_mutation_tests,
+
+            # GitHub pull requests
+            "analyze_pull_request": self.commands.analyze_pull_request,
 
             # UML
             "generate_uml": self.commands.generate_uml,

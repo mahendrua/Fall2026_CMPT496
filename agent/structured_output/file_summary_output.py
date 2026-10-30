@@ -5,7 +5,7 @@
 function and class summaries
 """
 
-from typing import Optional, Literal
+from typing import Optional, Literal, Any
 from pydantic import BaseModel, Field, ConfigDict
 
 Visibility = Literal["public", "private", "protected"]
@@ -22,6 +22,10 @@ class ParameterSummary(BaseModel):
     name: str = Field(..., description="Parameter name.")
     type: Optional[str] = Field(None, description="Parameter type if known.")
     direction: ParamDirection = Field(..., description="Whether the parameter is input only (in), output only (out), or both read and modified (inout).")
+    default: Any = Field(
+        None,
+        description="The parameter's declared default value, if any.",
+    )
 
 class MethodSummary(BaseModel):
     """
@@ -31,7 +35,7 @@ class MethodSummary(BaseModel):
 
     name: str = Field(..., description="The method name.")
     description: str = Field(..., description="A short description of what the method does.")
-    visibility: Visibility = Field(None,description="Method visibility: public, private, or protected.")
+    visibility: Optional[Visibility] = Field(None,description="Method visibility if the language defines it.",)
     return_type: Optional[str] = Field(None,description="The return type if known.")
     parameters: list[ParameterSummary] = Field(default_factory=list,description="Parameters accepted by the method.")
     is_static: bool = Field(False,description="True if the method is static.")
@@ -49,7 +53,9 @@ class FunctionSummary(BaseModel):
     calls: list[str] = Field(default_factory=list, description="Other functions or methods called by this function.")
 
     # Optional fields
-    visibility: Visibility = Field(None, description="Function/method visibility: public, private, or protected.")
+    visibility: Optional[Visibility] = Field(
+    None,
+    description="Function/method visibility if the language defines it.",)
     return_type: Optional[str] = Field(None, description="The return type, if known.")
 
 class PropertySummary(BaseModel):
@@ -60,7 +66,7 @@ class PropertySummary(BaseModel):
     name: str = Field(..., description="The property or field name.")
     type: Optional[str] = Field(None,description="The property or field type if known.")
     description: str = Field(...,description="A short description of the property or field.")
-    visibility: Visibility = Field(None,description="Property visibility: public, private, or protected.")
+    visibility: Optional[Visibility] = Field(None,description="Property visibility if the language defines it.")
     is_static: bool = Field(False,description="True if the property or field is static.")
 
 class RelationshipSummary(BaseModel):
@@ -99,7 +105,13 @@ class FileSummaryOutput(BaseModel):
     @brief Represents the structured summary of a source file.
     """
     model_config = ConfigDict(extra="forbid")
-    path: str = Field(...,description="The path of the file being summarized.")
+    path: str = Field(
+    default="",
+    description=(
+        "The path of the file being summarized. "
+        "Checkpoint supplies this from the known source file."
+    ),
+)
     summary: str = Field(...,description="A concise summary of the file contents.")
     dependencies: list[str] = Field(default_factory=list,description="External libraries and imports used in the file.")
     functions: list[FunctionSummary] = Field(default_factory=list,description="Top-level functions defined in the file.")

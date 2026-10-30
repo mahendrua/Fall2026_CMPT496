@@ -1,0 +1,1663 @@
+{
+  "task": "T-079 (US-034) ten-secret verification",
+  "generated_at": "2026-10-28T22:57:14",
+  "seed": 79,
+  "verdict": "PASS",
+  "negative_control": false,
+  "leaks": 0,
+  "unexpected_leaks": 0,
+  "known_gap_leaks": 0,
+  "known_gaps": {
+    "A": "PlantUML private field (-password : string = \"...\") was not detected (fixed in T-079)"
+  },
+  "complete": true,
+  "failed_checks": [],
+  "session": {
+    "seconds": 48.9,
+    "exit_code": 0,
+    "stdout_lines": 284,
+    "malformed_lines": 0,
+    "steps": [
+      {
+        "label": "full pipeline",
+        "phase": "normal",
+        "answered": true,
+        "success": true,
+        "expected_success": true,
+        "warning": true,
+        "seconds": 45.8,
+        "command": "full_pipeline",
+        "error_masked": null
+      },
+      {
+        "label": "run usage",
+        "phase": "normal",
+        "answered": true,
+        "success": true,
+        "expected_success": true,
+        "warning": false,
+        "seconds": 0.0,
+        "command": "get_run_usage",
+        "error_masked": null
+      },
+      {
+        "label": "review result",
+        "phase": "normal",
+        "answered": true,
+        "success": true,
+        "expected_success": true,
+        "warning": false,
+        "seconds": 0.0,
+        "command": "get_consistency_result",
+        "error_masked": null
+      },
+      {
+        "label": "review note",
+        "phase": "normal",
+        "answered": true,
+        "success": true,
+        "expected_success": true,
+        "warning": false,
+        "seconds": 0.0,
+        "command": "save_consistency_review",
+        "error_masked": null
+      },
+      {
+        "label": "mutation testing",
+        "phase": "normal",
+        "answered": true,
+        "success": true,
+        "expected_success": true,
+        "warning": true,
+        "seconds": 1.4,
+        "command": "run_mutation_tests",
+        "error_masked": null
+      },
+      {
+        "label": "review check of the PlantUML notes",
+        "phase": "normal",
+        "answered": true,
+        "success": true,
+        "expected_success": true,
+        "warning": false,
+        "seconds": 0.0,
+        "command": "check_consistency",
+        "error_masked": null
+      },
+      {
+        "label": "failing directory step",
+        "phase": "fail_directory_judgement",
+        "answered": true,
+        "success": false,
+        "expected_success": false,
+        "warning": false,
+        "seconds": 0.2,
+        "command": "generate_directory_summaries",
+        "error_masked": null
+      },
+      {
+        "label": "failing review check",
+        "phase": "fail_consistency",
+        "answered": true,
+        "success": true,
+        "expected_success": true,
+        "warning": true,
+        "seconds": 0.0,
+        "command": "check_consistency",
+        "error_masked": null
+      },
+      {
+        "label": "frontend error record",
+        "phase": "normal",
+        "answered": true,
+        "success": true,
+        "expected_success": true,
+        "warning": false,
+        "seconds": 0.0,
+        "command": "record_error",
+        "error_masked": null
+      },
+      {
+        "label": "unknown command quoting a secret",
+        "phase": "normal",
+        "answered": true,
+        "success": false,
+        "expected_success": false,
+        "warning": false,
+        "seconds": 0.0,
+        "command": "(withheld)",
+        "error_masked": null
+      },
+      {
+        "label": "error log",
+        "phase": "normal",
+        "answered": true,
+        "success": true,
+        "expected_success": true,
+        "warning": false,
+        "seconds": 0.0,
+        "command": "get_errors",
+        "error_masked": null
+      }
+    ]
+  },
+  "app_copy": {
+    "files": 59,
+    "identical": true
+  },
+  "substitutions": [
+    {
+      "what": "AI provider",
+      "real": "Google Gemini through langchain_google_genai",
+      "used": "offline_model.OfflineProvider in place of ChatGoogleGenerativeAI; agent/llm.py builds it with its real _retrying() and redacting() wrappers",
+      "unverified": "Gemini's own structured-output mode, HTTP client and error types; what a real model answers"
+    },
+    {
+      "what": "Model answers",
+      "real": "a model's answers",
+      "used": "scripted answers (offline_answers.py) that repeat planted secrets on purpose",
+      "unverified": "whether a real model repeats secrets in other ways"
+    },
+    {
+      "what": "Retry wait",
+      "real": "agent/llm.py backs off 2 s and more on a 503",
+      "used": "the same, unchanged (one 503 is scripted)",
+      "unverified": "nothing"
+    },
+    {
+      "what": "Network",
+      "real": "open",
+      "used": "this process refuses non-loopback connections and lookups and records them; NuGet sources are cleared; telemetry is switched off for dotnet and ChromaDB; Hugging Face runs offline",
+      "unverified": "network use by child processes (dotnet, java), which the guard cannot see"
+    },
+    {
+      "what": "LangSmith tracing",
+      "real": "off unless the environment turns it on",
+      "used": "turned on in the environment, pointed at an unroutable address (198.51.100.7)",
+      "unverified": "a real LangSmith endpoint"
+    },
+    {
+      "what": "dotnet build servers",
+      "real": "the compiler and MSBuild servers stay running after a build",
+      "used": "switched off for the backend (UseSharedCompilation=false, MSBUILDDISABLENODEREUSE=1), so nothing holds the workspace open after the run",
+      "unverified": "nothing about the generated tests: they are built and run the same way"
+    },
+    {
+      "what": "App location",
+      "real": "the repository or the packaged app folder",
+      "used": "a byte-for-byte copy of the app's Python files and plantuml.jar in a temporary folder",
+      "unverified": "the packaged (PyInstaller) build"
+    },
+    {
+      "what": "Electron",
+      "real": "main.js reading the backend's stdout",
+      "used": "this script, applying main.js's rules (one JSON object per line, request_id, stream types)",
+      "unverified": "the Electron screens (see the manual checklist)"
+    }
+  ],
+  "cases": {
+    "S01": {
+      "category": "PASSWORD",
+      "planted_occurrences": 4,
+      "files": [
+        "Billing/InvoiceService.cs",
+        "docs/SETUP.md",
+        "docs/architecture.md"
+      ],
+      "contexts": [
+        "echo",
+        "labelled",
+        "plantuml",
+        "prose"
+      ],
+      "leaks": 0,
+      "leaked_in": [],
+      "known_gaps": []
+    },
+    "S02": {
+      "category": "API_KEY",
+      "planted_occurrences": 1,
+      "files": [
+        "tools/report_export.py"
+      ],
+      "contexts": [
+        "labelled"
+      ],
+      "leaks": 0,
+      "leaked_in": [],
+      "known_gaps": []
+    },
+    "S03": {
+      "category": "TOKEN",
+      "planted_occurrences": 2,
+      "files": [
+        "web/session.js"
+      ],
+      "contexts": [
+        "labelled",
+        "query"
+      ],
+      "leaks": 0,
+      "leaked_in": [],
+      "known_gaps": []
+    },
+    "S04": {
+      "category": "API_KEY",
+      "planted_occurrences": 1,
+      "files": [
+        "Integrations/PaymentClient.cs"
+      ],
+      "contexts": [
+        "vendor"
+      ],
+      "leaks": 0,
+      "leaked_in": [],
+      "known_gaps": []
+    },
+    "S05": {
+      "category": "API_KEY",
+      "planted_occurrences": 1,
+      "files": [
+        "scripts/deploy.sh"
+      ],
+      "contexts": [
+        "labelled"
+      ],
+      "leaks": 0,
+      "leaked_in": [],
+      "known_gaps": []
+    },
+    "S06": {
+      "category": "TOKEN",
+      "planted_occurrences": 1,
+      "files": [
+        "scripts/deploy.sh"
+      ],
+      "contexts": [
+        "labelled"
+      ],
+      "leaks": 0,
+      "leaked_in": [],
+      "known_gaps": []
+    },
+    "S07": {
+      "category": "AUTHORIZATION",
+      "planted_occurrences": 2,
+      "files": [
+        "Integrations/PaymentClient.cs",
+        "scripts/deploy.sh"
+      ],
+      "contexts": [
+        "labelled"
+      ],
+      "leaks": 0,
+      "leaked_in": [],
+      "known_gaps": []
+    },
+    "S08": {
+      "category": "PASSWORD",
+      "planted_occurrences": 1,
+      "files": [
+        "Billing/InvoiceService.cs"
+      ],
+      "contexts": [
+        "labelled"
+      ],
+      "leaks": 0,
+      "leaked_in": [],
+      "known_gaps": []
+    },
+    "S09": {
+      "category": "PASSWORD",
+      "planted_occurrences": 1,
+      "files": [
+        "tools/report_export.py"
+      ],
+      "contexts": [
+        "labelled"
+      ],
+      "leaks": 0,
+      "leaked_in": [],
+      "known_gaps": []
+    },
+    "S10": {
+      "category": "PRIVATE_KEY",
+      "planted_occurrences": 1,
+      "files": [
+        "docs/SETUP.md"
+      ],
+      "contexts": [
+        "labelled"
+      ],
+      "leaks": 0,
+      "leaked_in": [],
+      "known_gaps": []
+    },
+    "K00": {
+      "category": "credential configuration",
+      "planted_occurrences": 0,
+      "files": [],
+      "contexts": [],
+      "leaks": 0,
+      "leaked_in": [],
+      "known_gaps": []
+    },
+    "K01": {
+      "category": "credential configuration",
+      "planted_occurrences": 0,
+      "files": [],
+      "contexts": [],
+      "leaks": 0,
+      "leaked_in": [],
+      "known_gaps": []
+    }
+  },
+  "sinks": {
+    "provider_requests": {
+      "inspected": 58,
+      "text_chars": 667594,
+      "leaks": 0,
+      "cases_leaked": [],
+      "problems": []
+    },
+    "model_callbacks": {
+      "inspected": 57,
+      "text_chars": 693438,
+      "leaks": 0,
+      "cases_leaked": [],
+      "problems": []
+    },
+    "stderr": {
+      "inspected": 1,
+      "text_chars": 6437,
+      "leaks": 0,
+      "cases_leaked": [],
+      "problems": []
+    },
+    "error_log": {
+      "inspected": 1,
+      "text_chars": 425,
+      "leaks": 0,
+      "cases_leaked": [],
+      "problems": []
+    },
+    "run_logs": {
+      "inspected": 5,
+      "text_chars": 16268,
+      "leaks": 0,
+      "cases_leaked": [],
+      "problems": []
+    },
+    "token_usage_log": {
+      "inspected": 1,
+      "text_chars": 1512,
+      "leaks": 0,
+      "cases_leaked": [],
+      "problems": []
+    },
+    "file_summaries": {
+      "inspected": 8,
+      "text_chars": 8233,
+      "leaks": 0,
+      "cases_leaked": [],
+      "problems": []
+    },
+    "uml_pdf": {
+      "inspected": 7,
+      "text_chars": 5937,
+      "leaks": 0,
+      "cases_leaked": [],
+      "problems": []
+    },
+    "plantuml_io": {
+      "inspected": 16,
+      "text_chars": 29142,
+      "leaks": 0,
+      "cases_leaked": [],
+      "problems": []
+    },
+    "directory_summaries": {
+      "inspected": 8,
+      "text_chars": 2548,
+      "leaks": 0,
+      "cases_leaked": [],
+      "problems": []
+    },
+    "business_rules": {
+      "inspected": 2,
+      "text_chars": 1890,
+      "leaks": 0,
+      "cases_leaked": [],
+      "problems": []
+    },
+    "unit_tests": {
+      "inspected": 6,
+      "text_chars": 10054,
+      "leaks": 0,
+      "cases_leaked": [],
+      "problems": []
+    },
+    "integration_tests": {
+      "inspected": 6,
+      "text_chars": 5383,
+      "leaks": 0,
+      "cases_leaked": [],
+      "problems": []
+    },
+    "generated_test_sources": {
+      "inspected": 14,
+      "text_chars": 71899,
+      "leaks": 0,
+      "cases_leaked": [],
+      "problems": []
+    },
+    "consistency_review": {
+      "inspected": 3,
+      "text_chars": 19462,
+      "leaks": 0,
+      "cases_leaked": [],
+      "problems": []
+    },
+    "run_report": {
+      "inspected": 4,
+      "text_chars": 131461,
+      "leaks": 0,
+      "cases_leaked": [],
+      "problems": []
+    },
+    "mutation_report": {
+      "inspected": 1,
+      "text_chars": 1155,
+      "leaks": 0,
+      "cases_leaked": [],
+      "problems": []
+    },
+    "markdown_export": {
+      "inspected": 8,
+      "text_chars": 2211,
+      "leaks": 0,
+      "cases_leaked": [],
+      "problems": []
+    },
+    "ipc_stdout": {
+      "inspected": 284,
+      "text_chars": 71499,
+      "leaks": 0,
+      "cases_leaked": [],
+      "problems": []
+    },
+    "vector_store_summary": {
+      "inspected": 28,
+      "text_chars": 9516,
+      "leaks": 0,
+      "cases_leaked": [],
+      "problems": []
+    }
+  },
+  "findings": [],
+  "problems": [],
+  "checks": [
+    {
+      "check": "step answered: full pipeline",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "step outcome as scripted: full pipeline",
+      "ok": true,
+      "required": true,
+      "detail": "success=True, expected True"
+    },
+    {
+      "check": "step answered: run usage",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "step outcome as scripted: run usage",
+      "ok": true,
+      "required": true,
+      "detail": "success=True, expected True"
+    },
+    {
+      "check": "step answered: review result",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "step outcome as scripted: review result",
+      "ok": true,
+      "required": true,
+      "detail": "success=True, expected True"
+    },
+    {
+      "check": "step answered: review note",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "step outcome as scripted: review note",
+      "ok": true,
+      "required": true,
+      "detail": "success=True, expected True"
+    },
+    {
+      "check": "step answered: mutation testing",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "step outcome as scripted: mutation testing",
+      "ok": true,
+      "required": true,
+      "detail": "success=True, expected True"
+    },
+    {
+      "check": "step answered: review check of the PlantUML notes",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "step outcome as scripted: review check of the PlantUML notes",
+      "ok": true,
+      "required": true,
+      "detail": "success=True, expected True"
+    },
+    {
+      "check": "step answered: failing directory step",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "step outcome as scripted: failing directory step",
+      "ok": true,
+      "required": true,
+      "detail": "success=False, expected False"
+    },
+    {
+      "check": "step answered: failing review check",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "step outcome as scripted: failing review check",
+      "ok": true,
+      "required": true,
+      "detail": "success=True, expected True"
+    },
+    {
+      "check": "step answered: frontend error record",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "step outcome as scripted: frontend error record",
+      "ok": true,
+      "required": true,
+      "detail": "success=True, expected True"
+    },
+    {
+      "check": "step answered: unknown command quoting a secret",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "step outcome as scripted: unknown command quoting a secret",
+      "ok": true,
+      "required": true,
+      "detail": "success=False, expected False"
+    },
+    {
+      "check": "step answered: error log",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "step outcome as scripted: error log",
+      "ok": true,
+      "required": true,
+      "detail": "success=True, expected True"
+    },
+    {
+      "check": "backend exited cleanly",
+      "ok": true,
+      "required": true,
+      "detail": "exit code 0"
+    },
+    {
+      "check": "every stdout line is a message main.js accepts",
+      "ok": true,
+      "required": true,
+      "detail": "0 rejected line(s)"
+    },
+    {
+      "check": "app modules were loaded from the app copy only",
+      "ok": true,
+      "required": true,
+      "detail": "55 module(s) from the copy"
+    },
+    {
+      "check": "the app copy is byte-for-byte the repository's code",
+      "ok": true,
+      "required": true,
+      "detail": "59 file(s)"
+    },
+    {
+      "check": "every pipeline stage ran, in order",
+      "ok": true,
+      "required": true,
+      "detail": "build_database, generate_file_summaries, build_summary_database, generate_directory_summaries, validate_business_rules, generate_unit_tests, generate_integration_tests, generate_all_uml, consistency_review"
+    },
+    {
+      "check": "every pipeline stage succeeded",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "stage made AI calls: generate_file_summaries",
+      "ok": true,
+      "required": true,
+      "detail": "7 call(s)"
+    },
+    {
+      "check": "stage made AI calls: generate_directory_summaries",
+      "ok": true,
+      "required": true,
+      "detail": "25 call(s)"
+    },
+    {
+      "check": "stage made AI calls: validate_business_rules",
+      "ok": true,
+      "required": true,
+      "detail": "7 call(s)"
+    },
+    {
+      "check": "stage made AI calls: generate_unit_tests",
+      "ok": true,
+      "required": true,
+      "detail": "4 call(s)"
+    },
+    {
+      "check": "stage made AI calls: generate_integration_tests",
+      "ok": true,
+      "required": true,
+      "detail": "2 call(s)"
+    },
+    {
+      "check": "stage made AI calls: consistency_review",
+      "ok": true,
+      "required": true,
+      "detail": "7 call(s)"
+    },
+    {
+      "check": "the provider received requests",
+      "ok": true,
+      "required": true,
+      "detail": "58 request(s)"
+    },
+    {
+      "check": "request kind sent: FileSummaryOutput",
+      "ok": true,
+      "required": true,
+      "detail": "8"
+    },
+    {
+      "check": "request kind sent: ContextAnalysisOutput",
+      "ok": true,
+      "required": true,
+      "detail": "8"
+    },
+    {
+      "check": "request kind sent: DirectoryOutput",
+      "ok": true,
+      "required": true,
+      "detail": "9"
+    },
+    {
+      "check": "request kind sent: JudgementOutput",
+      "ok": true,
+      "required": true,
+      "detail": "9"
+    },
+    {
+      "check": "request kind sent: BusinessRulesOutput",
+      "ok": true,
+      "required": true,
+      "detail": "2"
+    },
+    {
+      "check": "request kind sent: CondenserOutput",
+      "ok": true,
+      "required": true,
+      "detail": "1"
+    },
+    {
+      "check": "request kind sent: ValidatorOutput",
+      "ok": true,
+      "required": true,
+      "detail": "6"
+    },
+    {
+      "check": "request kind sent: UnitTest",
+      "ok": true,
+      "required": true,
+      "detail": "3"
+    },
+    {
+      "check": "request kind sent: TestRepair",
+      "ok": true,
+      "required": true,
+      "detail": "1"
+    },
+    {
+      "check": "request kind sent: WorkflowGroups",
+      "ok": true,
+      "required": true,
+      "detail": "1"
+    },
+    {
+      "check": "request kind sent: IntegrationTest",
+      "ok": true,
+      "required": true,
+      "detail": "1"
+    },
+    {
+      "check": "request kind sent: ConsistencyAnalysisOutput",
+      "ok": true,
+      "required": true,
+      "detail": "9"
+    },
+    {
+      "check": "no request the scenario could not answer",
+      "ok": true,
+      "required": true,
+      "detail": "0"
+    },
+    {
+      "check": "every summarised file was sent",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "the 503 was retried with the same cleaned request",
+      "ok": true,
+      "required": true,
+      "detail": "2 request(s)"
+    },
+    {
+      "check": "every control reaches the provider unchanged",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "model callbacks were recorded",
+      "ok": true,
+      "required": true,
+      "detail": "57 call start(s)"
+    },
+    {
+      "check": "one counted call for Billing/InvoiceService.cs",
+      "ok": true,
+      "required": true,
+      "detail": "1 call(s)"
+    },
+    {
+      "check": "redaction count matches the fixture: Billing/InvoiceService.cs",
+      "ok": true,
+      "required": true,
+      "detail": "reported {'PASSWORD': 3}, expected {'PASSWORD': 3}"
+    },
+    {
+      "check": "one counted call for Integrations/PaymentClient.cs",
+      "ok": true,
+      "required": true,
+      "detail": "1 call(s)"
+    },
+    {
+      "check": "redaction count matches the fixture: Integrations/PaymentClient.cs",
+      "ok": true,
+      "required": true,
+      "detail": "reported {'API_KEY': 1, 'AUTHORIZATION': 1}, expected {'API_KEY': 1, 'AUTHORIZATION': 1}"
+    },
+    {
+      "check": "one counted call for tools/report_export.py",
+      "ok": true,
+      "required": true,
+      "detail": "1 call(s)"
+    },
+    {
+      "check": "redaction count matches the fixture: tools/report_export.py",
+      "ok": true,
+      "required": true,
+      "detail": "reported {'API_KEY': 1, 'PASSWORD': 1}, expected {'API_KEY': 1, 'PASSWORD': 1}"
+    },
+    {
+      "check": "one counted call for web/session.js",
+      "ok": true,
+      "required": true,
+      "detail": "1 call(s)"
+    },
+    {
+      "check": "redaction count matches the fixture: web/session.js",
+      "ok": true,
+      "required": true,
+      "detail": "reported {'TOKEN': 2}, expected {'TOKEN': 2}"
+    },
+    {
+      "check": "one counted call for scripts/deploy.sh",
+      "ok": true,
+      "required": true,
+      "detail": "1 call(s)"
+    },
+    {
+      "check": "redaction count matches the fixture: scripts/deploy.sh",
+      "ok": true,
+      "required": true,
+      "detail": "reported {'API_KEY': 1, 'AUTHORIZATION': 1, 'TOKEN': 1}, expected {'API_KEY': 1, 'AUTHORIZATION': 1, 'TOKEN': 1}"
+    },
+    {
+      "check": "one counted call for docs/SETUP.md",
+      "ok": true,
+      "required": true,
+      "detail": "1 call(s)"
+    },
+    {
+      "check": "redaction count matches the fixture: docs/SETUP.md",
+      "ok": true,
+      "required": true,
+      "detail": "reported {'PASSWORD': 1, 'PRIVATE_KEY': 1}, expected {'PASSWORD': 1, 'PRIVATE_KEY': 1}"
+    },
+    {
+      "check": "one counted call for docs/architecture.md",
+      "ok": true,
+      "required": true,
+      "detail": "1 call(s)"
+    },
+    {
+      "check": "redaction count matches the fixture: docs/architecture.md",
+      "ok": true,
+      "required": true,
+      "detail": "reported {'PASSWORD': 1}, expected {'PASSWORD': 1} (known gap A)"
+    },
+    {
+      "check": "run log has one call per summarised file (retries not counted again)",
+      "ok": true,
+      "required": true,
+      "detail": "7 call(s)"
+    },
+    {
+      "check": "the 400 is recorded as one failed call",
+      "ok": true,
+      "required": true,
+      "detail": "1"
+    },
+    {
+      "check": "no network attempt from the backend",
+      "ok": true,
+      "required": true,
+      "detail": "0 attempt(s) to "
+    },
+    {
+      "check": "fixture source files unchanged",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "nothing written into the analysed codebase",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "provider credential configuration unchanged",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "summary keeps the schema and structure of the model's answer: Billing/InvoiceService.cs",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "summary keeps its nonsecret content: Billing/InvoiceService.cs",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "summary is more than placeholders: Billing/InvoiceService.cs",
+      "ok": true,
+      "required": true,
+      "detail": "133 characters besides placeholders"
+    },
+    {
+      "check": "summary keeps the schema and structure of the model's answer: Integrations/PaymentClient.cs",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "summary keeps its nonsecret content: Integrations/PaymentClient.cs",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "summary is more than placeholders: Integrations/PaymentClient.cs",
+      "ok": true,
+      "required": true,
+      "detail": "135 characters besides placeholders"
+    },
+    {
+      "check": "summary keeps the schema and structure of the model's answer: tools/report_export.py",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "summary keeps its nonsecret content: tools/report_export.py",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "summary is more than placeholders: tools/report_export.py",
+      "ok": true,
+      "required": true,
+      "detail": "193 characters besides placeholders"
+    },
+    {
+      "check": "summary keeps the schema and structure of the model's answer: web/session.js",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "summary keeps its nonsecret content: web/session.js",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "summary is more than placeholders: web/session.js",
+      "ok": true,
+      "required": true,
+      "detail": "139 characters besides placeholders"
+    },
+    {
+      "check": "summary keeps the schema and structure of the model's answer: scripts/deploy.sh",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "summary keeps its nonsecret content: scripts/deploy.sh",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "the failed file's error is saved, cleaned, as its summary",
+      "ok": true,
+      "required": true,
+      "detail": "3 placeholder(s)"
+    },
+    {
+      "check": "summary keeps the schema and structure of the model's answer: docs/SETUP.md",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "summary keeps its nonsecret content: docs/SETUP.md",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "summary is more than placeholders: docs/SETUP.md",
+      "ok": true,
+      "required": true,
+      "detail": "209 characters besides placeholders"
+    },
+    {
+      "check": "summary keeps the schema and structure of the model's answer: docs/architecture.md",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "summary keeps its nonsecret content: docs/architecture.md",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "summary is more than placeholders: docs/architecture.md",
+      "ok": true,
+      "required": true,
+      "detail": "78 characters besides placeholders"
+    },
+    {
+      "check": "file-level business rules saved",
+      "ok": true,
+      "required": true,
+      "detail": "6 rule(s)"
+    },
+    {
+      "check": "directory summary keeps its content",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "three rules validated, the rest discarded with reasons",
+      "ok": true,
+      "required": true,
+      "detail": "3 validated, 3 discarded"
+    },
+    {
+      "check": "validated evidence keeps its code and replaces the secret",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "unit tests built and ran as scripted",
+      "ok": true,
+      "required": true,
+      "detail": "{'kept': 3, 'passed': 2, 'failed': 1}, expected {'kept': 3, 'passed': 2, 'failed': 1}"
+    },
+    {
+      "check": "integration tests built and ran as scripted",
+      "ok": true,
+      "required": true,
+      "detail": "{'kept': 1, 'passed': 1, 'failed': 0}, expected {'kept': 1, 'passed': 1, 'failed': 0}"
+    },
+    {
+      "check": "the broken unit test was repaired by the AI, then compiled",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "generated test files written: 3 unit, 1 integration",
+      "ok": true,
+      "required": true,
+      "detail": "IT_1.cs, UT_1.cs, UT_2.cs, UT_3.cs"
+    },
+    {
+      "check": "the test that hard-coded a secret holds a placeholder instead",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "the review finding keeps its source location",
+      "ok": true,
+      "required": true,
+      "detail": "expected line 19"
+    },
+    {
+      "check": "a finding quoting a line that held a secret is accepted, at that line (gap B)",
+      "ok": true,
+      "required": true,
+      "detail": "1 finding(s), expected line 10"
+    },
+    {
+      "check": "a finding with made-up evidence is still rejected",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "the review note is saved, its secret replaced",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "the run report keeps its content",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "the Markdown export ran and keeps its content",
+      "ok": true,
+      "required": true,
+      "detail": "7 file(s)"
+    },
+    {
+      "check": "PlantUML drew the UML diagrams and the project diagram",
+      "ok": true,
+      "required": true,
+      "detail": "8 drawing(s)"
+    },
+    {
+      "check": "the 503 retry was announced on stdout",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "the caught summarizer error was announced and logged",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "error_log.json holds the scripted failures",
+      "ok": true,
+      "required": true,
+      "detail": "3 entries"
+    },
+    {
+      "check": "every error_log.json message was cleaned, not dropped",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "run log totals add up: each stage, and the run",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "run log counts are category names and numbers only",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "the model's answers repeated every planted value",
+      "ok": true,
+      "required": true,
+      "detail": "10 of 10: missing none"
+    },
+    {
+      "check": "placeholders where secrets were: ipc_stdout",
+      "ok": true,
+      "required": true,
+      "detail": "48"
+    },
+    {
+      "check": "placeholders where secrets were: stderr",
+      "ok": true,
+      "required": true,
+      "detail": "1"
+    },
+    {
+      "check": "placeholders where secrets were: error_log",
+      "ok": true,
+      "required": true,
+      "detail": "5"
+    },
+    {
+      "check": "placeholders where secrets were: run_logs",
+      "ok": true,
+      "required": true,
+      "detail": "10"
+    },
+    {
+      "check": "placeholders where secrets were: file_summaries",
+      "ok": true,
+      "required": true,
+      "detail": "24"
+    },
+    {
+      "check": "placeholders where secrets were: uml_pdf",
+      "ok": true,
+      "required": true,
+      "detail": "18"
+    },
+    {
+      "check": "placeholders where secrets were: plantuml_io",
+      "ok": true,
+      "required": true,
+      "detail": "2"
+    },
+    {
+      "check": "placeholders where secrets were: directory_summaries",
+      "ok": true,
+      "required": true,
+      "detail": "5"
+    },
+    {
+      "check": "placeholders where secrets were: business_rules",
+      "ok": true,
+      "required": true,
+      "detail": "4"
+    },
+    {
+      "check": "placeholders where secrets were: unit_tests",
+      "ok": true,
+      "required": true,
+      "detail": "7"
+    },
+    {
+      "check": "placeholders where secrets were: integration_tests",
+      "ok": true,
+      "required": true,
+      "detail": "3"
+    },
+    {
+      "check": "placeholders where secrets were: generated_test_sources",
+      "ok": true,
+      "required": true,
+      "detail": "2"
+    },
+    {
+      "check": "placeholders where secrets were: consistency_review",
+      "ok": true,
+      "required": true,
+      "detail": "8"
+    },
+    {
+      "check": "placeholders where secrets were: run_report",
+      "ok": true,
+      "required": true,
+      "detail": "71"
+    },
+    {
+      "check": "placeholders where secrets were: markdown_export",
+      "ok": true,
+      "required": true,
+      "detail": "15"
+    },
+    {
+      "check": "the vector store holds both indexes",
+      "ok": true,
+      "required": true,
+      "detail": "12 code and 28 summary document(s)"
+    },
+    {
+      "check": "dotnet's build output was produced and read",
+      "ok": true,
+      "required": true,
+      "detail": ""
+    },
+    {
+      "check": "storage boundaries were read without problems",
+      "ok": true,
+      "required": true,
+      "detail": "0 problem(s)"
+    }
+  ],
+  "requests": {
+    "total": 58,
+    "by_kind": {
+      "BusinessRulesOutput": 2,
+      "CondenserOutput": 1,
+      "ConsistencyAnalysisOutput": 9,
+      "ContextAnalysisOutput": 8,
+      "DirectoryOutput": 9,
+      "FileSummaryOutput": 8,
+      "IntegrationTest": 1,
+      "JudgementOutput": 9,
+      "TestRepair": 1,
+      "UnitTest": 3,
+      "ValidatorOutput": 6,
+      "WorkflowGroups": 1
+    },
+    "controls_changed": {}
+  },
+  "stages": {
+    "build_database": {
+      "status": "success",
+      "calls": 0,
+      "redacted_secrets": {},
+      "error_masked": null
+    },
+    "generate_file_summaries": {
+      "status": "success",
+      "calls": 7,
+      "redacted_secrets": {
+        "API_KEY": 3,
+        "AUTHORIZATION": 2,
+        "PASSWORD": 6,
+        "PRIVATE_KEY": 1,
+        "TOKEN": 3
+      },
+      "error_masked": null
+    },
+    "build_summary_database": {
+      "status": "success",
+      "calls": 0,
+      "redacted_secrets": {},
+      "error_masked": null
+    },
+    "generate_directory_summaries": {
+      "status": "success",
+      "calls": 25,
+      "redacted_secrets": {
+        "API_KEY": 6,
+        "AUTHORIZATION": 20,
+        "PASSWORD": 29,
+        "TOKEN": 15
+      },
+      "error_masked": null
+    },
+    "validate_business_rules": {
+      "status": "success",
+      "calls": 7,
+      "redacted_secrets": {
+        "AUTHORIZATION": 6,
+        "PASSWORD": 6,
+        "TOKEN": 6
+      },
+      "error_masked": null
+    },
+    "generate_unit_tests": {
+      "status": "success",
+      "calls": 4,
+      "redacted_secrets": {
+        "AUTHORIZATION": 4,
+        "PASSWORD": 5,
+        "TOKEN": 4
+      },
+      "error_masked": null
+    },
+    "generate_integration_tests": {
+      "status": "success",
+      "calls": 2,
+      "redacted_secrets": {
+        "AUTHORIZATION": 1,
+        "PASSWORD": 1,
+        "TOKEN": 1
+      },
+      "error_masked": null
+    },
+    "generate_all_uml": {
+      "status": "success",
+      "calls": 0,
+      "redacted_secrets": {},
+      "error_masked": null
+    },
+    "consistency_review": {
+      "status": "success",
+      "calls": 7,
+      "redacted_secrets": {
+        "API_KEY": 3,
+        "AUTHORIZATION": 2,
+        "PASSWORD": 6,
+        "PRIVATE_KEY": 1,
+        "TOKEN": 3
+      },
+      "error_masked": null
+    }
+  },
+  "counts": {
+    "run_totals": {
+      "API_KEY": 12,
+      "AUTHORIZATION": 35,
+      "PASSWORD": 53,
+      "PRIVATE_KEY": 2,
+      "TOKEN": 32
+    },
+    "run_calls": 52,
+    "file_summary_calls": {
+      "Billing/InvoiceService.cs": {
+        "calls": 1,
+        "reported": {
+          "PASSWORD": 3
+        },
+        "expected": {
+          "PASSWORD": 3
+        },
+        "known_gaps": []
+      },
+      "Integrations/PaymentClient.cs": {
+        "calls": 1,
+        "reported": {
+          "API_KEY": 1,
+          "AUTHORIZATION": 1
+        },
+        "expected": {
+          "API_KEY": 1,
+          "AUTHORIZATION": 1
+        },
+        "known_gaps": []
+      },
+      "tools/report_export.py": {
+        "calls": 1,
+        "reported": {
+          "API_KEY": 1,
+          "PASSWORD": 1
+        },
+        "expected": {
+          "API_KEY": 1,
+          "PASSWORD": 1
+        },
+        "known_gaps": []
+      },
+      "web/session.js": {
+        "calls": 1,
+        "reported": {
+          "TOKEN": 2
+        },
+        "expected": {
+          "TOKEN": 2
+        },
+        "known_gaps": []
+      },
+      "scripts/deploy.sh": {
+        "calls": 1,
+        "reported": {
+          "API_KEY": 1,
+          "AUTHORIZATION": 1,
+          "TOKEN": 1
+        },
+        "expected": {
+          "API_KEY": 1,
+          "AUTHORIZATION": 1,
+          "TOKEN": 1
+        },
+        "known_gaps": []
+      },
+      "docs/SETUP.md": {
+        "calls": 1,
+        "reported": {
+          "PASSWORD": 1,
+          "PRIVATE_KEY": 1
+        },
+        "expected": {
+          "PASSWORD": 1,
+          "PRIVATE_KEY": 1
+        },
+        "known_gaps": []
+      },
+      "docs/architecture.md": {
+        "calls": 1,
+        "reported": {
+          "PASSWORD": 1
+        },
+        "expected": {
+          "PASSWORD": 1
+        },
+        "known_gaps": [
+          "A"
+        ]
+      }
+    }
+  },
+  "diagnostics": {
+    "chain_callbacks": {
+      "events": 211,
+      "leaks": 361,
+      "cases": [
+        "S01",
+        "S02",
+        "S03",
+        "S04",
+        "S05",
+        "S06",
+        "S07",
+        "S08",
+        "S09",
+        "S10"
+      ],
+      "why_excluded": "LangGraph hands each node's raw input (the graph state) to chain callbacks before the node calls its model (T-077 known limit). The app registers no handler that keeps it and turns tracing off in every protected run; only this harness's recorder saw it."
+    }
+  },
+  "network": {
+    "attempts": 0,
+    "hosts": []
+  },
+  "outputs": {
+    "Billing/InvoiceService.cs": {
+      "schema_valid": true,
+      "placeholders": 7,
+      "prose_chars": 1573,
+      "controls_missing": []
+    },
+    "Integrations/PaymentClient.cs": {
+      "schema_valid": true,
+      "placeholders": 4,
+      "prose_chars": 869,
+      "controls_missing": []
+    },
+    "tools/report_export.py": {
+      "schema_valid": true,
+      "placeholders": 3,
+      "prose_chars": 516,
+      "controls_missing": []
+    },
+    "web/session.js": {
+      "schema_valid": true,
+      "placeholders": 2,
+      "prose_chars": 446,
+      "controls_missing": []
+    },
+    "scripts/deploy.sh": {
+      "schema_valid": true,
+      "placeholders": 3,
+      "prose_chars": 217,
+      "controls_missing": []
+    },
+    "docs/SETUP.md": {
+      "schema_valid": true,
+      "placeholders": 2,
+      "prose_chars": 437,
+      "controls_missing": []
+    },
+    "docs/architecture.md": {
+      "schema_valid": true,
+      "placeholders": 2,
+      "prose_chars": 371,
+      "controls_missing": []
+    }
+  },
+  "consistency_review": {
+    "status": "partial",
+    "findings": 2,
+    "errors": 1,
+    "accepted_quoting_a_secret_line": 1,
+    "made_up_evidence_rejected": 1
+  },
+  "echoes": {
+    "cases": [
+      "S01",
+      "S02",
+      "S03",
+      "S04",
+      "S05",
+      "S06",
+      "S07",
+      "S08",
+      "S09",
+      "S10"
+    ],
+    "occurrences": 40
+  },
+  "placeholders_by_sink": {
+    "business_rules": 4,
+    "consistency_review": 8,
+    "directory_summaries": 5,
+    "error_log": 5,
+    "file_summaries": 24,
+    "generated_test_sources": 2,
+    "integration_tests": 3,
+    "ipc_stdout": 48,
+    "markdown_export": 15,
+    "mutation_report": 0,
+    "plantuml_io": 2,
+    "run_logs": 10,
+    "run_report": 71,
+    "stderr": 1,
+    "token_usage_log": 0,
+    "uml_pdf": 18,
+    "unit_tests": 7
+  },
+  "not_assessed": [
+    {
+      "sink": "stryker_reports",
+      "where": "app/agent/MT_output/LedgerLite/stryker/",
+      "why": "not produced: Stryker.NET is not installed (mutation testing reports not_run); Stryker's own reports contain the mutated source files by design (see the storage boundaries in the README)"
+    }
+  ],
+  "storage_boundaries": {
+    "vector_store_code": {
+      "what": "the code index (ChromaDB): raw source chunks, so retrieval finds the real code",
+      "inspected": 12,
+      "planted_values_held": 3,
+      "cases": [
+        "S03",
+        "S07",
+        "S08"
+      ],
+      "problems": 0
+    },
+    "vector_store_files": {
+      "what": "the vector store's files as bytes (SQLite pages, full-text index, HNSW)",
+      "inspected": 9,
+      "planted_values_held": 15,
+      "cases": [
+        "S03",
+        "S07",
+        "S08"
+      ],
+      "problems": 0
+    },
+    "test_build_output": {
+      "what": "dotnet's build of the analysed codebase for the generated tests (its compiled constants)",
+      "inspected": 129,
+      "planted_values_held": 12,
+      "cases": [
+        "S01",
+        "S04",
+        "S07",
+        "S08"
+      ],
+      "problems": 0
+    }
+  },
+  "workspace": {
+    "kept": false,
+    "left_behind": false
+  },
+  "attempts": [
+    {
+      "verdict": "PASS",
+      "chroma_race": false
+    }
+  ]
+}

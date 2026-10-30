@@ -17,7 +17,6 @@ sys.stdout.reconfigure(
 import os
 import subprocess
 from xml.parsers.expat import errors
-import chromadb
 import json
 import time
 import requests
@@ -47,6 +46,8 @@ from agent.BR_agent import BRAgent
 from agent.IT_agent import ITAgent
 from agent.UT_agent import UTAgent
 from agent.UTV_agent import UTVAgent
+from agent.gui_test_agent import GuiTestAgent
+from agent.pr_analysis_agent import PullRequestAnalysisAgent
 from agent.directory_agent import DirectoryAgent
 from agent.file_summary_agent import FileSummaryAgent
 from agent.llm import verify_llm_key
@@ -97,6 +98,32 @@ def test_run_result(test_run, **extra):
         )
 
     return result
+
+
+def no_rules_result(kind):
+    """
+    Result for a test step with no validated rules to work from: the step is
+    skipped with a warning, so a run where no rule passed validation still
+    finishes instead of stopping here.
+    """
+    message = f"No validated business rules to test, so no {kind} tests were generated."
+    return {"message": message, "warning": message}
+
+
+def failed_summaries_message(failed, total=None):
+    """
+    Warning for the file summary step when the AI failed on some files: their
+    summaries only record the error, so later steps get no real summary for
+    them. The step itself still succeeds, so the pipeline carries on.
+    """
+    shown = "; ".join(entry[:200] for entry in failed[:5])
+    if len(failed) > 5:
+        shown += f"; and {len(failed) - 5} more"
+    count = f"{len(failed)} of {total} files" if total else f"{len(failed)} file(s)"
+    return (
+        f"{count} could not be summarized, so their summaries only record the "
+        f"error ({shown}). Run this step again to retry them."
+    )
 
 from backend.run_report import write_run_report
 from backend.mutation_testing import run as run_mutation_testing, TIME_LIMIT_MINUTES
@@ -482,7 +509,11 @@ class Commands:
 
         def task():
             progress("Generating file summaries...")
-            return FileSummaryAgent().run(codebase)
+            result = FileSummaryAgent().run(codebase)
+            failed = result.get("failed_files") or []
+            if failed:
+                result["warning"] = failed_summaries_message(failed, result.get("total_number_of_files"))
+            return result
 
         return self._run_command(
             "generate_file_summaries",
@@ -651,6 +682,9 @@ class Commands:
                     if rule["id"] in selected_rules:
                         input_rules.append(ValidatedRule.model_validate(rule))
 
+            if not input_rules:
+                return no_rules_result("unit")
+
             final_state = UTAgent().run(
                 input_rules,
                 codebase_name,
@@ -662,6 +696,42 @@ class Commands:
 
         return self._run_command(
             "generate_unit_tests",
+            task,
+            individualStep=individualStep,
+        )
+
+    def generate_gui_test_cases(self, codebase: str, individualStep=True):
+        """Generate Playwright GUI test files from an application source folder."""
+
+        def task():
+            return GuiTestAgent().run(codebase)
+
+        return self._run_command(
+            "generate_gui_test_cases",
+            task,
+            individualStep=individualStep,
+        )
+
+    def repair_gui_test_case(self, codebase: str, test_file: str, failure: dict, individualStep=True):
+        """Attempt one source-confirmed locator repair for a failed generated GUI test."""
+
+        def task():
+            return GuiTestAgent().repair_failed_test(codebase, test_file, failure)
+
+        return self._run_command(
+            "repair_gui_test_case",
+            task,
+            individualStep=individualStep,
+        )
+
+    def analyze_pull_request(self, pull_request: dict, files: list, individualStep=True):
+        """Explain with AI what a GitHub pull request added, changed and removed."""
+
+        def task():
+            return PullRequestAnalysisAgent().run(pull_request, files)
+
+        return self._run_command(
+            "analyze_pull_request",
             task,
             individualStep=individualStep,
         )
@@ -702,7 +772,7 @@ class Commands:
 
             if not test_path.exists():
                 raise FileNotFoundError(
-                    f"Validated rules not found: {test_path}"
+                    f"Generated unit tests not found: {test_path}"
                 )
 
 
@@ -804,6 +874,9 @@ class Commands:
                             ValidatedRule.model_validate(rule)
                         )
 
+
+            if not input_rules:
+                return no_rules_result("integration")
 
             result = ITAgent().run(
                 input_rules,
@@ -1064,7 +1137,12 @@ class Commands:
             return {**base, "success": False, "error": "No model name provided."}
 
         try:
-            check = verify_llm_key(provider, model.strip(), api_key.strip())
+            check = verify_llm_key(
+                provider,
+                model.strip(),
+                api_key.strip(),
+                timeout=self.VALIDATION_TIMEOUT_SECONDS,
+            )
         except Exception as exc:
             return {**base, "success": False, "error": str(exc)}
 

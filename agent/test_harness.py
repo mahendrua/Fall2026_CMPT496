@@ -35,6 +35,7 @@ import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -126,6 +127,7 @@ class TestRun:
     generated: int = 0
     kept: list[TestCase] = field(default_factory=list)
     dropped: list[TestCase] = field(default_factory=list)
+    unusable: int = 0         # of dropped: turned down by clean_test(), never built
     passed: int = 0
     failed: int = 0
     skipped: int = 0
@@ -154,6 +156,8 @@ class TestRun:
             "removed_stale_files": self.removed_stale,
             "project_error": self.project_error,
             "html_report": self.report_path,
+            "harness": "xunit",
+            "validated_at": datetime.now(timezone.utc).isoformat(),
         }
 
     def message(self):
@@ -175,8 +179,11 @@ class TestRun:
         details = []
         if self.repaired:
             details.append(f"{len(self.repaired)} repaired by the AI")
-        if self.dropped:
-            details.append(f"{len(self.dropped)} dropped because they did not compile")
+        did_not_compile = len(self.dropped) - self.unusable
+        if did_not_compile:
+            details.append(f"{did_not_compile} dropped because they did not compile")
+        if self.unusable:
+            details.append(f"{self.unusable} dropped because the AI's answer could not be used")
         if details:
             parts[0] += f" ({', '.join(details)})"
 
@@ -810,6 +817,7 @@ def check_tests(
     """
     run = TestRun(kind=kind, generated=len(cases) + len(rejected))
     run.dropped.extend(rejected)
+    run.unusable = len(rejected)
 
     test_dir = project_dir_for(codebase_path, codebase_name)
     namespace = namespace_for(codebase_name)

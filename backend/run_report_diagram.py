@@ -378,7 +378,10 @@ def render_svg(puml, jar_path, timeout=RENDER_TIMEOUT_SECONDS):
 
     try:
         completed = subprocess.run(
+            # SANDBOX: PlantUML refuses !include of local files and URLs, since
+            # class and member names in the diagram come from AI summaries.
             [java, "-Djava.awt.headless=true", "-DPLANTUML_LIMIT_SIZE=32768",
+             "-DPLANTUML_SECURITY_PROFILE=SANDBOX",
              "-jar", str(jar_path), "-tsvg", "-charset", "UTF-8", "-pipe"],
             input=puml.encode("utf-8"),
             stdout=subprocess.PIPE,

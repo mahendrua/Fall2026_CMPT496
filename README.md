@@ -68,6 +68,37 @@ Download Dotnet:
    npm.cmd start
    ```
 
+## Firebase Authentication (Checkpoint)
+
+Checkpoint includes the Firebase Web app configuration for the `checkpoint-cmpt497` project. Before signing in, make sure Email/Password is enabled:
+
+1. In Firebase Console, open the `checkpoint-cmpt497` project.
+2. Open **Authentication → Sign-in method** and enable **Email/Password**.
+3. If you use another Firebase project, create `firebase-config.json` in Checkpoint's Electron user-data directory. Checkpoint displays the exact full path on the sign-in screen; on Windows it is under `%APPDATA%`. Use this shape, replacing every value with that project's Web app settings:
+
+   ```json
+   {
+     "apiKey": "YOUR_FIREBASE_WEB_API_KEY",
+     "authDomain": "YOUR_FIREBASE_AUTH_DOMAIN",
+     "projectId": "YOUR_FIREBASE_PROJECT_ID",
+     "appId": "YOUR_FIREBASE_APP_ID"
+   }
+   ```
+
+4. Restart Checkpoint after adding or changing the override. New users can then register, and existing users can sign in or request a Firebase password-reset email.
+
+The Firebase Web app configuration in `firebase-config.json` is public client configuration, not an Admin SDK credential. A per-user override takes precedence over the bundled settings. Never put a service-account key in this application. Firebase Authentication sessions are stored using Electron's operating-system-backed `safeStorage`; persistent sign-in requires the OS keychain/credential store to be available. The **Remember me** checkbox controls whether the Firebase session is kept securely between launches. User role records are stored locally under the app's `profiles` user-data folder, keyed by Firebase UID; they are not synchronized to Firebase. Passwords are handled only by Firebase Authentication and are never included in those profile files.
+
+Firebase sign-in identifies the Checkpoint account; it does not make an untrusted local project safe to execute. The existing Docker and GUI-testing execution boundaries remain in effect.
+
+## Import a GitHub Repository
+
+From the project source screen, choose **GitHub Repository**, enter a public GitHub repository URL, fetch its branches, and select the revision to import. Checkpoint downloads the selected branch's resolved commit archive into the application's local user-data directory and passes that workspace through the existing analysis pipeline. Private repositories, GitHub credentials, and automatic updates are not supported; import again to analyze a newer revision.
+
+After connecting, **Full Branch Analysis** continues to use the existing Checkpoint operations. **Latest Pull Request** opens the most recently merged pull request for a selected target branch, while **Browse Pull Requests** provides status filtering, title/number search, sorting, and pagination. Pull request overviews include available metadata, commits, and changed files. Code comparison reads file contents from the pull request's immutable base and head commit SHAs; binary or GitHub-limited files are identified when their contents cannot be shown. These pull-request views do not run AI analysis or modify the repository.
+
+An imported repository is still untrusted project code. Importing it does not run its code, but later project operations such as starting an application for GUI testing can execute local repository files with your Windows user permissions. Review the source and only run operations on projects you trust. Existing Docker and GUI-testing restrictions remain in effect.
+
 ## Deactivate Virtual Environment
 ```powershell
 deactivate
@@ -95,6 +126,26 @@ Flags:
 
 Notes:
 - Run the command from the project root so the default input path resolves correctly.
+
+## Manual GUI testing
+
+The **GUI Test Cases** screen runs uploaded JavaScript and TypeScript Playwright tests in a separate Docker environment. Docker Desktop must be installed, running Linux containers, and have at least 2 GB of available memory. The Playwright and proxy images are built automatically on the first run and rebuilt when their bundled Docker contexts change; building requires an internet connection.
+
+Upload up to 20 `.js` or `.ts` files (2 MB each, 20 MB total). Select test files to run; unselected uploads remain available as relative helper modules. Tests should use `@playwright/test` or `playwright/test`; additional npm packages are not installed.
+
+Before running, enter each allowed website hostname on its own line. Hostnames allow HTTP and HTTPS on ports 80 and 443; adding a port also allows that port, for example `app.example.com:5173`. Host entries match exactly; prefix with `*.` to allow the hostname and its subdomains. Private network destinations are blocked. To test a web app running on the host machine, use `host.docker.internal:<port>` instead of `localhost` and explicitly allow it.
+
+The application mounts only copied test files into the runner, read-only, and runs the browser in a resource-limited container. Browser traffic is routed through a separate allowlisting proxy; the live browser preview and status stream are relayed through loopback-only host ports, while the runner remains isolated from the host network. Uploaded tests are executable code: only run files you trust.
+
+### AI-generated GUI tests
+
+Choose **Generate Test Cases Using AI** and select a Node.js application source folder. Checkpoint detects common frameworks from the package dependencies and scripts, chooses an available port based on the framework's default (Vite `5173`, Next.js/React `3000`, Angular `4200`, Vue CLI `8080`), and tries the next ports automatically if that port is occupied. It starts the project's `npm run dev`, `npm run start`, or `npm run server` script (in that priority order) while the selected AI provider analyzes a bounded set of source files. The project must have a `package.json`, installed dependencies, and one of those scripts. Supported frameworks receive host/port arguments; Vite also gets a temporary process environment setting to allow Docker's `host.docker.internal` hostname without editing the project's config. Other servers should honor `HOST=0.0.0.0` and `PORT`. The app must listen on `0.0.0.0` so Docker Desktop can reach it. Checkpoint does not install packages or modify project files.
+
+The Playwright runner reaches the app at `http://host.docker.internal:<port>` through the allowlist proxy. Generated JavaScript Playwright specs are saved under `agent/GUI_test_agent_output/<app-name>/run-<timestamp>/` and run in the isolated browser container. The local app process is stopped after generation failure, test completion, cancellation, or app shutdown. The generator supports common web UI source types (HTML, CSS, JavaScript/TypeScript, Vue, Svelte, Razor, C#, PHP, and Python), skips dependency/build folders and common secret files, and limits each request to 40 files and 90,000 characters of source.
+
+Starting a project runs its npm script directly on your PC with your Windows user permissions. Checkpoint asks for confirmation first; only select folders whose code you trust. The app process receives a reduced environment (no inherited API keys or other arbitrary environment variables), but host execution is not a security sandbox. To make it reachable from Docker, the app listens on all network interfaces; your firewall configuration determines whether other devices can reach that port. The selected source files are also sent to the configured AI provider, so only choose source you are permitted to share with that provider.
+
+Generated specs are also saved so you can inspect or reuse them. The selected source files are sent to the configured AI provider, so only choose source you are permitted to share with that provider.
 
 ## Verifying combined business rule validation (US-028)
 

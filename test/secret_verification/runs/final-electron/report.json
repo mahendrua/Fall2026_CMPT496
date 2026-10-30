@@ -1,0 +1,57 @@
+{
+  "task": "T-079 (US-034) Electron check",
+  "generated_at": "2026-10-28T22:58:06",
+  "electron_exit_code": 0,
+  "electron": {
+    "results": [
+      {
+        "ok": true,
+        "label": "the full pipeline ran from the Run Operations button"
+      },
+      {
+        "ok": true,
+        "label": "the Complete screen says the pipeline completed"
+      },
+      {
+        "ok": true,
+        "label": "the Complete screen shows no planted value"
+      },
+      {
+        "ok": true,
+        "label": "the review screen lists the run's findings"
+      },
+      {
+        "ok": true,
+        "label": "the review screen shows placeholders where secrets were"
+      },
+      {
+        "ok": true,
+        "label": "the review screen shows no planted value"
+      },
+      {
+        "ok": true,
+        "label": "the window was sent the backend's progress and responses"
+      },
+      {
+        "ok": true,
+        "label": "no message sent to the window holds a planted value"
+      }
+    ],
+    "failed": 0,
+    "facts": {
+      "complete_chars": 1460,
+      "review_state": "partial",
+      "review_findings": 2,
+      "messages": 257,
+      "backend_messages": 257
+    }
+  },
+  "electron_console": {
+    "chars": 8307,
+    "leaks": 0,
+    "cases": []
+  },
+  "network_attempts": 0,
+  "fixture_unchanged": true,
+  "ok": true
+}
