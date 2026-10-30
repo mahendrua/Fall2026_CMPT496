@@ -2997,56 +2997,18 @@ function renderRunReportEmpty(message) {
 }
 
 function createEmbeddedRunReportHtml(reportHtml, theme) {
-    const originalLowerHtml = reportHtml.toLowerCase();
-    const scriptEnd = originalLowerHtml.lastIndexOf("</script>");
-    const routerEnd = reportHtml.lastIndexOf("})();", scriptEnd);
-    if (scriptEnd < 0 || routerEnd < 0) return null;
+    // The report's own CSP runs only its own script, matched by hash, so nothing
+    // here may add or change a <script>. Marking <html> is enough: the report's
+    // script then hides its back button, routes its links in the page and
+    // listens for the theme message.
+    const htmlTag = /<html(?=[\s>])/i.exec(reportHtml);
+    const headEnd = reportHtml.toLowerCase().indexOf("</head>");
+    if (!htmlTag || headEnd < htmlTag.index) return null;
+    const tagEnd = htmlTag.index + htmlTag[0].length;
 
-    // The report's router is private to its IIFE. Route embed clicks from inside
-    // that closure instead of relying on fragment navigation in the sandboxed frame.
-    const routerExtension = `
-  document.addEventListener("click", function(event) {
-    var modeButton = event.target.closest && event.target.closest(".view-switch button");
-    if (modeButton) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      var nextView = modeButton.dataset.view;
-      if (nextView === VIEW) return;
-      var nextTab = currentTab();
-      setView(nextView);
-      if (nextView === "business" && DEV_ONLY.indexOf(nextTab) >= 0) nextTab = "overview";
-      showTab(nextTab);
-      try { history.replaceState(null, "", "#" + nextTab); } catch (error) {}
-      return;
-    }
-
-    var tabLink = event.target.closest && event.target.closest("#tabs a[data-tab]");
-    if (tabLink) {
-      event.preventDefault();
-      var tab = tabLink.getAttribute("data-tab");
-      showTab(tab);
-      try { history.replaceState(null, "", "#" + tab); } catch (error) {}
-      return;
-    }
-
-    var fragmentLink = event.target.closest && event.target.closest("a[href^='#']");
-    if (!fragmentLink) return;
-    event.preventDefault();
-    var hash = fragmentLink.getAttribute("href");
-    try { history.replaceState(null, "", hash); }
-    catch (error) { try { location.hash = hash; } catch (ignored) {} }
-    route();
-  }, true);
-`;
-    reportHtml = reportHtml.slice(0, routerEnd) + routerExtension + reportHtml.slice(routerEnd);
-
-    const lowerHtml = reportHtml.toLowerCase();
-    const headEnd = lowerHtml.indexOf("</head>");
-    const bodyEnd = lowerHtml.lastIndexOf("</body>");
-    if (headEnd < 0 || bodyEnd < headEnd) return null;
-
+    const htmlAttributes = ` data-checkpoint-embedded="true" data-checkpoint-theme="${theme}"`;
+    // A second policy can only narrow the report's own; it covers reports saved before they had one.
     const headInjection = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
-<script>document.documentElement.dataset.checkpointEmbedded="true";document.documentElement.dataset.checkpointTheme="${theme}";</script>
 <style>
 html[data-checkpoint-theme="dark"] { color-scheme: dark; --bg:#0d111a; --panel:#141a24; --text:#fff; --muted:#94a3b8; --line:rgba(255,255,255,.08); --accent:#e52b38; --accent-soft:rgba(229,43,56,.15); --code-bg:#101722; --ok:#86efac; --ok-bg:rgba(34,197,94,.15); --bad:#ff8a93; --bad-bg:rgba(229,43,56,.15); --warn:#fbbf24; --warn-bg:rgba(245,158,11,.15); --none:#94a3b8; --none-bg:rgba(148,163,184,.12); --flash:rgba(229,43,56,.2); }
 html[data-checkpoint-theme="light"] { color-scheme: light; --bg:#f1f4f8; --panel:#fff; --text:#172033; --muted:#475569; --line:rgba(15,23,42,.13); --accent:#d92332; --accent-soft:rgba(229,43,56,.1); --code-bg:#f7f9fc; --ok:#166534; --ok-bg:rgba(34,197,94,.12); --bad:#a51d29; --bad-bg:rgba(229,43,56,.1); --warn:#854d0e; --warn-bg:rgba(245,158,11,.13); --none:#64748b; --none-bg:rgba(100,116,139,.1); --flash:#fff4c2; }
@@ -3057,21 +3019,8 @@ html[data-checkpoint-embedded="true"] .viewport { min-height:240px; max-height:5
 html[data-checkpoint-embedded="true"] #tabs a:focus-visible,
 html[data-checkpoint-embedded="true"] .view-switch button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 </style>`;
-    const bootstrap = `<script>(function(){
-  var back=document.getElementById("report-back"); if(back) back.remove();
-  var help=document.getElementById("report-back-help"); if(help) help.remove();
-  document.addEventListener("click",function(event){
-    var link=event.target.closest&&event.target.closest("a[href]");
-    if(link&&link.getAttribute("href").charAt(0)!=="#") event.preventDefault();
-  },true);
-  window.addEventListener("message",function(event){
-    var data=event.data;
-    if(event.source!==window.parent||!data||data.type!=="checkpoint:set-report-theme"||(data.theme!=="light"&&data.theme!=="dark")) return;
-    document.documentElement.dataset.checkpointTheme=data.theme;
-  });
-})();</script>`;
 
-    return reportHtml.slice(0, headEnd) + headInjection + reportHtml.slice(headEnd, bodyEnd) + bootstrap + reportHtml.slice(bodyEnd);
+    return reportHtml.slice(0, tagEnd) + htmlAttributes + reportHtml.slice(tagEnd, headEnd) + headInjection + reportHtml.slice(headEnd);
 }
 
 document.getElementById("viewDisplaySummariesBtn")
