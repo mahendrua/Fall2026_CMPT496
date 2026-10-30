@@ -464,7 +464,7 @@ class GuiTestRunner {
         this.imageReady = true;
     }
 
-    async start(selectedIds, allowedHosts, appUnderTest = null) {
+    async start(selectedIds, allowedHosts, appUnderTest = null, options = {}) {
         if (this.activeRun) {
             throw new Error("A GUI test run is already active.");
         }
@@ -656,6 +656,7 @@ class GuiTestRunner {
                 "--user", "10001:10001",
                 "--env", `GUI_SELECTED_FILES=${JSON.stringify(selectedPaths)}`,
                 "--env", "HOME=/tmp",
+                "--env", `GUI_DEMO_MODE=${options.demoMode === true ? "1" : "0"}`,
                 "--env", "HTTP_PROXY=http://gui-egress:3128",
                 "--env", "HTTPS_PROXY=http://gui-egress:3128",
                 "--env", "NO_PROXY=localhost,127.0.0.1,::1",
@@ -813,14 +814,16 @@ class GuiTestRunner {
     monitorRun(run) {
         run.monitor = runProcess("docker", ["wait", run.containerId], { timeoutMs: 24 * 60 * 60 * 1000 })
             .then(async ({ stdout }) => {
+                if (run.cancelled || this.activeRun !== run) return;
                 const exitCode = Number(stdout);
                 const logs = exitCode === 0 ? "" : await this.getContainerLogs(run.containerId);
+                if (run.cancelled || this.activeRun !== run) return;
                 this.onEvent({
                     type: "runner_container_exit",
                     exitCode,
                     message: exitCode === 0
                         ? "Playwright container finished."
-                        : `Playwright container exited unexpectedly with code ${exitCode}.${logs}`
+                        : `Playwright container exited with code ${exitCode}; this can reflect failed tests or a runner failure.${logs}`
                 });
             })
             .catch(error => {

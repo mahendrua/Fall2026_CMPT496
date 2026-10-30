@@ -5,7 +5,7 @@
   "main": "main.js",
   "type": "commonjs",
   "scripts": {
-    "test": "node --test \"test/**/*.test.js\"",
+    "test": "node --test \"test/**/*.test.js\" \"test/*_test.js\"",
     "build:auth": "esbuild auth.js --bundle --format=iife --platform=browser --target=chrome120 --outfile=auth.bundle.js",
     "prestart": "npm run build:auth",
     "start": "electron .",

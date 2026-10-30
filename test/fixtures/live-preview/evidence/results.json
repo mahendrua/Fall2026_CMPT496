@@ -1,0 +1,53 @@
+{
+  "frames": [
+    {
+      "color": "pink",
+      "green": 0,
+      "height": 800,
+      "pink": 106459,
+      "width": 1280,
+      "layout": {
+        "width": 884.765625,
+        "height": 497.671875
+      }
+    },
+    {
+      "color": "green",
+      "green": 106425,
+      "height": 800,
+      "pink": 0,
+      "width": 1280,
+      "layout": {
+        "width": 884.765625,
+        "height": 497.671875
+      }
+    }
+  ],
+  "diagnostics": [],
+  "results": [
+    {
+      "title": "visible browser interactions and navigation",
+      "status": "passed",
+      "screenshot": false
+    },
+    {
+      "title": "failure screenshots remain available",
+      "status": "failed",
+      "screenshot": true
+    }
+  ],
+  "securityViolations": [],
+  "legacyPolicyBlocked": true,
+  "runId": "checkpoint-gui-67eb041223c3422eb021",
+  "displayVisible": true,
+  "completion": {
+    "type": "run_complete",
+    "status": "failed",
+    "total": 2,
+    "passed": 1,
+    "failed": 1,
+    "skipped": 0
+  },
+  "cleanedUp": true,
+  "error": null
+}

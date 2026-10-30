@@ -17,12 +17,15 @@ module.exports = {
     reporter: [[path.join(__dirname, "reporter.cjs")]],
     outputDir: "/tmp/playwright-results",
     use: {
+        baseURL: process.env.BASE_URL,
+        screenshot: "only-on-failure",
         headless: false,
         proxy: {
             server: process.env.HTTPS_PROXY,
             bypass: "localhost,127.0.0.1,::1"
         },
         launchOptions: {
+            slowMo: process.env.GUI_DEMO_MODE === "1" ? 600 : 0,
             args: ["--no-sandbox", ...(secureOriginArgument ? [secureOriginArgument] : [])]
         }
     },

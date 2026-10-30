@@ -40,7 +40,16 @@ function getFailureExplanation(test) {
     const evidence = `${diagnostic.summary || ""}\n${errorMessage}`;
     const category = diagnostic.category;
 
-    if (category === "connection_failure" || /ERR_CONNECTION_REFUSED|ECONNREFUSED|proxy connection/i.test(evidence)) {
+    if (category === "browser_infrastructure_failure") {
+        return { category: "infrastructure_issue", likelyCause: diagnostic.summary,
+            confidence: "Medium", investigation: "Check browser logs, Docker exit status and resource limits, and whether the test explicitly closed its page or browser." };
+    }
+    if (category === "selector_ambiguity") {
+        return { category: "selector_or_timing_issue", likelyCause: diagnostic.summary,
+            confidence: "High", investigation: "Verify accessible names and scope the locator to the intended control." };
+    }
+
+    if (category === "connection_failure" || category === "navigation_failure" || /ERR_CONNECTION_REFUSED|ECONNREFUSED|proxy connection/i.test(evidence)) {
         return {
             category: "startup_or_connection_issue",
             likelyCause: "The browser could not connect to the application or its test endpoint.",
@@ -156,6 +165,9 @@ function applyGuiTestEvent(report, event) {
         test.errors = Array.isArray(event.errors) ? event.errors : [];
         test.output = Array.isArray(event.output) ? event.output : [];
         test.diagnostics = event.diagnostics || null;
+        test.assumptions = Array.isArray(event.assumptions) ? event.assumptions.map(String) : [];
+        test.screenshot = typeof event.screenshot === "string" && event.screenshot.length <= 350000
+            && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(event.screenshot) ? event.screenshot : null;
         if (test.status === "failed") test.failureExplanation = getFailureExplanation(test);
     } else if (event.type === "test_error" || event.type === "runner_error") {
         report.errors.push({
@@ -263,7 +275,9 @@ function buildGuiReportHtml(report) {
             <h2>${escapeHtml(test.name)} <span class="status">${escapeHtml(test.status)}</span></h2>
             <p><b>Purpose:</b> ${escapeHtml(test.purpose || "Not provided by the test.")}</p>
             <p><b>Expected:</b> ${escapeHtml(test.expectedResult || "Not provided by the test.")}</p>
+            ${test.assumptions?.length ? `<p><b>Unconfirmed assumptions:</b> ${test.assumptions.map(escapeHtml).join("; ")}</p>` : ""}
             <p><b>Actual:</b> ${escapeHtml(test.actualResult || "No result was reported.")}</p>
+            ${test.screenshot ? `<img alt="Playwright failure screenshot" style="max-width:100%" src="${escapeHtml(test.screenshot)}">` : ""}
             <p><b>Duration:</b> ${escapeHtml(formatDuration(test.durationMs))}</p>
             ${failure ? `<p><b>Likely cause:</b> ${escapeHtml(failure.likelyCause)} (${escapeHtml(failure.confidence)} confidence)</p><p><b>Investigation:</b> ${escapeHtml(failure.investigation)}</p>` : ""}
             ${evidence ? `<p><b>Execution evidence:</b><br>${evidence}</p>` : ""}

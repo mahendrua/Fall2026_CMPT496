@@ -5,15 +5,16 @@ ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 WORKDIR /opt/gui-runner
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends xvfb x11vnc novnc websockify fluxbox \
+    && apt-get install -y --no-install-recommends xvfb x11-utils x11vnc novnc websockify fluxbox \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --uid 10001 --create-home --shell /usr/sbin/nologin runner
 
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 
-COPY --chown=root:root entrypoint.sh runner.js reporter.cjs playwright.config.cjs ./
+COPY --chown=root:root entrypoint.sh runner.js reporter.cjs playwright.config.cjs displayDiagnostics.cjs ./
 COPY --chown=root:root gui-preview.html /usr/share/novnc/gui-preview.html
+COPY --chown=root:root previewConnection.js /usr/share/novnc/previewConnection.js
 RUN sed -i 's/\r$//' /opt/gui-runner/entrypoint.sh \
     && chmod 0555 /opt/gui-runner/entrypoint.sh \
     && mkdir /opt/gui-runner/tests \

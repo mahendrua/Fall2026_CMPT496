@@ -1617,7 +1617,7 @@ registerProtectedHandler("start-gui-tests", async (event, request = {}) => {
         testFiles
     });
     try {
-        const run = await runner.start(request.testIds, request.allowedHosts);
+        const run = await runner.start(request.testIds, request.allowedHosts, null, { demoMode: request.demoMode === true });
         return { success: true, ...run };
     } catch (error) {
         applyGuiTestEvent(report, { type: "runner_error", message: error.message });
@@ -1675,7 +1675,8 @@ registerProtectedHandler("start-generated-gui-tests", async (event, request = {}
             {
                 mode: "host",
                 port: appPort
-            }
+            },
+            { demoMode: request.demoMode === true }
         );
         return { success: true, tests: runner.listFiles(), ...run };
     } catch (error) {

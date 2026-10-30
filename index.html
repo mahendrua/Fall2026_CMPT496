@@ -3,7 +3,7 @@
 <head>
     <title>Checkpoint</title>
 
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://127.0.0.1:* https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com; frame-src 'self' data:;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://127.0.0.1:* https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com; frame-src 'self' data: http://127.0.0.1:*;">
     <link rel="stylesheet" href="style.css">
 </head>
 
@@ -266,6 +266,8 @@
                     </div>
                     <button class="btn-secondary" id="expandGuiPreviewBtn" disabled>Expand Preview</button>
                 </div>
+                <label><input type="checkbox" id="guiDemoMode"> Demo Mode (slower browser interactions)</label>
+                <p id="guiPreviewStatus" role="status">Preview idle</p>
                 <div id="guiPreviewFrame" class="gui-preview-frame">
                     <div id="guiPreviewEmpty" class="gui-preview-empty">
                         The Playwright browser will appear here when a run starts.

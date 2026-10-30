@@ -1,0 +1,6 @@
+{
+  "name": "checkpoint-live-preview-verification",
+  "version": "1.0.0",
+  "main": "electron-verification.cjs",
+  "private": true
+}

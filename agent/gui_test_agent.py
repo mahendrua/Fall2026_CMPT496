@@ -62,6 +62,12 @@ negative, and boundary tests where they apply. When intended behavior is uncerta
 reasonable assumption, add it as a `test.info().annotations` entry with type "assumption", and do
 not present it as a confirmed requirement. Ensure setup actions create the state required by later
 locators.
+Prefer getByRole with verified accessible names, then getByLabel, getByTestId when present,
+stable IDs/attributes, and finally CSS. Avoid nth(), positional selectors and styling classes.
+Use Playwright auto-waiting and web-first expect(locator) assertions; never use waitForTimeout.
+Each test must create its own data and navigate with a fresh page/context fixture. Do not share
+pages or assume another test populated storage. For persistence tests, save through the UI and
+reload that same page without clearing storage. Verify initial UI readiness before interacting.
 Inspect relevant styles as well as markup before choosing an interaction. A DOM-backed input may be
 visually hidden or covered; use its actual visible associated label or control, and do not assume
 that a selector resolving means Playwright can click or check it.

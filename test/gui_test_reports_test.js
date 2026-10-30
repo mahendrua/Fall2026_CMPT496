@@ -18,6 +18,21 @@ function temporaryReportsDirectory() {
     return fs.mkdtempSync(path.join(os.tmpdir(), "checkpoint-gui-reports-"));
 }
 
+test("preserves assumptions and bounded PNG evidence while rejecting unsafe image URLs", () => {
+    const report = createGuiTestReport();
+    const screenshot = "data:image/png;base64,iVBORw0KGgo=";
+    applyGuiTestEvent(report, { type: "test_finished", testId: "evidence", title: "counter", status: "failed",
+        screenshot, assumptions: ["The increment is unspecified"], errors: [{ message: "Expected 1, received 2" }],
+        diagnostics: { category: "assertion_mismatch" } });
+    const html = buildGuiReportHtml(report);
+    assert.match(html, /Unconfirmed assumptions/);
+    assert.ok(html.includes(screenshot));
+    assert.match(html, /Expected 1, received 2/);
+    applyGuiTestEvent(report, { type: "test_finished", testId: "unsafe", title: "unsafe", status: "failed",
+        screenshot: 'javascript:alert(1)' });
+    assert.equal(report.tests[1].screenshot, null);
+});
+
 test("builds factual pass, failure, and skipped summaries with evidence-based explanations", () => {
     const report = createGuiTestReport({
         appName: "TodoMVC",

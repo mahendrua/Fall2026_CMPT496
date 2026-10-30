@@ -36,30 +36,33 @@
 <body>
     <div id="screen" aria-label="Live Playwright browser"></div>
     <div id="status">Connecting to the Playwright browser...</div>
+    <script src="./previewConnection.js"></script>
     <script type="module">
         import RFB from "./core/rfb.js";
 
         const password = new URLSearchParams(location.hash.slice(1)).get("password") || "";
         const status = document.getElementById("status");
-        const rfb = new RFB(
-            document.getElementById("screen"),
-            `ws://${location.host}/websockify`,
-            { credentials: { password } }
-        );
-
-        rfb.scaleViewport = true;
-        rfb.addEventListener("connect", () => {
-            status.textContent = "Connected";
+        const connection = createPreviewConnection({
+            onStatus: message => {
+                status.textContent = message;
+                parent.postMessage({ type: "checkpoint-preview-status", message }, "*");
+            },
+            createClient: () => {
+                const rfb = new RFB(
+                    document.getElementById("screen"),
+                    `${location.protocol === "https:" ? "wss:" : "ws:"}//${location.host}/websockify`,
+                    { credentials: { password } }
+                );
+                rfb.scaleViewport = true;
+                rfb.addEventListener("credentialsrequired", () => rfb.sendCredentials({ password }));
+                return rfb;
+            }
         });
-        rfb.addEventListener("disconnect", event => {
-            status.textContent = event.detail.clean ? "Browser session ended" : "Browser connection lost";
+        window.addEventListener("message", event => {
+            if (event.source !== parent || event.origin !== "file://" && event.origin !== "null") return;
+            if (event.data?.type === "checkpoint-preview-ended") connection.finish(event.data.message);
         });
-        rfb.addEventListener("credentialsrequired", () => {
-            rfb.sendCredentials({ password });
-        });
-        rfb.addEventListener("securityfailure", () => {
-            status.textContent = "Could not authenticate to the browser session";
-        });
+        window.addEventListener("pagehide", () => connection.finish());
     </script>
 </body>
 </html>

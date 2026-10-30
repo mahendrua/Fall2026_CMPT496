@@ -178,8 +178,8 @@ contextBridge.exposeInMainWorld(
         ipcRenderer.invoke("select-codebase"),
 
         selectGuiTestFiles: () => ipcRenderer.invoke("select-gui-test-files"),
-        startGuiTests: (testIds, allowedHosts) =>
-            ipcRenderer.invoke("start-gui-tests", { testIds, allowedHosts }),
+        startGuiTests: (testIds, allowedHosts, options = {}) =>
+            ipcRenderer.invoke("start-gui-tests", { testIds, allowedHosts, demoMode: options.demoMode === true }),
         startLocalGuiApp: request =>
             ipcRenderer.invoke("start-local-gui-app", request),
         stopLocalGuiApp: () => ipcRenderer.invoke("stop-local-gui-app"),
