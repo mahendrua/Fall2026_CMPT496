@@ -188,6 +188,8 @@ contextBridge.exposeInMainWorld(
         repairGeneratedGuiTest: request =>
             ipcRenderer.invoke("repair-generated-gui-test", request),
         stopGuiTests: () => ipcRenderer.invoke("stop-gui-tests"),
+        diagnoseGuiEventStream: eventsUrl =>
+            ipcRenderer.invoke("diagnose-gui-event-stream", eventsUrl),
         listGuiTestingReports: () => ipcRenderer.invoke("list-gui-testing-reports"),
         getGuiTestingReport: reportId => ipcRenderer.invoke("get-gui-testing-report", reportId),
         exportGuiTestingReportPdf: reportId => ipcRenderer.invoke("export-gui-testing-report-pdf", reportId),

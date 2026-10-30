@@ -149,6 +149,8 @@ let suppressAutoEnterOnce = false;
 let guiUploadedTests = [];
 let guiTestResults = new Map();
 let guiEventSocket = null;
+let guiEventConnection = null;
+let guiCspViolationListener = null;
 let guiRunActive = false;
 let guiRunCompleted = false;
 let guiGenerationInProgress = false;
@@ -2359,6 +2361,14 @@ function handleGuiTestEvent(event) {
         appendGuiLog(event.message);
         return;
     }
+    if (event.type === "runner_container_exit") {
+        if (!guiRunCompleted) {
+            guiEventConnection?.notifyRunnerExit(event.message);
+        } else if (event.exitCode !== 0) {
+            appendGuiLog(event.message || `Playwright container exited with code ${event.exitCode}.`);
+        }
+        return;
+    }
     if (event.type === "run_started") {
         setGuiCount("Total", event.total || 0);
         document.getElementById("guiCurrentTest").textContent =
@@ -2428,6 +2438,13 @@ function handleGuiTestEvent(event) {
             appendGuiLog("A locator timed out, but its generated spec could not be matched to a source file. Repair was not attempted.");
         }
         guiRunCompleted = true;
+        guiEventConnection?.finish();
+        guiEventConnection = null;
+        guiEventSocket = null;
+        if (guiCspViolationListener) {
+            document.removeEventListener("securitypolicyviolation", guiCspViolationListener);
+            guiCspViolationListener = null;
+        }
         setGuiCount("Total", event.total || 0);
         setGuiCount("Passed", event.passed || 0);
         setGuiCount("Failed", event.failed || 0);
@@ -2442,16 +2459,6 @@ function handleGuiTestEvent(event) {
             showGuiMessage("No Playwright tests were found. Use test() or it() declarations in your selected files.");
         }
         return;
-    }
-    if (event.type === "runner_container_exit" && event.exitCode !== 0) {
-        appendGuiLog(event.message);
-        if (!guiRunCompleted) {
-            guiRunActive = false;
-            updateGuiRunControls();
-            document.getElementById("guiCurrentTest").textContent = "Run stopped unexpectedly";
-            showGuiMessage(event.message);
-            void stopLocalGuiApp();
-        }
     }
 }
 
@@ -2720,20 +2727,69 @@ function connectGuiRun(response) {
     document.getElementById("guiPreviewEmpty").classList.add("hidden");
     document.getElementById("expandGuiPreviewBtn").disabled = false;
 
+    guiEventConnection?.cancel();
+    guiEventConnection = null;
     if (guiEventSocket) guiEventSocket.close();
-    guiEventSocket = new WebSocket(response.eventsUrl);
-    guiEventSocket.addEventListener("open", () => {
-        guiEventSocket.send("viewer_ready");
-    });
-    guiEventSocket.addEventListener("message", message => {
-        try {
-            handleGuiTestEvent(JSON.parse(message.data));
-        } catch (error) {
-            appendGuiLog(`Could not read a runner event: ${error.message}`);
+    guiEventSocket = null;
+    if (guiCspViolationListener) {
+        document.removeEventListener("securitypolicyviolation", guiCspViolationListener);
+    }
+
+    guiCspViolationListener = event => {
+        if (
+            event.effectiveDirective === "connect-src" &&
+            String(event.blockedURI || "").startsWith("ws:")
+        ) {
+            const blockedEndpoint =
+                String(event.blockedURI || "").match(/^(wss?:\/\/[^/]+)/)?.[1]
+                || "the local WebSocket endpoint";
+            const message = `GUI event stream blocked by Content Security Policy: ${blockedEndpoint} (${event.effectiveDirective}).`;
+            appendGuiLog(message);
+            guiEventConnection?.stopWithError(message);
         }
-    });
-    guiEventSocket.addEventListener("error", () => {
-        appendGuiLog("Could not connect to the GUI test event stream.");
+    };
+    document.addEventListener("securitypolicyviolation", guiCspViolationListener);
+
+    guiEventConnection = window.GuiEventConnection({
+        url: response.eventsUrl,
+        WebSocketImpl: WebSocket,
+        onOpen: socket => {
+            guiEventSocket = socket;
+            socket.send("viewer_ready");
+        },
+        onMessage: message => {
+            try {
+                handleGuiTestEvent(JSON.parse(message.data));
+            } catch (error) {
+                appendGuiLog(`Could not read a runner event: ${error.message}`);
+            }
+        },
+        onStatus: message => appendGuiLog(message),
+        onFailure: async message => {
+            guiEventSocket = null;
+            guiRunCompleted = true;
+            guiRunActive = false;
+            updateGuiRunControls();
+            document.getElementById("guiCurrentTest").textContent = "Could not connect to the test runner";
+            appendGuiLog(message);
+            window.electronAPI.reportGuiTestEvent({ type: "runner_error", message });
+            showGuiMessage(message);
+            try {
+                const diagnostic = await window.electronAPI.diagnoseGuiEventStream(response.eventsUrl);
+                appendGuiLog(`Event stream diagnosis (${diagnostic.category}): ${diagnostic.message}`);
+            } catch (error) {
+                appendGuiLog(`Could not retrieve event stream diagnostics: ${error.message}`);
+            }
+            if (guiCspViolationListener) {
+                document.removeEventListener("securitypolicyviolation", guiCspViolationListener);
+                guiCspViolationListener = null;
+            }
+            const stopResponse = await window.electronAPI.stopGuiTests();
+            if (!stopResponse?.success) {
+                appendGuiLog(stopResponse?.error || "Could not stop the isolated Playwright runner after event-stream failure.");
+            }
+            await stopLocalGuiApp();
+        }
     });
 }
 
@@ -2783,6 +2839,13 @@ document.getElementById("runGuiTestsBtn").addEventListener("click", async () => 
 });
 
 document.getElementById("stopGuiTestsBtn").addEventListener("click", async () => {
+    guiEventConnection?.cancel();
+    guiEventConnection = null;
+    guiEventSocket = null;
+    if (guiCspViolationListener) {
+        document.removeEventListener("securitypolicyviolation", guiCspViolationListener);
+        guiCspViolationListener = null;
+    }
     const response = await window.electronAPI.stopGuiTests();
     if (!response?.success) {
         showGuiMessage(response?.error || "Could not stop the GUI test run.");

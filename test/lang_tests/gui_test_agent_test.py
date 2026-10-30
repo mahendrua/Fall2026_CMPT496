@@ -5,6 +5,7 @@ import pytest
 from agent.gui_test_agent import (
     GuiTestAgent,
     SYSTEM_PROMPT,
+    _normalize_test_case,
     _validate_test_case,
     collect_source_context,
 )
@@ -126,15 +127,17 @@ def test_generated_test_javascript_syntax_is_validated():
         title="Valid syntax",
         purpose="Check the title.",
         test_code=(
-            'import { test, expect } from "@playwright/test";\n'
-            "test('title', async ({ page }) => { await expect(page).toBeTruthy(); });"
+            'const { test, expect } = require("@playwright/test");\n'
+            "test('title', async ({ page }) => { "
+            "await page.goto(process.env.BASE_URL); await expect(page).toBeTruthy(); });"
         ),
     )
     invalid_case = GeneratedGuiTestCase(
         title="Invalid syntax",
         purpose="Check syntax validation.",
         test_code=(
-            'import { test, expect } from "@playwright/test";\n'
+            'const { test, expect } = require("@playwright/test");\n'
+            "await page.goto(process.env.BASE_URL);\n"
             "test('title', async ({ page }) => { await expect(page).toBeTruthy( });"
         ),
     )
@@ -142,6 +145,275 @@ def test_generated_test_javascript_syntax_is_validated():
     assert "test('title'" in _validate_test_case(valid_case)
     with pytest.raises(ValueError, match="invalid JavaScript syntax"):
         _validate_test_case(invalid_case)
+
+
+def test_generated_test_normalizes_newlines_markdown_urls_and_module_format():
+    case = GeneratedGuiTestCase(
+        title="  Settings\n page  ",
+        purpose="Checks settings navigation.",
+        test_code=(
+            "Here is the test:\n"
+            "```javascript\n"
+            'import { test, expect } from "@playwright/test";\n'
+            "test('settings page', async ({ page }) => {\n"
+            "  await page.goto('[http://localhost:3000/settings?tab=profile]"
+            "(http://localhost:3000/settings?tab=profile)');\n"
+            "  await expect(page.getByRole('heading', { name: 'Settings' })).toBeVisible();\n"
+            "});\n"
+            "```\n"
+        ),
+    )
+
+    normalized = _normalize_test_case(case)
+    validated = _validate_test_case(normalized)
+
+    assert normalized.title == "Settings page"
+    assert 'const { test, expect } = require("@playwright/test");' in validated
+    assert "new URL('/settings?tab=profile', process.env.BASE_URL).toString()" in validated
+    assert "localhost" not in validated
+
+
+def test_generated_test_assumptions_are_attached_as_playwright_annotations():
+    case = GeneratedGuiTestCase(
+        title="Boundary behavior",
+        purpose="Checks the boundary value.",
+        expected_result="The counter remains at zero.",
+        assumptions=["The counter cannot go below zero."],
+        test_code=(
+            'const { test, expect } = require("@playwright/test");\n'
+            "test('counter boundary', async ({ page }) => {\n"
+            "  await page.goto(process.env.BASE_URL);\n"
+            "  await expect(page.getByText('0')).toBeVisible();\n"
+            "});"
+        ),
+    )
+
+    validated = _validate_test_case(case)
+
+    assert 'type: "assumption"' in validated
+    assert 'type: "purpose"' in validated
+    assert 'type: "expected"' in validated
+    assert "The counter cannot go below zero." in validated
+
+
+def test_generated_test_detects_newline_inside_playwright_title():
+    case = GeneratedGuiTestCase(
+        title="Malformed title",
+        purpose="Checks syntax validation.",
+        test_code=(
+            'const { test, expect } = require("@playwright/test");\n'
+            "test('unexpected\nnewline', async ({ page }) => {\n"
+            "  await page.goto(process.env.BASE_URL);\n"
+            "  await expect(page).toBeTruthy();\n"
+            "});"
+        ),
+    )
+
+    with pytest.raises(ValueError, match="invalid JavaScript syntax"):
+        _validate_test_case(case)
+
+
+def test_generated_test_rejects_hardcoded_urls_and_missing_base_url():
+    case = GeneratedGuiTestCase(
+        title="Hardcoded navigation",
+        purpose="Checks navigation.",
+        test_code=(
+            'const { test, expect } = require("@playwright/test");\n'
+            "test('home', async ({ page }) => {\n"
+            "  await page.goto(process.env.BASE_URL || 'http://localhost:3000');\n"
+            "  await expect(page).toBeTruthy();\n"
+            "});"
+        ),
+    )
+
+    with pytest.raises(ValueError, match="hardcoded absolute URL"):
+        _validate_test_case(case)
+
+
+def test_generated_test_requires_base_url_in_every_navigation_call():
+    case = GeneratedGuiTestCase(
+        title="Relative route",
+        purpose="Checks a local route.",
+        test_code=(
+            'const { test, expect } = require("@playwright/test");\n'
+            "test('home', async ({ page }) => {\n"
+            "  const baseUrl = process.env.BASE_URL;\n"
+            "  await page.goto('/home');\n"
+            "  await expect(page).toBeTruthy();\n"
+            "});"
+        ),
+    )
+
+    with pytest.raises(ValueError, match="for every page.goto"):
+        _validate_test_case(case)
+
+
+def test_generation_retries_invalid_truncated_code_with_exact_validation_error(tmp_path):
+    source_directory = tmp_path / "app"
+    source_directory.mkdir()
+    (source_directory / "index.html").write_text("<h1>Home</h1>", encoding="utf-8")
+    output_directory = tmp_path / "generated-output"
+    broken = GeneratedGuiTestSuite(
+        test_cases=[
+            GeneratedGuiTestCase(
+                title="Home",
+                purpose="Checks the home heading.",
+                test_code=(
+                    'const { test, expect } = require("@playwright/test");\n'
+                    "test('home\nheading', async ({ page }) => {\n"
+                    "  await page.goto(process.env.BASE_URL);\n"
+                    "  await expect(page.getByRole('heading', { name: 'Home' })).toBeVisible();"
+                ),
+            )
+        ]
+    )
+    repaired = GeneratedGuiTestSuite(
+        test_cases=[
+            GeneratedGuiTestCase(
+                title="Home",
+                purpose="Checks the home heading.",
+                test_code=(
+                    'const { test, expect } = require("@playwright/test");\n'
+                    "test('home', async ({ page }) => {\n"
+                    "  await page.goto(process.env.BASE_URL);\n"
+                    "  await expect(page.getByRole('heading', { name: 'Home' })).toBeVisible();\n"
+                    "});"
+                ),
+            )
+        ]
+    )
+
+    class FakeStructuredModel:
+        def __init__(self):
+            self.messages = []
+
+        def with_structured_output(self, schema):
+            assert schema is GeneratedGuiTestSuite
+            return self
+
+        def invoke(self, messages):
+            self.messages.append(messages)
+            return broken if len(self.messages) == 1 else repaired
+
+    model = FakeStructuredModel()
+    agent = GuiTestAgent(model=model)
+    result = agent.graph.invoke({
+        "source_directory": str(source_directory),
+        "output_directory": str(output_directory),
+        "source_context": "",
+        "source_files": [],
+        "source_context_truncated": False,
+        "test_cases": [],
+        "generated_files": [],
+    })
+
+    assert len(model.messages) == 2
+    repair_prompt = model.messages[1][1][1]
+    assert "invalid JavaScript syntax" in repair_prompt
+    assert "SyntaxError: Invalid or unexpected token" in repair_prompt
+    assert len(result["generated_files"]) == 1
+    generated_code = Path(result["generated_files"][0]).read_text(encoding="utf-8")
+    assert "getByRole('heading', { name: 'Home' })" in generated_code
+    assert "process.env.BASE_URL" in generated_code
+
+
+def test_generation_stops_after_bounded_retries_without_saving_tests(tmp_path):
+    source_directory = tmp_path / "app"
+    source_directory.mkdir()
+    (source_directory / "index.html").write_text("<h1>Home</h1>", encoding="utf-8")
+    output_directory = tmp_path / "generated-output"
+    truncated = GeneratedGuiTestSuite(
+        test_cases=[
+            GeneratedGuiTestCase(
+                title="Truncated",
+                purpose="Checks the home heading.",
+                test_code=(
+                    'const { test, expect } = require("@playwright/test");\n'
+                    "test('home', async ({ page }) => {\n"
+                    "  await page.goto(process.env.BASE_URL);\n"
+                    "  await expect(page.getByRole('heading', { name: 'Home' })).toBeVisible();"
+                ),
+            )
+        ]
+    )
+
+    class FakeStructuredModel:
+        def __init__(self):
+            self.calls = 0
+
+        def with_structured_output(self, schema):
+            return self
+
+        def invoke(self, messages):
+            self.calls += 1
+            return truncated
+
+    model = FakeStructuredModel()
+    agent = GuiTestAgent(model=model)
+
+    with pytest.raises(ValueError, match="No tests were saved.*invalid JavaScript syntax"):
+        agent.graph.invoke({
+            "source_directory": str(source_directory),
+            "output_directory": str(output_directory),
+            "source_context": "",
+            "source_files": [],
+            "source_context_truncated": False,
+            "test_cases": [],
+            "generated_files": [],
+        })
+
+    assert model.calls == 3
+    assert not output_directory.exists()
+
+
+def test_generation_retries_a_truncated_structured_model_response(tmp_path):
+    source_directory = tmp_path / "app"
+    source_directory.mkdir()
+    (source_directory / "index.html").write_text("<h1>Home</h1>", encoding="utf-8")
+    output_directory = tmp_path / "generated-output"
+    valid_suite = GeneratedGuiTestSuite(
+        test_cases=[
+            GeneratedGuiTestCase(
+                title="Home",
+                purpose="Checks the home heading.",
+                test_code=(
+                    'const { test, expect } = require("@playwright/test");\n'
+                    "test('home', async ({ page }) => {\n"
+                    "  await page.goto(process.env.BASE_URL);\n"
+                    "  await expect(page.getByRole('heading', { name: 'Home' })).toBeVisible();\n"
+                    "});"
+                ),
+            )
+        ]
+    )
+
+    class FakeStructuredModel:
+        def __init__(self):
+            self.messages = []
+
+        def with_structured_output(self, schema):
+            return self
+
+        def invoke(self, messages):
+            self.messages.append(messages)
+            if len(self.messages) == 1:
+                raise ValueError("Truncated structured model response: unterminated JSON")
+            return valid_suite
+
+    model = FakeStructuredModel()
+    result = GuiTestAgent(model=model).graph.invoke({
+        "source_directory": str(source_directory),
+        "output_directory": str(output_directory),
+        "source_context": "",
+        "source_files": [],
+        "source_context_truncated": False,
+        "test_cases": [],
+        "generated_files": [],
+    })
+
+    assert len(model.messages) == 2
+    assert "Truncated structured model response: unterminated JSON" in model.messages[1][1][1]
+    assert Path(result["generated_files"][0]).is_file()
 
 
 def test_agent_writes_generated_specs_to_separate_output(tmp_path):
@@ -166,7 +438,7 @@ def test_agent_writes_generated_specs_to_separate_output(tmp_path):
                         test_code=(
                             'import { test, expect } from "@playwright/test";\n'
                             "test('continue button is visible', async ({ page }) => {\n"
-                            "  await page.goto(process.env.BASE_URL || 'http://localhost:3000');\n"
+                            "  await page.goto(process.env.BASE_URL);\n"
                             "  await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible();\n"
                             "});"
                         ),
@@ -226,7 +498,8 @@ def test_selector_repair_writes_syntax_validated_spec_separately(tmp_path, monke
     failed_file.parent.mkdir(parents=True)
     failed_file.write_text(
         'import { test, expect } from "@playwright/test";\n'
-        "test('continue', async ({ page }) => { await expect(page.getByLabel('Continue')).toBeVisible(); });\n",
+        "test('continue', async ({ page }) => { await page.goto(process.env.BASE_URL); "
+        "await expect(page.getByLabel('Continue')).toBeVisible(); });\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(gui_test_agent_module, "_gui_output_root", lambda: output_root)
@@ -244,7 +517,8 @@ def test_selector_repair_writes_syntax_validated_spec_separately(tmp_path, monke
                 reason="The source button has the accessible name Continue; use its button role.",
                 test_code=(
                     'import { test, expect } from "@playwright/test";\n'
-                    "test('continue', async ({ page }) => { await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible(); });"
+                    "test('continue', async ({ page }) => { await page.goto(process.env.BASE_URL); "
+                    "await expect(page.getByRole('button', { name: 'Continue' })).toBeVisible(); });"
                 ),
             )
 

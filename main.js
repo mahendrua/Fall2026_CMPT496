@@ -1749,6 +1749,17 @@ registerProtectedHandler("stop-gui-tests", async () => {
     }
 });
 
+registerProtectedHandler("diagnose-gui-event-stream", async (_event, eventsUrl) => {
+    try {
+        return await getGuiTestRunner().diagnoseEventStream(eventsUrl);
+    } catch (error) {
+        return {
+            category: "diagnostic_error",
+            message: `Could not diagnose the GUI event stream: ${error.message}`
+        };
+    }
+});
+
 registerProtectedHandler("list-gui-testing-reports", async () => {
     try {
         return {
