@@ -59,6 +59,9 @@ class CommandDispatcher:
             # Mutation testing (not part of the full pipeline: it takes minutes)
             "run_mutation_tests": self.commands.run_mutation_tests,
 
+            # GitHub pull requests
+            "analyze_pull_request": self.commands.analyze_pull_request,
+
             # UML
             "generate_uml": self.commands.generate_uml,
             "generate_all_uml": self.commands.generate_all_uml,

@@ -315,7 +315,8 @@ async function getPullRequestDetails(input, pullRequestNumber, {
             additions: Number(file.additions) || 0,
             deletions: Number(file.deletions) || 0,
             changes: Number(file.changes) || 0,
-            patchAvailable: typeof file.patch === "string"
+            patchAvailable: typeof file.patch === "string",
+            patch: typeof file.patch === "string" ? file.patch : null
         })),
         commitsComplete: commitsResult.complete,
         filesComplete: filesResult.complete,
