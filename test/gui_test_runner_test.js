@@ -169,3 +169,31 @@ test("keeps uploaded test helpers in a shared relative layout", async () => {
         fs.rmSync(directory, { recursive: true, force: true });
     }
 });
+
+test("clears uploaded files only when no run is active", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "gui-test-clear-"));
+    const specPath = path.join(directory, "login.spec.ts");
+    fs.writeFileSync(specPath, "import './test';");
+
+    const runner = new GuiTestRunner({
+        appRoot: directory,
+        resourcesPath: directory,
+        isPackaged: false,
+        onEvent: () => {}
+    });
+    try {
+        runner.addFiles([specPath]);
+        runner.activeRun = {};
+        assert.throws(() => runner.clearFiles(), /Stop the current GUI test run/);
+        assert.equal(runner.listFiles().length, 1);
+
+        runner.activeRun = null;
+        runner.clearFiles();
+        assert.deepEqual(runner.listFiles(), []);
+        assert.equal(runner.addFiles([specPath]).length, 1);
+    } finally {
+        runner.activeRun = null;
+        await runner.dispose();
+        fs.rmSync(directory, { recursive: true, force: true });
+    }
+});

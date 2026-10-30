@@ -6,7 +6,8 @@ async function ownsListeningPort(rootPid, port) {
     if (!Number.isInteger(rootPid) || !Number.isInteger(port)) return false;
     if (process.platform === 'win32') {
         // Numeric-only parameters; never execute project-supplied shell text here.
-        const script = `$ErrorActionPreference='Stop'; $owners=@(Get-NetTCPConnection -State Listen -LocalPort ${port} -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess); if($owners -contains ${rootPid}){Write-Output 'owned';exit}; $parents=@{};Get-CimInstance Win32_Process | ForEach-Object {$parents[[int]$_.ProcessId]=[int]$_.ParentProcessId};foreach($ownerId in $owners){$cursor=[int]$ownerId;for($depth=0;$depth -lt 32;$depth++){if($cursor -eq ${rootPid}){Write-Output 'owned';exit};if(!$parents.ContainsKey($cursor)){break};$cursor=$parents[$cursor]}};Write-Output 'foreign'`;
+        // Some Windows builds report live listeners as Closed, so also accept any row with a wildcard remote end.
+        const script = `$ErrorActionPreference='Stop'; $owners=@(Get-NetTCPConnection -LocalPort ${port} -ErrorAction SilentlyContinue | Where-Object { $_.State -eq 'Listen' -or $_.RemotePort -eq 0 } | Select-Object -ExpandProperty OwningProcess); if($owners -contains ${rootPid}){Write-Output 'owned';exit}; $parents=@{};Get-CimInstance Win32_Process | ForEach-Object {$parents[[int]$_.ProcessId]=[int]$_.ParentProcessId};foreach($ownerId in $owners){$cursor=[int]$ownerId;for($depth=0;$depth -lt 32;$depth++){if($cursor -eq ${rootPid}){Write-Output 'owned';exit};if(!$parents.ContainsKey($cursor)){break};$cursor=$parents[$cursor]}};Write-Output 'foreign'`;
         const { stdout } = await exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { timeout: 8000, windowsHide: true });
         return stdout.trim() === 'owned';
     }

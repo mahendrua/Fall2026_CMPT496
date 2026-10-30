@@ -87,18 +87,23 @@ function createAppEnvironment(port, framework) {
     };
 }
 
-function isPortAvailable(port) {
+function canListen(port, host) {
     return new Promise((resolve, reject) => {
         const server = net.createServer();
         server.once("error", error => {
             if (error.code === "EADDRINUSE" || error.code === "EACCES") resolve(false);
             else reject(new Error(`Could not check local app port ${port}: ${error.message}`));
         });
-        server.listen(port, "0.0.0.0", () => server.close(error => {
+        server.listen(port, host, () => server.close(error => {
             if (error) reject(new Error(`Could not release local app port ${port}: ${error.message}`));
             else resolve(true);
         }));
     });
+}
+
+// Windows lets 0.0.0.0 bind beside a loopback-only listener, which would then answer the 127.0.0.1 readiness probe.
+async function isPortAvailable(port) {
+    return await canListen(port, "0.0.0.0") && await canListen(port, "127.0.0.1");
 }
 
 async function selectPort(framework) {
@@ -400,6 +405,7 @@ module.exports = {
     detectFramework,
     getPreferredPort,
     getLaunchOptions,
+    isPortAvailable,
     parseListeningEndpoint, probeHttp, redactLog, waitForHttp,
     discoverApplications: adapters.discoverApplications
 };

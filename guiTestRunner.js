@@ -899,6 +899,11 @@ class GuiTestRunner {
         return true;
     }
 
+    clearFiles() {
+        if (this.activeRun) throw new Error("Stop the current GUI test run before clearing it.");
+        this.uploadedFiles.clear();
+    }
+
     async waitForIdle() {
         const run = this.activeRun;
         if (run?.monitor) await run.monitor;

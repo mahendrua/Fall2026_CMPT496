@@ -1758,6 +1758,15 @@ registerProtectedHandler("repair-generated-gui-test", async (event, request = {}
     }
 });
 
+registerProtectedHandler("clear-gui-tests", async () => {
+    try {
+        if (guiTestRunner) guiTestRunner.clearFiles();
+        return { success: true };
+    } catch (error) {
+        return { success: false, error: error.message };
+    }
+});
+
 registerProtectedHandler("stop-gui-tests", async () => {
     try {
         const stopped = guiTestRunner ? await guiTestRunner.stop() : false;

@@ -2245,6 +2245,7 @@ function updateGuiRunControls() {
     document.getElementById("guiTestBackBtn").disabled = guiGenerationInProgress;
     document.getElementById("stopGuiTestsBtn").classList.toggle("hidden", !guiRunActive);
     document.getElementById("stopGuiTestsBtn").disabled = !guiRunActive;
+    document.getElementById("clearGuiTestsBtn").disabled = guiRunActive || guiGenerationInProgress;
 }
 
 function renderGuiTestFiles() {
@@ -2813,6 +2814,45 @@ document.getElementById("uploadGuiTestsBtn").addEventListener("click", async () 
     }));
     renderGuiTestFiles();
     appendGuiLog(`Loaded ${guiUploadedTests.length} test/support file(s).`);
+});
+
+document.getElementById("clearGuiTestsBtn").addEventListener("click", async () => {
+    if (guiRunActive || guiGenerationInProgress) return;
+    const response = await window.electronAPI.clearGuiTests();
+    if (!response?.success) {
+        showGuiMessage(response?.error || "Could not clear the last GUI test.");
+        return;
+    }
+
+    guiUploadedTests = [];
+    guiGeneratedTestFiles = [];
+    guiRunFailures = [];
+    guiRepairAttempted = false;
+    guiGenerationSourceDirectory = null;
+    guiGenerationAppPort = null;
+    guiInfrastructureError = false;
+    guiPreviewConnected = false;
+    if (guiPreviewTimer !== null) clearTimeout(guiPreviewTimer);
+    guiPreviewTimer = null;
+
+    resetGuiDashboard();
+    document.getElementById("guiResultsList").replaceChildren(
+        guiReportElement("p", "gui-empty-state", "Results will appear here after execution begins.")
+    );
+    document.getElementById("guiExecutionLogs").textContent = "Ready.";
+    document.getElementById("guiCurrentTest").textContent = "Waiting for a test run";
+    document.getElementById("guiPreviewStatus").textContent = "Preview idle";
+    setGuiPreviewExpanded(false);
+    const preview = document.getElementById("guiPreview");
+    preview.removeAttribute("src");
+    preview.classList.add("hidden");
+    document.getElementById("guiPreviewEmpty").classList.remove("hidden");
+    document.getElementById("expandGuiPreviewBtn").disabled = true;
+    document.getElementById("guiGenerationResult").classList.add("hidden");
+    document.getElementById("guiGenerationDetails").textContent = "";
+    document.getElementById("guiGeneratedFiles").replaceChildren();
+    showGuiMessage("");
+    renderGuiTestFiles();
 });
 
 function connectGuiRun(response) {
