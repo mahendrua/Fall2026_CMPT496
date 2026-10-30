@@ -15,6 +15,7 @@ let testsStarted = false;
 let displayMonitor = null;
 let displayInspection = false;
 let lastDisplayCode = null;
+let appRelay = null;
 async function diagnoseDisplay() {
     if (displayInspection || shuttingDown) return;
     displayInspection = true;
@@ -58,6 +59,7 @@ server.on("connection", (socket, request) => {
 function stop(exitCode = 1) {
     if (shuttingDown) return;
     shuttingDown = true;
+    appRelay?.close();
     clearInterval(displayMonitor);
     if (testProcess && !testProcess.killed) testProcess.kill("SIGTERM");
     for (const client of clients) client.close();
@@ -74,6 +76,7 @@ function waitForEgressProxy() {
     return new Promise((resolve, reject) => {
         const attempt = () => {
             const socket = net.createConnection({ host: proxyHost, port: proxyPort });
+            socket.setTimeout(2000, () => socket.destroy(new Error('Proxy connection timed out')));
             socket.once("connect", () => {
                 socket.destroy();
                 resolve();
@@ -102,6 +105,7 @@ function waitForApp() {
     return new Promise((resolve, reject) => {
         const attempt = () => {
             const socket = net.createConnection({ host, port });
+            socket.setTimeout(2000, () => socket.destroy(new Error('Application connection timed out')));
             socket.once("connect", () => {
                 socket.destroy();
                 resolve();
@@ -203,7 +207,13 @@ server.on("listening", () => {
             broadcast({ type: "runner_ready", message: "Checking that the app container is ready." });
             return waitForApp();
         })
-        .then(() => {
+        .then(async () => {
+            if (process.env.GUI_APP_LOOPBACK_RELAY === '1') {
+                appRelay = await require('./appRelay.cjs').startAppRelay({ target: process.env.BASE_URL, proxyUrl: process.env.HTTPS_PROXY });
+                process.env.BASE_URL = appRelay.url;
+                delete process.env.GUI_SECURE_ORIGIN;
+                broadcast({ type: 'runner_log', message: 'Using an isolated localhost application endpoint through the existing destination allowlist; HTTP host/origin headers remain unchanged.' });
+            }
             appReady = true;
             broadcast({ type: "runner_ready", message: "Application ready; starting tests independently of preview connectivity." });
             startPlaywrightTests();

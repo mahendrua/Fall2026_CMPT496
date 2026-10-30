@@ -6,6 +6,7 @@ const secureOriginArgument = secureOrigin
     : null;
 
 module.exports = {
+    globalSetup: path.join(__dirname, 'appPreflight.cjs'),
     testDir: "/opt/gui-runner/tests",
     testMatch: "**/*.{js,ts}",
     testIgnore: ["node_modules/**"],

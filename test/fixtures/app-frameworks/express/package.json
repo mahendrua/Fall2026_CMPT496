@@ -1,0 +1,1 @@
+{"name":"checkpoint-express-fixture","private":true,"scripts":{"dev":"node server.cjs"},"dependencies":{"express":"*"}}

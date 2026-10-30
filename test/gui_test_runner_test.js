@@ -12,6 +12,14 @@ const {
     validateGuiTestFiles
 } = require("../guiTestRunner");
 
+test('framework websocket upgrades retain the exact HTTP destination allowlist', () => {
+    const config = createProxyConfig(['host.docker.internal:4321']);
+    assert.match(config, /http_upgrade_request_protocols websocket allow allowed_domain_0 allowed_port_0/);
+    assert.match(config, /acl allowed_port_0 port 4321/);
+    assert.match(config, /http_upgrade_request_protocols OTHER deny all/);
+    assert.doesNotMatch(config, /http_upgrade_request_protocols \S+ allow all(?:\s|$)/);
+});
+
 function fileRecord(directory, name, content) {
     const filePath = path.join(directory, name);
     fs.writeFileSync(filePath, content);

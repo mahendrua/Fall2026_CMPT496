@@ -153,6 +153,7 @@ let guiEventConnection = null;
 let guiCspViolationListener = null;
 let guiRunActive = false;
 let guiRunCompleted = false;
+let guiInfrastructureError = false;
 let guiPreviewConnected = false;
 let guiPreviewTimer = null;
 window.addEventListener("message", event => {
@@ -2238,6 +2239,7 @@ function updateGuiRunControls() {
     const hasSelection = document.querySelector("#guiTestList input:checked");
     document.getElementById("runGuiTestsBtn").disabled = guiRunActive || !hasSelection;
     document.getElementById("uploadGuiTestsBtn").disabled = guiRunActive;
+    document.getElementById("startGuiLocalAppBtn").disabled = guiRunActive || guiGenerationInProgress;
     document.getElementById("guiDemoMode").disabled = guiRunActive;
     document.getElementById("generateGuiTestsBtn").disabled = guiRunActive || guiGenerationInProgress;
     document.getElementById("guiTestBackBtn").disabled = guiGenerationInProgress;
@@ -2355,11 +2357,22 @@ function handleGuiTestEvent(event) {
         appendGuiLog(`App ${String(event.stream || "output").toUpperCase()}: ${event.message || ""}`);
         return;
     }
+    if (event.type === 'local_app_status' || event.type === 'app_preflight') {
+        document.getElementById('guiAppStatus').textContent = event.message;
+        appendGuiLog(event.message);
+        return;
+    }
     if (event.type === "local_app_exit") {
+        guiGenerationAppPort = null;
+        document.getElementById('stopGuiLocalAppBtn').classList.add('hidden');
+        if (!guiInfrastructureError) document.getElementById('guiAppStatus').textContent = event.message?.includes('stopped')
+            ? (guiRunCompleted ? 'GUI testing completed. Local application stopped.' : 'Local application stopped.')
+            : 'Local application exited. See technical diagnostics.';
         appendGuiLog(event.message || "The local app process exited.");
         return;
     }
     if (event.type === "local_app_started") {
+        document.getElementById('guiAppStatus').textContent = event.message;
         appendGuiLog(event.message);
         return;
     }
@@ -2398,6 +2411,7 @@ function handleGuiTestEvent(event) {
         return;
     }
     if (event.type === "run_started") {
+        document.getElementById('guiAppStatus').textContent = 'Running GUI tests...';
         setGuiCount("Total", event.total || 0);
         document.getElementById("guiCurrentTest").textContent =
             event.total ? `Running ${event.total} test${event.total === 1 ? "" : "s"}` : "No tests were discovered";
@@ -2460,6 +2474,10 @@ function handleGuiTestEvent(event) {
         return;
     }
     if (event.type === "test_error" || event.type === "runner_error") {
+        if (event.type === 'runner_error' || /APP_PREFLIGHT/.test(event.message || '')) {
+            guiInfrastructureError = true;
+            document.getElementById('guiAppStatus').textContent = event.message;
+        }
         appendGuiLog(event.message || "The GUI test runner encountered an error.");
         return;
     }
@@ -2509,7 +2527,7 @@ function handleGuiTestEvent(event) {
             `Run ${event.status}: ${event.passed || 0} passed, ${event.failed || 0} failed, ${event.skipped || 0} skipped`;
         appendGuiLog(`Run finished — ${event.status}.`);
         void stopLocalGuiApp();
-        if (!event.total) {
+        if (!event.total && !guiInfrastructureError) {
             showGuiMessage("No Playwright tests were found. Use test() or it() declarations in your selected files.");
         }
         return;
@@ -2620,6 +2638,30 @@ async function stopLocalGuiApp() {
     }
 }
 
+document.getElementById('startGuiLocalAppBtn').addEventListener('click', async () => {
+    const directory = await window.electronAPI.selectCodebase();
+    if (!directory) return;
+    guiGenerationInProgress = true;
+    document.getElementById('stopGuiLocalAppBtn').classList.remove('hidden');
+    document.getElementById('guiAppStatus').textContent = 'Detecting and starting the selected application...';
+    updateGuiRunControls();
+    try {
+        const result = await window.electronAPI.startLocalGuiApp({ appDirectory: directory });
+        if (result?.cancelled) { document.getElementById('guiAppStatus').textContent = 'Application startup cancelled.'; return; }
+        if (!result?.success) throw new Error(result?.error || 'Application startup failed.');
+        guiGenerationAppPort = result.port;
+        document.getElementById('guiAppStatus').textContent = `${result.label || result.framework}: application ready on port ${result.port}. Upload tests to continue.`;
+        appendGuiLog(`Application: ${result.dockerUrl}. Command: ${result.command}`);
+    } catch (error) { document.getElementById('guiAppStatus').textContent = error.message; appendGuiLog(error.message); }
+    finally { guiGenerationInProgress = false; updateGuiRunControls(); }
+});
+document.getElementById('stopGuiLocalAppBtn').addEventListener('click', async () => {
+    await stopLocalGuiApp();
+    guiGenerationAppPort = null;
+    document.getElementById('stopGuiLocalAppBtn').classList.add('hidden');
+    document.getElementById('guiAppStatus').textContent = 'Local application stopped.';
+});
+
 async function requestGuiSelectorRepair(testFile, event) {
     activeCommand = "repair_gui_test_case";
     const failure = {
@@ -2706,11 +2748,13 @@ document.getElementById("generateGuiTestsBtn").addEventListener("click", async (
         }
 
         guiGenerationAppPort = appResult.port;
+        sourceDirectory = appResult.appDirectory;
+        guiGenerationSourceDirectory = sourceDirectory;
         status.textContent = `Detected ${appResult.framework}. App started on port ${appResult.port}; generating GUI test cases...`;
         details.textContent = [
             `Framework: ${appResult.framework}`,
-            `Local app: http://host.docker.internal:${appResult.port}`,
-            `Command: npm run ${appResult.script}`,
+            `Local app: ${appResult.dockerUrl}`,
+            `Command: ${appResult.command}`,
             `Source folder: ${sourceDirectory}`
         ].join("\n");
         activeCommand = "generate_gui_test_cases";
@@ -2772,6 +2816,7 @@ document.getElementById("uploadGuiTestsBtn").addEventListener("click", async () 
 });
 
 function connectGuiRun(response) {
+    guiInfrastructureError = false;
     guiRunActive = true;
     guiRunCompleted = false;
     updateGuiRunControls();
@@ -2884,7 +2929,7 @@ document.getElementById("runGuiTestsBtn").addEventListener("click", async () => 
         .split(/[,\s]+/)
         .map(host => host.trim())
         .filter(Boolean);
-    if (!allowedHosts.length) {
+    if (!allowedHosts.length && !guiGenerationAppPort) {
         showGuiMessage("Enter at least one allowed website host before running tests.");
         return;
     }

@@ -1,0 +1,1 @@
+{"name":"checkpoint-next-fixture","private":true,"scripts":{"dev":"next dev"},"dependencies":{"next":"*","react":"*","react-dom":"*"}}

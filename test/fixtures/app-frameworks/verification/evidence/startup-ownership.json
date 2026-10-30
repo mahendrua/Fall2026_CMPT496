@@ -1,0 +1,32 @@
+[
+  {
+    "name": "vite",
+    "framework": "vite",
+    "port": 5173,
+    "ownedProcessVerified": true
+  },
+  {
+    "name": "next",
+    "framework": "next",
+    "port": 3001,
+    "ownedProcessVerified": true
+  },
+  {
+    "name": "express",
+    "framework": "express",
+    "port": 3001,
+    "ownedProcessVerified": true
+  },
+  {
+    "name": "python",
+    "framework": "flask",
+    "port": 5000,
+    "ownedProcessVerified": true
+  },
+  {
+    "name": "static",
+    "framework": "static",
+    "port": 8081,
+    "ownedProcessVerified": true
+  }
+]

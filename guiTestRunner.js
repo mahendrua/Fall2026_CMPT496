@@ -221,8 +221,13 @@ function createProxyConfig(hostEntries) {
         lines.push(`acl ${domainAcl} dstdomain ${domains.join(" ")}`);
         lines.push(`acl ${portAcl} port ${ports.join(" ")}`);
         lines.push(`http_access allow ${domainAcl} ${portAcl}`);
+        // Squid otherwise strips Upgrade, breaking framework HMR and websocket-backed UIs.
+        // Keep upgrades scoped to the same destination and port as ordinary HTTP traffic.
+        lines.push(`http_upgrade_request_protocols websocket allow ${domainAcl} ${portAcl}`);
+        lines.push(`http_upgrade_request_protocols WebSocket allow ${domainAcl} ${portAcl}`);
     });
     lines.push("http_access deny all");
+    lines.push("http_upgrade_request_protocols OTHER deny all");
 
     return `${lines.join("\n")}\n`;
 }
@@ -487,7 +492,12 @@ class GuiTestRunner {
                 throw new Error("The app port must be between 1 and 65535.");
             }
             if (appUnderTest.mode === "host") {
-                appOptions = { mode: "host", port: appPort };
+                const protocol = appUnderTest.protocol || 'http:';
+                const basePath = appUnderTest.basePath || '/';
+                if (!['http:', 'https:'].includes(protocol) || typeof basePath !== 'string' || !basePath.startsWith('/') || basePath.startsWith('//') || /[\\\r\n]/.test(basePath)) {
+                    throw new Error('The application URL protocol or base path is invalid.');
+                }
+                appOptions = { mode: "host", port: appPort, protocol, basePath, framework: appUnderTest.framework || '' };
                 effectiveHosts = [...(Array.isArray(allowedHosts) ? allowedHosts : []), `host.docker.internal:${appPort}`];
             } else {
                 const appDirectory = path.resolve(String(appUnderTest.directory || ""));
@@ -662,13 +672,15 @@ class GuiTestRunner {
                 "--env", "NO_PROXY=localhost,127.0.0.1,::1",
                 "--env", `GUI_EVENT_TOKEN=${run.eventToken}`,
                 "--env", `VNC_PASSWORD=${run.vncPassword}`,
+                ...(appOptions ? ['--env', 'GUI_APP_PREFLIGHT=1', '--env', `GUI_APP_FRAMEWORK=${appOptions.framework || ''}`] : []),
+                ...(appOptions?.mode === 'host' && appOptions.framework === 'next' ? ['--env', 'GUI_APP_LOOPBACK_RELAY=1'] : []),
                 ...(appOptions?.mode === "docker" ? [
                     "--env", `GUI_APP_HOST=gui-app`,
                     "--env", `GUI_APP_PORT=${appOptions.port}`,
                     "--env", `BASE_URL=http://gui-app:${appOptions.port}`
                 ] : appOptions?.mode === "host" ? [
-                    "--env", `BASE_URL=http://host.docker.internal:${appOptions.port}`,
-                    "--env", `GUI_SECURE_ORIGIN=http://host.docker.internal:${appOptions.port}`
+                    "--env", `BASE_URL=${appOptions.protocol}//host.docker.internal:${appOptions.port}${appOptions.basePath}`,
+                    ...(appOptions.protocol === 'http:' ? ['--env', `GUI_SECURE_ORIGIN=http://host.docker.internal:${appOptions.port}`] : [])
                 ] : []),
                 this.imageNames.runner
             ], { timeoutMs: 30000, signal: run.abortController.signal });

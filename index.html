@@ -213,9 +213,12 @@
         <div class="gui-feature-actions">
             <button class="btn-primary" id="uploadGuiTestsBtn">Upload Test Cases Manually</button>
             <button class="btn-secondary" id="generateGuiTestsBtn">Generate Test Cases Using AI</button>
+            <button class="btn-secondary" id="startGuiLocalAppBtn">Start Local App for Uploaded Tests</button>
+            <button class="btn-secondary hidden" id="stopGuiLocalAppBtn">Stop Local App</button>
+            <p id="guiAppStatus" role="status">Select a local application or enter an external test host.</p>
             <p class="gui-host-help">
-                AI generation detects the Node.js framework, starts the app on an available port, and lets the
-                Playwright container connect through host.docker.internal. Dependencies must already be installed.
+                Checkpoint detects supported Node.js, Python, and static applications and verifies browser access before testing.
+                Dependencies must already be installed; project source and configuration files are preserved.
             </p>
             <section id="guiGenerationResult" class="gui-generation-result hidden" aria-live="polite">
                 <strong id="guiGenerationStatus">Choose an app source folder to generate GUI tests.</strong>
@@ -292,10 +295,10 @@
                     <p class="gui-empty-state">Results will appear here after execution begins.</p>
                 </div>
             </section>
-            <section class="gui-card">
-                <h2>Execution Logs</h2>
+            <details class="gui-card">
+                <summary>Technical diagnostics and execution logs</summary>
                 <pre id="guiExecutionLogs" class="gui-execution-logs" aria-live="polite">Ready.</pre>
-            </section>
+            </details>
         </div>
     </div>
 

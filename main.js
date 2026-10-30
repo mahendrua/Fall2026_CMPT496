@@ -5,7 +5,7 @@ const path = require('path');
 const fs = require("fs");
 const dotenv = require("dotenv");
 const { GuiTestRunner } = require("./guiTestRunner");
-const { LocalGuiApp } = require("./guiLocalApp");
+const { LocalGuiApp, discoverApplications } = require("./guiLocalApp");
 const {
     applyGuiTestEvent,
     buildGuiReportHtml,
@@ -1537,24 +1537,39 @@ function getLocalGuiApp() {
 }
 
 async function stopLocalGuiApp() {
-    if (localGuiApp?.active) await localGuiApp.stop();
+    if (localGuiApp) await localGuiApp.stop();
 }
 
 registerProtectedHandler("start-local-gui-app", async (event, request = {}) => {
+    let projects;
+    try { projects = discoverApplications(request.appDirectory); }
+    catch (error) { return { success: false, error: error.message }; }
+    if (!projects.length) return { success: false, error: 'No supported web application or explicit development script was found in this folder.' };
+    let applicationId = projects[0].id;
+    if (projects.length > 1) {
+        if (projects.length > 12) return { success: false, error: 'More than 12 applications were found. Select a narrower application folder.' };
+        const selection = await dialog.showMessageBox(mainWindow, {
+            type: 'question', title: 'Select application', message: 'Which application should Checkpoint start?',
+            buttons: [...projects.map(project => `${project.relativePath} — ${project.label}`), 'Cancel'],
+            defaultId: projects.length, cancelId: projects.length
+        });
+        if (selection.response >= projects.length) return { success: false, cancelled: true };
+        applicationId = projects[selection.response].id;
+    }
     const confirmation = await dialog.showMessageBox(mainWindow, {
         type: "warning",
         buttons: ["Run project", "Cancel"],
         defaultId: 1,
         cancelId: 1,
         title: "Run local app for GUI testing?",
-        message: "This will execute the selected project's npm dev/start script on your PC.",
-        detail: "The script runs with your Windows user permissions and the app listens on all network interfaces so Docker can connect. Continue only if you trust the selected folder."
+        message: `Run ${projects.find(project => project.id === applicationId).label} for GUI testing?`,
+        detail: "This executes the selected application's development command with your user permissions and binds its server to all network interfaces for Docker access. No dependencies, setup hooks or migrations will be run automatically. Continue only if you trust this project and authorize that local network exposure."
     });
     if (confirmation.response !== 0) {
         return { success: false, cancelled: true };
     }
     try {
-        const result = await getLocalGuiApp().start(request.appDirectory);
+        const result = await getLocalGuiApp().start(request.appDirectory, { applicationId });
         return { success: true, ...result };
     } catch (error) {
         const report = beginGuiTestReport({
@@ -1607,17 +1622,20 @@ registerProtectedHandler("select-gui-test-files", async () => {
 
 registerProtectedHandler("start-gui-tests", async (event, request = {}) => {
     const runner = getGuiTestRunner();
+    const local = localGuiApp?.active;
     const testFiles = (request.testIds || [])
         .map(id => runner.uploadedFiles.get(id)?.sourcePath)
         .filter(Boolean);
     const report = beginGuiTestReport({
         appName: request.appName,
-        appDirectory: request.appDirectory,
-        framework: request.framework,
+        appDirectory: request.appDirectory || local?.appDirectory,
+        framework: request.framework || local?.framework,
         testFiles
     });
     try {
-        const run = await runner.start(request.testIds, request.allowedHosts, null, { demoMode: request.demoMode === true });
+        const run = await runner.start(request.testIds, request.allowedHosts, local ? {
+            mode: 'host', port: local.port, protocol: local.protocol, basePath: local.basePath, framework: local.framework
+        } : null, { demoMode: request.demoMode === true });
         return { success: true, ...run };
     } catch (error) {
         applyGuiTestEvent(report, { type: "runner_error", message: error.message });
@@ -1674,7 +1692,10 @@ registerProtectedHandler("start-generated-gui-tests", async (event, request = {}
             Array.isArray(request.allowedHosts) ? request.allowedHosts : [],
             {
                 mode: "host",
-                port: appPort
+                port: appPort,
+                protocol: appRun.protocol,
+                basePath: appRun.basePath,
+                framework: appRun.framework
             },
             { demoMode: request.demoMode === true }
         );

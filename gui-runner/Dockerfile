@@ -13,6 +13,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --no-audit --no-fund
 
 COPY --chown=root:root entrypoint.sh runner.js reporter.cjs playwright.config.cjs displayDiagnostics.cjs ./
+COPY --chown=root:root appPreflight.cjs connectivity.cjs appRelay.cjs ./
 COPY --chown=root:root gui-preview.html /usr/share/novnc/gui-preview.html
 COPY --chown=root:root previewConnection.js /usr/share/novnc/previewConnection.js
 RUN sed -i 's/\r$//' /opt/gui-runner/entrypoint.sh \
