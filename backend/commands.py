@@ -509,7 +509,7 @@ class Commands:
             except ContextStorageError as exc:
                 progress(f"Warning: Could not load LSP context: {exc}")
                 lsp_context = None
-                
+
             result = FileSummaryAgent().run(codebase,lsp_context=lsp_context)
             failed = result.get("failed_files") or []
             if failed:
@@ -559,8 +559,15 @@ class Commands:
         """
 
         def task():
+
+            try:
+                lsp_context = load_codebase_context(codebase)
+            except ContextStorageError as exc:
+                progress(f"Warning: Could not load LSP context: {exc}")
+                lsp_context = None
+
             progress("Generating directory summaries...")
-            return DirectoryAgent().run(codebase)
+            return DirectoryAgent().run(codebase, lsp_context=lsp_context)
 
         return self._run_command(
             "generate_directory_summaries",

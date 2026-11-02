@@ -17,6 +17,9 @@ import json
 from backend.progress_logging import progress
 from utils.chroma_utils import collection_name
 
+from lsp.context import CodebaseContext
+from lsp.formatter import format_file_context
+
 # A summary the judge rejects is rewritten at most this many times.
 MAX_REFINEMENTS = 2
 
@@ -91,10 +94,11 @@ class DirectoryAgent:
 
         return builder.compile()
     
-    def run(self, directory_path: str, output_dir=None):
+    def run(self, directory_path: str, output_dir=None, lsp_context: CodebaseContext | None = None):
         """
         @brief Executes the DirectoryAgent workflow starting from the provided initial state.
         @param directory_path The path to the directory to be analyzed.
+        @param lsp_context The LSP context for the codebase.
         """
         progress(f'Running directory agent on {directory_path}', 10)
         codebase_name = Path(directory_path).name
@@ -138,7 +142,9 @@ class DirectoryAgent:
             "summary_feedback": "",
             "refinement_attempts": 0,
             "accumulated_business_rules": {},
-            "output_directory": os.path.join(output_dir or ".", "agent", "directory_agent_output")
+            "output_directory": os.path.join(output_dir or ".", "agent", "directory_agent_output"),
+            "lsp_context": lsp_context,
+            "directory_path": directory_path,
         }
 
         return self.graph.invoke(initial_state)
@@ -498,6 +504,7 @@ class DirectoryAgent:
             formatted_child_summaries = self._format_child_summaries(child_summaries)
             summary_context = "\n\n".join(state["summary_context"])
             code_context = "\n\n".join(state["code_context"])
+            lsp_directory_context = self._format_lsp_directory_context(state)
 
             # Create prompt and system message for LLM
             system_message = "You are a Senior Software Architect. Your task is to provide a high-level technical summary of a specific directory in a large codebase."
@@ -513,10 +520,18 @@ class DirectoryAgent:
                         3. CODE SNIPPETS:
                         {code_context if code_context else "None"}
 
+                        4. LANGUAGE SERVER CONTEXT:
+                        {lsp_directory_context}
                         INSTRUCTIONS:
                         Follow these steps to generate your summary:
                         1. Identify the main purpose of this directory and its contents, based on the input data provided. Consider the summaries of child directories, file-level summaries, and any relevant code snippets to inform your understanding.
                         2. Identify any smaller responsibilities that this directory handles.
+                        3. Use the language server context as supplemental structural evidence.
+                            It can help identify classes, functions, definitions, references,
+                            and relationships between symbols.
+
+                            Do not assume that every listed reference represents an actual
+                            runtime dependency or execution path.
 
                         Create your output based on the structured output format provided. For the purpose, favour completeness over conciseness, but avoid including unnecessary details.
 
@@ -570,6 +585,7 @@ class DirectoryAgent:
             formatted_child_summaries = self._format_child_summaries(child_summaries)
             summary_context = "\n\n".join(state["summary_context"])
             code_context = "\n\n".join(state["code_context"])
+            lsp_directory_context = self._format_lsp_directory_context(state)
             
             system_message = """You are a principal software architect writing a comprehensive root-level codebase summary.
 Your audience includes technical leads, stakeholders, and new developers seeking to understand the entire system.
@@ -587,6 +603,9 @@ INPUT DATA (in order of priority):
 
 3. CODE SNIPPETS (tertiary — reference only if necessary for clarification):
 {code_context if code_context else "None"}
+
+4. LANGUAGE SERVER CONTEXT (supplementary structural evidence):
+{lsp_directory_context}
 
 TASK:
 Write a comprehensive root-level summary of the entire codebase that explains the system as a whole to someone new to the project.
@@ -832,6 +851,7 @@ Show how the parts connect and the overall shape of the system, not just what ea
         formatted_child_summaries = self._format_child_summaries(child_summaries)
         summary_context = "\n\n".join(state.get("summary_context", []))
         code_context = "\n\n".join(state.get("code_context", []))
+        lsp_directory_context = self._format_lsp_directory_context(state)
 
         messages = [
             ("system", """You are a Senior Software Architect. 
@@ -857,6 +877,9 @@ Show how the parts connect and the overall shape of the system, not just what ea
 
             CODE SNIPPETS:
             {code_context if code_context else "None"}
+
+            LANGUAGE SERVER CONTEXT:
+            {lsp_directory_context}
 
             EVALUATION CRITERIA:
             - The purpose must not be vague.
@@ -909,6 +932,7 @@ Show how the parts connect and the overall shape of the system, not just what ea
             formatted_child_summaries = self._format_child_summaries(child_summaries)
             summary_context = "\n\n".join(state["summary_context"])
             code_context = "\n\n".join(state["code_context"])
+            lsp_directory_context = self._format_lsp_directory_context(state)
 
             structured_llm = self.llm.with_structured_output(DirectoryOutput)
             messages = [
@@ -931,12 +955,17 @@ Show how the parts connect and the overall shape of the system, not just what ea
                 CODE SNIPPETS:
                 {code_context if code_context else "None"}
 
+                LANGUAGE SERVER CONTEXT:
+                {lsp_directory_context}
+
                 ORIGINAL SUMMARY:
                 purpose: {summary.purpose}
                 responsibilities: {summary.responsibilities}
 
                 FEEDBACK FOR IMPROVEMENT:
                 {feedback}
+
+                
 
                 INSTRUCTIONS:
                 1. Amend the provided summary based on the feedback. Address any identified weaknesses or vagueness.
@@ -1237,6 +1266,47 @@ Show how the parts connect and the overall shape of the system, not just what ea
             formatted.append(text)
         
         return "\n\n".join(formatted)
+    
+    def _format_lsp_directory_context(self, state: DirectoryGraphState) -> str:
+        """
+        @brief Formats the LSP context for the current directory into a string for the LLM prompt.
+        @param state Workflow state containing the LSP context and current directory.
+        @return Formatted string representation of the LSP context for the current directory.
+        """
+        lsp_context = state.get("lsp_context")
+        current_dir = state.get("current_directory")
+        root_directory = state.get("directory_path")
+
+        if not lsp_context or not current_dir:
+            return "No LSP context available for this directory."
+
+        try:
+            rel_dir = (os.path.relpath(current_dir, root_directory)).as_posix()
+        except ValueError:
+            rel_dir = current_dir
+
+        formatted_files = []
+
+        for file_path, file_context in lsp_context.files.items():
+            
+            normalized_path = Path(file_path).as_posix()
+            parent_dir = Path(normalized_path).parent.as_posix()
+
+            # include files belonging to the current directory or its subdirectories
+            if rel_dir == "." or parent_dir == rel_dir or parent_dir.startswith(rel_dir + "/"):
+                
+                formatted_context = format_file_context(file_context)
+
+                if formatted_context:
+                    formatted_files.append(
+                        f"FILE: {normalized_path}\n"
+                        f"{formatted_context}"
+                    )
+
+        if not formatted_files:
+                return "No LSP context available for this directory."
+
+        return "\n\n".join(formatted_files)
 
 if __name__ == "__main__":
     """

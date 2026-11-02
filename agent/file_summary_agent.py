@@ -205,8 +205,13 @@ class FileSummaryAgent:
                 async with sem:
 
                     lsp_context = state.get("lsp_context")
-
                     file_context = (lsp_context.get_file_context(fp) if lsp_context else None)
+
+                    logger.info(
+                        "LSP context for %s: %s",
+                        fp,
+                        "available" if file_context else "unavailable"
+                    )
 
                     return await _summarize_one(self.structured_llm, fp, file_context=file_context)
             return await asyncio.gather(*(guarded(fp) for fp in batch))
