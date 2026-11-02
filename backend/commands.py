@@ -24,7 +24,7 @@ from pathlib import Path
 from backend.progress_logging import progress, pipeline_progress
 
 from lsp.collector import collect_codebase_context_sync
-from lsp.context_storage import save_codebase_context
+from lsp.context_storage import save_codebase_context, load_codebase_context, ContextStorageError
 
 
 # ---------------------------------------------------------
@@ -503,7 +503,14 @@ class Commands:
 
         def task():
             progress("Generating file summaries...")
-            result = FileSummaryAgent().run(codebase)
+
+            try:
+                lsp_context = load_codebase_context(codebase)
+            except ContextStorageError as exc:
+                progress(f"Warning: Could not load LSP context: {exc}")
+                lsp_context = None
+                
+            result = FileSummaryAgent().run(codebase,lsp_context=lsp_context)
             failed = result.get("failed_files") or []
             if failed:
                 result["warning"] = failed_summaries_message(failed, result.get("total_number_of_files"))

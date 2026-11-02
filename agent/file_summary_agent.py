@@ -23,6 +23,8 @@ from pathlib import Path
 from collections import deque
 from backend.progress_logging import progress
 from agent.crawl_config import ACCEPTABLE_EXTENSIONS, prune
+from lsp.context import CodebaseContext, FileContext
+from lsp.formatter import format_file_context, format_lsp_symbol
 
 BATCH_SIZE = 4
 MAX_CONCURRENCY = 3
@@ -103,7 +105,7 @@ class FileSummaryAgent:
         
         return builder.compile()
     
-    def run(self, directory_path):
+    def run(self, directory_path, lsp_context: CodebaseContext | None = None):
         """
         @brief Executes the FileSummaryAgent workflow on a given directory.
 
@@ -124,7 +126,8 @@ class FileSummaryAgent:
             "file_summaries": [],
             "current_files": [],
             "business_rules_by_file": {},
-            "failed_files": []
+            "failed_files": [],
+            "lsp_context": lsp_context,
         }
 
         self._loop = asyncio.new_event_loop()
@@ -198,8 +201,14 @@ class FileSummaryAgent:
         async def run_batch():
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
             async def guarded(fp):
+                
                 async with sem:
-                    return await _summarize_one(self.structured_llm, fp)
+
+                    lsp_context = state.get("lsp_context")
+
+                    file_context = (lsp_context.get_file_context(fp) if lsp_context else None)
+
+                    return await _summarize_one(self.structured_llm, fp, file_context=file_context)
             return await asyncio.gather(*(guarded(fp) for fp in batch))
 
         results = self._loop.run_until_complete(run_batch())
@@ -318,10 +327,11 @@ def _empty_file_summary(file_path: str) -> FileSummaryOutput:
     )
 
 
-async def _summarize_one(structured_llm, file_path: str):
+async def _summarize_one(structured_llm, file_path: str, file_context: FileContext | None = None):
     progress(f'Summarizing: {file_path}')
     try:
         contents = Path(file_path).read_text(encoding="utf-8", errors="replace")
+        lsp_context_str = format_file_context(file_context)
         if _source_text_is_blank(contents):
             return file_path, _empty_file_summary(file_path), None
         messages = [
@@ -331,7 +341,14 @@ async def _summarize_one(structured_llm, file_path: str):
             ),
             (
                 "user",
-                f"""### Tasks
+                f"""### LSP Context
+
+The following information was retrieved from the language server
+for this file. Use it as additional structural evidence when analyzing
+the source code.
+
+{lsp_context_str if lsp_context_str else "No LSP context is available for this file. Analyze the source code directly."}
+### Tasks
 Analyze the file and produce:
 1. A concise summary, dependencies, top-level functions, and all type definitions
 2. UML-ready structured data and PlantUML diagrams

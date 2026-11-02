@@ -10,6 +10,8 @@ Each node reads from and returns an updated version of this state.
 import operator
 from typing import TypedDict, Deque, List, Dict, Annotated
 from agent.structured_output.file_summary_output import FileSummaryOutput, BusinessRule
+from lsp.context import CodebaseContext
+
 
 def merge_business_rules(existing: Dict[str, List[BusinessRule]], new: Dict[str, List[BusinessRule]]) -> Dict[str, List[BusinessRule]]:
     """
@@ -53,3 +55,4 @@ class FileGraphState(TypedDict):
     business_rules_by_file: Annotated[Dict[str, List[BusinessRule]], merge_business_rules]
     # "file: error" for each file whose summary failed, collected across batches
     failed_files: Annotated[List[str], operator.add]
+    lsp_context: CodebaseContext | None
