@@ -8,6 +8,7 @@ structured state passed between nodes in the LangGraph execution graph.
 from typing import TypedDict, Annotated, Any
 from agent.structured_output.IT_output import ValidatedRule, IntegrationTest, WorkflowGroup, WorkflowGroups
 from operator import add
+from lsp.context import CodebaseContext
 
 
 class ITGraphState(TypedDict):
@@ -74,3 +75,4 @@ class ITGraphState(TypedDict):
     codebase_path: str
     output_directory: str
     test_run: Any
+    lsp_context: CodebaseContext | None

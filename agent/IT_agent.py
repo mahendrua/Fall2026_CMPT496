@@ -26,6 +26,9 @@ from agent.test_harness import (
     MAX_TEST_OUTPUT_TOKENS, check_tests, make_cases, make_fixer, write_results
 )
 
+from lsp.context import CodebaseContext
+from lsp.retriever import retrieve_lsp_context
+
 MAX_CONCURRENCY = 10
 DEFAULT_CODEBASE_K = 30
 DEFAULT_FILE_SUMMARY_K = 15
@@ -90,7 +93,7 @@ class ITAgent:
 
         return builder.compile()
 
-    def run(self, validated_rules: list[ValidatedRule], codebase_name: str, codebase_path: str):
+    def run(self, validated_rules: list[ValidatedRule], codebase_name: str, codebase_path: str, lsp_context: CodebaseContext | None = None) -> ITGraphState:
         """
         @brief Executes the ITAgent workflow.
         @param input_rules Dictionary of validated business rules from BR_agent output. Keys are file or directory paths,
@@ -139,6 +142,7 @@ class ITAgent:
             "codebase_name": codebase_name,
             "codebase_path": codebase_path,
             "output_directory": "./agent/IT_agent_output",
+            "lsp_context": lsp_context,
         }
 
         self._loop = asyncio.new_event_loop()
@@ -444,12 +448,14 @@ class ITAgent:
                 workflow_key,
                 {
                     "code_context": [],
-                    "summary_context": []
+                    "summary_context": [],
+                    "lsp_context": []
                 }
             )
 
             existing_code = set(workflow_ctx["code_context"])
             existing_summary = set(workflow_ctx["summary_context"])
+            existing_lsp = set(workflow_ctx["lsp_context"])
 
             # -------------------------
             # Process code results
@@ -564,7 +570,16 @@ class ITAgent:
                 if item not in existing_summary:
                     new_summary.append(item)
 
-            updated_contexts[workflow_key] = {"code_context": new_code,"summary_context": new_summary}
+
+            lsp_results = retrieve_lsp_context(state.get("lsp_context"), source_file_paths)
+            
+            new_lsp = list(workflow_ctx["lsp_context"])
+            for item in lsp_results:
+                if item not in existing_lsp:
+                    new_lsp.append(item)
+                    existing_lsp.add(item)
+
+            updated_contexts[workflow_key] = {"code_context": new_code,"summary_context": new_summary,"lsp_context": new_lsp}
 
 
         progress(
@@ -608,8 +623,8 @@ class ITAgent:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
             async def guarded(workflow):
                 async with sem:
-                    ctx = workflow_contexts.get(workflow.workflow_name, {"code_context": [], "summary_context": []})
-                    return await _generate_single_test(structured_llm, workflow, workflow.rules, ctx["code_context"], ctx["summary_context"])
+                    ctx = workflow_contexts.get(workflow.workflow_name, {"code_context": [], "summary_context": [], "lsp_context": []})
+                    return await _generate_single_test(structured_llm, workflow, workflow.rules, ctx["code_context"], ctx["summary_context"], ctx["lsp_context"])
             return await asyncio.gather(*(guarded(workflow) for workflow in workflow_groups))
 
         results = self._loop.run_until_complete(run_batch())
@@ -735,7 +750,21 @@ class ITAgent:
 
         def context_for(case):
             ctx = workflow_contexts.get(case.source.workflow_name, {})
-            return "\n\n".join(ctx.get("code_context", []))
+
+            context_parts = []
+
+            code_context = ctx.get("code_context", [])
+            if code_context:
+                context_parts.append(
+                    "### RETRIEVED CODE CONTEXT\n\n" + "\n\n".join(code_context)
+                )
+            
+            lsp_context = ctx.get("lsp_context", [])
+            if lsp_context:
+                context_parts.append(
+                    "### RETRIEVED LSP CONTEXT\n\n" + "\n\n".join(lsp_context)
+                )
+            return "\n\n".join(context_parts)
 
         test_run = check_tests(
             "Integration",
@@ -852,10 +881,12 @@ async def _generate_single_test(
     workflow_rules,
     code_context: list[str],
     summary_context: list[str],
+    lsp_context: list[str] | None = None
 ) -> tuple:
     try:
         code_text = "\n\n".join(code_context) if code_context else "NO CONTEXT PROVIDED"
         summary_text = "\n\n".join(summary_context) if summary_context else "NO CONTEXT PROVIDED"
+        lsp_text = "\n\n".join(lsp_context) if lsp_context else "NO CONTEXT PROVIDED"
 
 
         workflow_rules_text = ""
@@ -914,6 +945,9 @@ async def _generate_single_test(
 
         {summary_text}
 
+        ### RETRIEVED LSP CONTEXT
+
+        {lsp_text}
 
 
         ### REQUIRED TASK
@@ -959,6 +993,10 @@ async def _generate_single_test(
         - The output must represent one end-to-end workflow test.
         - The integration_test field must contain only the test method.
         - Imports must be returned separately.
+        - Use LSP context to understand symbols, definitions, references, and relationships between files.
+        - Treat LSP information as supplementary structural metadata, not as proof of implementation details.
+        - Prefer concrete source code over LSP metadata when determining how classes, methods, and components behave.
+        - Do not assume a symbol is public or accessible simply because it appears in LSP context.
 
         ### TYPE USAGE RULES
 
