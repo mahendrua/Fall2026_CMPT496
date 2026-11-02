@@ -624,9 +624,17 @@ class Commands:
                 f"({len(candidates)} after merging exact duplicates)."
             )
 
+
+            try: 
+                lsp_context = load_codebase_context(codebase)
+            except ContextStorageError as exc:
+                progress(f"Warning: Could not load LSP context: {exc}")
+                lsp_context = None
+
             BRAgent().run(
                 candidates,
-                codebase_name
+                codebase_name,
+                lsp_context=lsp_context
             )
 
             result = {
