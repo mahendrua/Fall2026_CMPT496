@@ -54,7 +54,17 @@ class LSPClient:
         
         return await self._exit_stack.__aexit__(exc_type, exc_value, traceback)
 
-    
+    def set_request_timeout(self, seconds: float):
+        """
+        Set how long one request (including the server's start-up handshake)
+        may take. lsp-client's default of 10 s is shorter than csharp-ls
+        needs to load a project before its first answer.
+        Args:
+            seconds: The time limit in seconds.
+        """
+        self._client.request_timeout = seconds
+
+
     async def open_file(self, file_path: str | Path, file_content: str):
         """
         Notify the server that a file has been opened.
@@ -167,6 +177,17 @@ class LSPClient:
         Returns:
             DocumentSymbol: The converted DocumentSymbol object.
         """
+
+        # Servers without hierarchical symbols send a flat SymbolInformation
+        # list: a location instead of ranges, and no children or detail.
+        if not hasattr(symbol, "selection_range"):
+            location_range = self._convert_range(symbol.location.range)
+            return DocumentSymbol(
+                name=symbol.name,
+                kind=symbol.kind.value,
+                range=location_range,
+                selection_range=location_range,
+            )
 
         converted_children = []
 
