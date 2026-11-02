@@ -31,8 +31,18 @@ This is all completed using LangGraph, with an LLM acting as the generator of ou
 **DotNet 10+** is required for this project.
 
 Download Python: [https://www.python.org/downloads/](https://www.python.org/downloads/)
-Downlaod Java: 
-Download Dotnet: 
+Download Java: [https://adoptium.net/](https://adoptium.net/)
+Download .NET: [https://dotnet.microsoft.com/download](https://dotnet.microsoft.com/download)
+
+### Optional tools
+
+Each one is needed for a single feature. Without it the rest of Checkpoint works, and that feature says what is missing.
+
+| Tool | Needed for | Install |
+|---|---|---|
+| Docker Desktop (Linux containers, 2 GB of memory) | GUI Test Cases | [https://www.docker.com/products/docker-desktop/](https://www.docker.com/products/docker-desktop/) |
+| Stryker.NET | Test Strength (mutation testing of C# unit tests) | `dotnet tool install -g dotnet-stryker` (tested with 5.0.0) |
+| csharp-ls | Code navigation (LSP) for C#, off unless `CHECKPOINT_LSP=on` is in `.env`; see [lsp/README.md](lsp/README.md) | `dotnet tool install -g csharp-ls` (tested with 0.28.0) |
 
 ## Setup Instructions
 
