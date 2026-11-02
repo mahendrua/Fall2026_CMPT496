@@ -22,7 +22,10 @@ import time
 import requests
 from pathlib import Path
 from backend.progress_logging import progress, pipeline_progress
+
 from lsp.collector import collect_codebase_context_sync
+from lsp.context_storage import save_codebase_context
+
 
 # ---------------------------------------------------------
 # Logging Configuration 
@@ -520,17 +523,18 @@ class Commands:
         def task():
             progress("Generating LSP context...")
 
+            # Collect LSP information from the codebase.
             context = collect_codebase_context_sync(codebase)
 
-            # Save the context to the codebase's LSP output directory.
-            # We will implement this using the actual CodebaseContext
-            # serialization structure.
+            # Save the collected context for use by other agents.
+            context_file = save_codebase_context(context)
 
             return {
                 "success": True,
                 "files_collected": len(context.files),
-                "languages": list(context.languages),
-                "warnings": context.warnings
+                "languages": sorted(context.languages),
+                "warnings": context.warnings,
+                "context_file": str(context_file)
             }
 
         return self._run_command(
@@ -538,7 +542,7 @@ class Commands:
             task,
             individualStep=individualStep
         )
-
+    
     def generate_directory_summaries(self, codebase: str, individualStep = True):
         """
         Generate directory-level summaries.
