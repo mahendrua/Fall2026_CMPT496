@@ -10,6 +10,7 @@ from agent.structured_output.UT_output import ValidatedRule, UnitTest
 from operator import add
 from lsp.context import CodebaseContext
 
+
 class UTGraphState(TypedDict):
     """
     @brief Represents the shared state passed between nodes in the UT Agent workflow graph.

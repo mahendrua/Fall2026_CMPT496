@@ -33,6 +33,9 @@ from pathlib import Path
 from backend.progress_logging import progress
 from utils.chroma_utils import collection_name
 
+from lsp.context import CodebaseContext
+from lsp.retriever import retrieve_lsp_context
+
 # Code chunks retrieved per broken test for the repair prompt.
 REPAIR_CODEBASE_K = 15
 
@@ -108,7 +111,7 @@ class UTVAgent:
         builder.add_edge("writer", END)
         return builder.compile()
 
-    def run(self, input_tests: list[UnitTest], codebase_name: str, codebase_path: str, output_dir=None):
+    def run(self, input_tests: list[UnitTest], codebase_name: str, codebase_path: str, output_dir=None, lsp_context: CodebaseContext | None = None):
         """
         @brief Executes the UTVAgent workflow.
         @param input_tests List of UnitTest candidates, as saved in unit_tests.json.
@@ -152,6 +155,7 @@ class UTVAgent:
             "codebase_name": codebase_name,
             "codebase_path": codebase_path,
             "output_directory": output_dir or "./agent/UT_agent_output",
+            "lsp_context": lsp_context
         }
 
         self._loop = asyncio.new_event_loop() if target_language == "csharp" else None
@@ -212,20 +216,33 @@ class UTVAgent:
             )
 
             def context_for(case):
-                if code_collection is None or not code_collection.count():
-                    return ""
+
                 test = case.source
-                query_text = f"{test.rule} {' '.join(case.errors[:3])}"
-                results = code_collection.query(
-                    query_texts=[query_text],
-                    n_results=min(REPAIR_CODEBASE_K, code_collection.count())
-                )
-                docs = results.get("documents", [[]])[0]
-                metas = results.get("metadatas", [[]])[0]
-                return "\n\n".join(
-                    self._format_code_result(doc, meta, test.source_directory)
-                    for doc, meta in zip(docs, metas)
-                )
+
+                code_context = []
+
+                if code_collection is not None and code_collection.count():
+                    query_text = f"{test.rule} {' '.join(case.errors[:3])}"
+                    results = code_collection.query(
+                        query_texts=[query_text],
+                        n_results=min(REPAIR_CODEBASE_K, code_collection.count())
+                    )
+                    docs = results.get("documents", [[]])[0]
+                    metas = results.get("metadatas", [[]])[0]
+
+                    code_context = [self._format_code_result(doc, meta, test.source_directory) for doc, meta in zip(docs, metas)]
+
+                lsp_context = retrieve_lsp_context(state.get("lsp_context"), test.source_file_paths)
+                context_parts = []
+
+                if code_context:
+                    context_parts.append("[RETRIEVED CODE CONTEXT]\n" + "\n\n".join(code_context))
+
+                if lsp_context:
+                    context_parts.append("[RETRIEVED LSP CONTEXT]\n" + "\n\n".join(lsp_context))
+
+
+                return "\n\n".join(context_parts)
 
             test_run = check_csharp_tests(
                 "Unit",
