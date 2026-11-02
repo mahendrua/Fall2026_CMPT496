@@ -1281,9 +1281,9 @@ Show how the parts connect and the overall shape of the system, not just what ea
             return "No LSP context available for this directory."
 
         try:
-            rel_dir = (os.path.relpath(current_dir, root_directory)).as_posix()
+            rel_dir = Path(os.path.relpath(current_dir, root_directory)).as_posix()
         except ValueError:
-            rel_dir = current_dir
+            rel_dir = Path(current_dir).as_posix()
 
         formatted_files = []
 

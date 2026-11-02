@@ -725,10 +725,18 @@ class Commands:
             if not input_rules:
                 return no_rules_result("unit")
 
+
+            try: 
+                lsp_context = load_codebase_context(codebase)
+            except ContextStorageError as exc:
+                progress(f"Warning: Could not load LSP context: {exc}")
+                lsp_context = None
+
             final_state = UTAgent().run(
                 input_rules,
                 codebase_name,
-                str(codebase_path)
+                str(codebase_path),
+                lsp_context=lsp_context
             )
 
             return test_run_result(final_state["test_run"])
@@ -828,10 +836,17 @@ class Commands:
             for test in raw_tests:
                 input_tests.append(UnitTest.model_validate(test))
 
+            try: 
+                lsp_context = load_codebase_context(codebase)
+            except ContextStorageError as exc:
+                progress(f"Warning: Could not load LSP context: {exc}")
+                lsp_context = None
+
             final_state = UTVAgent().run(
                 input_tests,
                 codebase_name,
-                str(codebase_path)
+                str(codebase_path),
+                lsp_context=lsp_context
             )
 
             return test_run_result(final_state["test_run"])
@@ -917,11 +932,18 @@ class Commands:
 
             if not input_rules:
                 return no_rules_result("integration")
+            
+            try: 
+                lsp_context = load_codebase_context(codebase)
+            except ContextStorageError as exc:
+                progress(f"Warning: Could not load LSP context: {exc}")
+                lsp_context = None
 
             result = ITAgent().run(
                 input_rules,
                 codebase_name,
-                str(codebase_path)
+                str(codebase_path),
+                lsp_context=lsp_context
             )
 
 
@@ -1343,6 +1365,9 @@ class Commands:
 
             pipeline_progress("Building database...", 5)
             steps.append( self._require_success(self.build_database(str(codebase_path), False)))
+
+            pipeline_progress("Generating LSP context...", 15)
+            steps.append(self._require_success(self.generate_lsp_context(str(codebase_path), False)) )
 
             pipeline_progress("Generating file summaries...", 26)
             steps.append( self._require_success(self.generate_file_summaries(str(codebase_path), False)))
