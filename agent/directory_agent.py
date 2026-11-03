@@ -23,6 +23,58 @@ from lsp.formatter import format_file_context
 # A summary the judge rejects is rewritten at most this many times.
 MAX_REFINEMENTS = 2
 
+LANGUAGE_COMPATIBILITY_GUIDANCE = """
+LANGUAGE COMPATIBILITY:
+
+The codebase may contain one or more of the following programming languages:
+C#, C, JavaScript, TypeScript, TSX, Python, Go, Rust, and Java.
+
+Interpret all retrieved code, file summaries, and LSP information
+according to the language in which they were produced.
+
+The file-level summaries are the primary source for understanding
+individual files and their contents.
+
+Recognize the following language-neutral type categories when interpreting
+file summaries:
+
+- class
+- interface
+- enum
+- struct
+- trait
+- union
+- type_alias
+- named_type
+- record
+- other
+
+LANGUAGE-SPECIFIC CONSIDERATIONS:
+
+- Python: Underscore naming conventions do not necessarily represent
+  enforced access restrictions.
+- Go: Preserve the distinction between exported and unexported identifiers.
+- Rust: Preserve distinctions involving traits, structs, enums, and visibility.
+- C: Recognize structs, unions, typedefs, and functions without assuming
+  object-oriented class semantics.
+- JavaScript: Recognize functions, classes, modules, and prototypes.
+- TypeScript: Recognize interfaces, enums, type aliases, and classes.
+- TSX: Recognize TypeScript declarations and JSX components.
+- Java: Recognize classes, interfaces, enums, and records.
+- C#: Recognize classes, interfaces, structs, enums, and records.
+
+ARCHITECTURAL INTERPRETATION:
+
+- Do not assume that every language supports the same type definitions.
+- Do not assume that every codebase uses object-oriented programming.
+- Do not assume that similarly named constructs have identical semantics.
+- Preserve meaningful language-specific distinctions.
+- Interpret relationships using the evidence supplied by the file summaries
+  and retrieved code.
+- Do not invent dependencies, relationships, or architectural patterns.
+- A codebase may contain multiple programming languages simultaneously.
+"""
+
 
 def after_judgement(state):
     if state["summary_acceptable"] or state["refinement_attempts"] >= MAX_REFINEMENTS:
@@ -409,7 +461,21 @@ class DirectoryAgent:
 
         structured_llm = self.llm.with_structured_output(ContextAnalysisOutput)
 
-        messages = [("system", "You are a Senior Software Architect. You are deciding whether enough retrieval context has been gathered to write a directory-level summary."),
+        messages = [("system", f"""You are a Senior Software Architect. 
+        You are deciding whether enough retrieval context has been gathered 
+        to write a directory-level summary.
+
+        {LANGUAGE_COMPATIBILITY_GUIDANCE}
+
+        When evaluating context sufficiency:
+        - Consider whether the retrieved information adequately represents
+        the files and responsibilities of the current directory.
+        - Do not assume that all files use the same programming language.
+        - Do not consider context incomplete merely because different languages
+        use different terminology or type systems.
+        - Prefer additional retrieval when important files or responsibilities
+        are genuinely missing.
+        """),
         ("user",f"""
         Current directory absolute path:
         {current_directory}
@@ -507,7 +573,15 @@ class DirectoryAgent:
             lsp_directory_context = self._format_lsp_directory_context(state)
 
             # Create prompt and system message for LLM
-            system_message = "You are a Senior Software Architect. Your task is to provide a high-level technical summary of a specific directory in a large codebase."
+            system_message = f"""You are a Senior Software Architect. 
+            Your task is to provide a high-level technical summary of a specific 
+            directory in a large codebase.
+
+            {LANGUAGE_COMPATIBILITY_GUIDANCE}
+
+            Your summary must describe the actual responsibilities and architecture
+            represented by the supplied information, regardless of programming language.
+            """
             prompt = f"""DIRECTORY TO ANALYZE: {state['current_directory']}
 
                         INPUT DATA:
@@ -532,6 +606,14 @@ class DirectoryAgent:
 
                             Do not assume that every listed reference represents an actual
                             runtime dependency or execution path.
+
+                        LANGUAGE INTERPRETATION:
+                        - Consider all supplied file summaries, regardless of their programming language.
+                        - Identify responsibilities shared across files even when those files
+                        use different languages.
+                        - Preserve important differences between language-specific constructs.
+                        - Do not describe language-specific implementation details as universal
+                        architectural patterns.
 
                         Create your output based on the structured output format provided. For the purpose, favour completeness over conciseness, but avoid including unnecessary details.
 
@@ -587,10 +669,25 @@ class DirectoryAgent:
             code_context = "\n\n".join(state["code_context"])
             lsp_directory_context = self._format_lsp_directory_context(state)
             
-            system_message = """You are a principal software architect writing a comprehensive root-level codebase summary.
+            system_message = f"""You are a principal software architect writing a comprehensive root-level codebase summary.
+
 Your audience includes technical leads, stakeholders, and new developers seeking to understand the entire system.
-Your task is to synthesize information about all major subsystems into a cohesive overview of what the codebase is, 
-how its parts work together, and what the overall system delivers."""
+
+Your task is to synthesize information about all major subsystems into a cohesive overview of what the codebase is,
+how its parts work together, and what the overall system delivers.
+
+{LANGUAGE_COMPATIBILITY_GUIDANCE}
+
+ROOT-LEVEL ANALYSIS REQUIREMENTS:
+
+- The codebase may contain multiple programming languages.
+- Identify how subsystems interact even when they are implemented in different languages.
+- Explain cross-language communication and dependencies when supported by the supplied evidence.
+- Preserve meaningful language-specific architectural distinctions.
+- Do not assume that the entire codebase follows one programming paradigm.
+- Do not mistake language-specific constructs for universal architectural patterns.
+- Base architectural conclusions on the child summaries, file summaries, retrieved code, and LSP context.
+"""
 
             prompt = f"""ROOT DIRECTORY TO ANALYZE: {state['current_directory']}
 
@@ -745,10 +842,19 @@ Show how the parts connect and the overall shape of the system, not just what ea
 
             formatted_file_summaries = "\n\n".join(directory_file_summaries)
 
-            system_message = """You are a business analyst extracting business rules and domain policies from a software system.
-                                Your task is to identify rules that exist *between* files — policies, constraints, or behaviors that only 
-                                emerge when multiple files or components are considered together. Focus strictly on what the code and summaries actually enforce, 
-                                not general software patterns."""
+            system_message = f"""You are a business analyst extracting business rules
+            and domain policies from a software system.
+
+            Your task is to identify rules that exist between files — policies,
+            constraints, or behaviors that emerge when multiple files or components
+            are considered together.
+
+            {LANGUAGE_COMPATIBILITY_GUIDANCE}
+
+            Focus strictly on domain behavior and constraints that the system
+            actually enforces, regardless of the programming languages used.
+            Do not confuse implementation details with business rules.
+            """
 
 
             prompt = f"""DIRECTORY: {current_dir}
@@ -854,9 +960,27 @@ Show how the parts connect and the overall shape of the system, not just what ea
         lsp_directory_context = self._format_lsp_directory_context(state)
 
         messages = [
-            ("system", """You are a Senior Software Architect. 
-             Your task is to evaluate whether the summary of a directory is actually useful, specific, and grounded in 
-             the provided context."""),
+            ("system", f"""You are a Senior Software Architect.
+
+            Your task is to evaluate whether the summary of a directory is actually useful,
+            specific, and grounded in the provided context.
+
+            {LANGUAGE_COMPATIBILITY_GUIDANCE}
+
+            EVALUATION REQUIREMENTS:
+
+            - Evaluate the summary based on the actual responsibilities represented
+            by the supplied evidence, not on assumptions about a particular language.
+            - Accept accurate descriptions of language-specific constructs, including
+            classes, interfaces, structs, traits, unions, records, and functions.
+            - Do not expect every language to use classes, inheritance, or object-oriented
+            architecture.
+            - Do not penalize a summary for preserving language-specific terminology.
+            - Evaluate cross-file and cross-language relationships only when supported
+            by the supplied evidence.
+            - Reject unsupported architectural claims, regardless of programming language.
+            - Do not mistake differences in language terminology for inconsistencies.
+            """),
             ("user", f"""
             DIRECTORY:
             {current_directory}
@@ -936,8 +1060,27 @@ Show how the parts connect and the overall shape of the system, not just what ea
 
             structured_llm = self.llm.with_structured_output(DirectoryOutput)
             messages = [
-                ("system", """You are a Senior Software Architect. 
-                Your task is to refine a previously generated directory summary based on specific feedback that identifies weaknesses in the original summary."""),
+                ("system", f"""You are a Senior Software Architect.
+
+                Your task is to refine a previously generated directory summary based on
+                specific feedback that identifies weaknesses in the original summary.
+
+                {LANGUAGE_COMPATIBILITY_GUIDANCE}
+
+                REFINEMENT REQUIREMENTS:
+
+                - Preserve accurate language-specific terminology and distinctions.
+                - Do not rewrite structs, traits, interfaces, records, or other constructs
+                as classes unless that description is accurate.
+                - Do not introduce language-specific assumptions that are unsupported
+                by the supplied context.
+                - Preserve valid cross-file and cross-language relationships.
+                - Do not remove important responsibilities simply because they are
+                implemented in a different programming language.
+                - Correct inaccuracies and vagueness without changing technically
+                accurate information.
+                - Only make changes supported by the supplied evidence and feedback.
+                """),
                 ("user", f"""
                 DIRECTORY:
                 {current_directory}
