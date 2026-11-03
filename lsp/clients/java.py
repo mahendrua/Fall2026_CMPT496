@@ -6,7 +6,7 @@ from lsp_client.clients.jdtls import JdtlsClient
 
 
 class JavaClient(LSPClient):
-    """LSP adapter for go using goplsclient."""
+    """LSP adapter for Java using JdtlsClient."""
 
     def __init__(self, workspace_path: str | Path):
         super().__init__(

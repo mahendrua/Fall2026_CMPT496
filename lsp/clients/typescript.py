@@ -6,7 +6,7 @@ from lsp_client.clients.typescript import TypescriptClient
 
 
 class TypescriptClientAdapter(LSPClient):
-    """LSP adapter for go using goplsclient."""
+    """LSP adapter for typescript using TypescriptClient."""
 
     def __init__(self, workspace_path: str | Path):
         super().__init__(

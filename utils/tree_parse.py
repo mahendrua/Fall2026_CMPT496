@@ -29,13 +29,17 @@ _PYTHON_MODULE_SKIP_TYPES = frozenset({
 
 # Create language dictionary to associate file extensions with tree-sitter
 # language packs and desired S-expression queries for chunk extraction.
+
 LANGUAGE_DICT = {
+    # ---------------------------------------------------------
+    # C#
+    # ---------------------------------------------------------
     ".cs": {
         "name": "csharp",
         "query": """
             (method_declaration name: (identifier) @name) @chunk
             (constructor_declaration name: (identifier) @name) @chunk
-            (property_declaration name: (identifier) @name) @chunk
+            (property_declaration name: (_) @name) @chunk
         """,
         "container_type": "class_declaration",
         "property_type": "property_declaration",
@@ -45,6 +49,43 @@ LANGUAGE_DICT = {
             (file_scoped_namespace_declaration name: (_) @ns)
         """
     },
+
+    # ---------------------------------------------------------
+    # C
+    # ---------------------------------------------------------
+    ".c": {
+        "name": "c",
+        "query": """
+            (function_definition
+                declarator: (function_declarator
+                    declarator: (identifier) @name
+                )
+            ) @chunk
+        """,
+        "container_type": "struct_specifier",
+        "property_type": None,
+        "import_query": "(preproc_include) @import",
+        "namespace_query": ""
+    },
+
+    ".h": {
+        "name": "c",
+        "query": """
+            (function_definition
+                declarator: (function_declarator
+                    declarator: (identifier) @name
+                )
+            ) @chunk
+        """,
+        "container_type": "struct_specifier",
+        "property_type": None,
+        "import_query": "(preproc_include) @import",
+        "namespace_query": ""
+    },
+
+    # ---------------------------------------------------------
+    # JavaScript
+    # ---------------------------------------------------------
     ".js": {
         "name": "javascript",
         "query": """
@@ -55,8 +96,42 @@ LANGUAGE_DICT = {
         "container_type": "class_declaration",
         "property_type": "pair",
         "import_query": "(import_statement) @import",
-        "namespace_query": "" # JS has no namespaces, so this is left empty
+        "namespace_query": ""
     },
+
+    # ---------------------------------------------------------
+    # TypeScript
+    # ---------------------------------------------------------
+    ".ts": {
+        "name": "typescript",
+        "query": """
+            (function_declaration name: (identifier) @name) @chunk
+            (method_definition name: (property_identifier) @name) @chunk
+        """,
+        "container_type": "class_declaration",
+        "property_type": None,
+        "import_query": "(import_statement) @import",
+        "namespace_query": ""
+    },
+
+    # ---------------------------------------------------------
+    # TSX
+    # ---------------------------------------------------------
+    ".tsx": {
+        "name": "tsx",
+        "query": """
+            (function_declaration name: (identifier) @name) @chunk
+            (method_definition name: (property_identifier) @name) @chunk
+        """,
+        "container_type": "class_declaration",
+        "property_type": None,
+        "import_query": "(import_statement) @import",
+        "namespace_query": ""
+    },
+
+    # ---------------------------------------------------------
+    # Python
+    # ---------------------------------------------------------
     ".py": {
         "name": "python",
         "query": """
@@ -69,8 +144,53 @@ LANGUAGE_DICT = {
             (import_from_statement) @import
         """,
         "namespace_query": ""
+    },
+
+    # ---------------------------------------------------------
+    # Go
+    # ---------------------------------------------------------
+    ".go": {
+        "name": "go",
+        "query": """
+            (function_declaration name: (identifier) @name) @chunk
+            (method_declaration name: (field_identifier) @name) @chunk
+        """,
+        "container_type": None,
+        "property_type": None,
+        "import_query": "(import_declaration) @import",
+        "namespace_query": "(package_clause) @ns"
+    },
+
+    # ---------------------------------------------------------
+    # Rust
+    # ---------------------------------------------------------
+    ".rs": {
+        "name": "rust",
+        "query": """
+            (function_item name: (identifier) @name) @chunk
+        """,
+        "container_type": "impl_item",
+        "property_type": None,
+        "import_query": "(use_declaration) @import",
+        "namespace_query": ""
+    },
+
+    # ---------------------------------------------------------
+    # Java
+    # ---------------------------------------------------------
+    ".java": {
+        "name": "java",
+        "query": """
+            (method_declaration name: (identifier) @name) @chunk
+            (constructor_declaration name: (identifier) @name) @chunk
+        """,
+        "container_type": "class_declaration",
+        "property_type": None,
+        "import_query": "(import_declaration) @import",
+        "namespace_query": "(package_declaration) @ns"
     }
 }
+
 
 @dataclass
 class CodeBundle:
@@ -246,7 +366,17 @@ def get_chunks(bundle: CodeBundle) -> list[dict]:
         name_node = captures.get("name")[0]
 
         if chunk_node and name_node:
-            parent_container = get_container_name(chunk_node, config["container_type"])
+            if (
+                bundle.language == "go"
+                and chunk_node.type == "method_declaration"
+            ):
+                parent_container = get_go_method_receiver_name(chunk_node)
+            else:
+                parent_container = get_container_name(
+                    chunk_node,
+                    config["container_type"]
+                )
+                
             code_text = bundle.content[chunk_node.start_byte:chunk_node.end_byte].decode("utf-8")
             
             # Handle Property Grouping
@@ -396,6 +526,44 @@ def _python_module_body_chunks(
     return chunks
 
 
+
+def get_go_method_receiver_name(node: Node) -> str:
+    """
+    Extract the receiver type from a Go method declaration.
+
+    Go methods are siblings of their type declarations in the AST,
+    so their enclosing struct cannot be identified through ancestors.
+    """
+    if node.type != "method_declaration":
+        return "Global"
+
+    # The receiver is the first parameter_list in a method declaration.
+    receiver = next(
+        (
+            child
+            for child in node.named_children
+            if child.type == "parameter_list"
+        ),
+        None,
+    )
+
+    if receiver is None:
+        return "Global"
+
+    def find_type_identifier(current: Node) -> str | None:
+        if current.type == "type_identifier":
+            return current.text.decode("utf-8")
+
+        for child in current.named_children:
+            result = find_type_identifier(child)
+            if result:
+                return result
+
+        return None
+
+    return find_type_identifier(receiver) or "Global"
+
+
 def get_container_name(node: Node, container_type: str) -> str:
     """!
     @brief Identifies the parent container name for a given AST node.
@@ -416,7 +584,7 @@ def get_container_name(node: Node, container_type: str) -> str:
     current = node.parent
     
     while current:
-        if current.type == container_type:
+        if container_type is not None and current.type == container_type:
             # Look for the naming child (usually 'identifier' or 'property_identifier')
             for child in current.children:
                 if "identifier" in child.type:
