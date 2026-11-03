@@ -358,20 +358,50 @@ Analyze the file and produce:
 1. A concise summary, dependencies, top-level functions, and all type definitions
 2. UML-ready structured data and PlantUML diagrams
 3. Business rules evidenced by the code
-
 ### Type extraction
-Types may be: class, enum, interface, or struct.
+
+Identify all type definitions and declarations supported by the source language. Use the most accurate `kind` value from the schema:
+
+- `class`: Class declarations.
+- `enum`: Enumerations and equivalent enumerated types.
+- `interface`: Interfaces and interface-like declarations.
+- `struct`: Struct declarations and value-type structures.
+- `trait`: Rust traits and equivalent language constructs.
+- `union`: Union declarations.
+- `type_alias`: Explicit type aliases, such as TypeScript type aliases and Rust type aliases.
+- `named_type`: Named types that do not fit another category, such as Go named types when their underlying declaration does not establish a more specific category.
+- `record`: Record declarations and record-like types.
+- `other`: Named type constructs that cannot accurately be classified using the other categories.
+
+Do not force language-specific constructs into an inaccurate category.
 
 For each type:
-- provide a short description
-- list properties/fields with visibility (public, private, protected) and whether static
-- list methods/constructors with visibility, static flag, parameters (with direction: in, out, inout), and return type
-- list base classes in inherits_from
-- list enum values if applicable
-- generate a standalone PlantUML snippet describing the type
+- Provide a concise description of its purpose.
+- Identify its properties, fields, and other relevant data members.
+- Preserve the source language's visibility or access modifier where one exists. Use None when no meaningful visibility classification exists.
+- Identify methods and constructors where the language actually supports those concepts.
+- Record whether a member is static only when the language's semantics support that classification.
+- Include all parameters and their types when available.
+- Use `in` as the default parameter direction. Use `out` or `inout` only when the language explicitly supports those semantics and the source demonstrates them.
+- Include the return type when available.
+- List base classes, implemented interfaces, or equivalent inheritance relationships in `inherits_from`.
+- Include enum values where applicable.
+- Generate a standalone PlantUML snippet describing the type.
+
+Language-specific considerations:
+- Python functions and methods should not be assigned visibility modifiers unless the source provides a meaningful classification. Underscore naming conventions may be described but should not be treated as enforced access modifiers.
+- Go exported and unexported identifiers should retain their language-specific visibility distinctions.
+- Rust visibility modifiers, including `pub`, `pub(crate)`, and `pub(super)`, should be preserved.
+- C declarations should distinguish structs, unions, typedefs, and functions where supported by the source.
+- JavaScript: Identify classes, functions, and other declarations supported by JavaScript.
+- TypeScript: Identify classes, interfaces, enums, type aliases, and other supported declarations.
+- TSX: Apply TypeScript declaration rules while also accounting for JSX components and their props.
+- Java and C# records should use `record`.
+- Do not invent constructors. For example, a Go function named `NewExample` is not automatically a constructor, and a Rust associated function named `new` is not automatically a constructor.
+- Do not treat C's `static` linkage as a static class member.
+- Go named types should be classified according to their underlying declaration. A named struct should be classified as struct, a named interface as interface, and other named types as named_type when no more specific category applies.
 
 Constructor parameters must appear in the structured method entry exactly as in the PlantUML signature. Every method and constructor must include its full parameter list in the `parameters` field.
-
 ### Relationship extraction
 Five relationship types are supported, from the UML class diagram standard. The source is the type that has, holds or uses; the target is the other type.
 - inheritance: the source extends a base class or implements an interface (the target).
@@ -395,15 +425,38 @@ Relationship filtering:
 - Do not create relationships (other than inheritance) to generic containers, primitives, framework or library utilities, exceptions, or enum types.
 
 ### PlantUML rules
+
 For each type, the PlantUML must match the structured fields exactly.
-- `+` public, `-` private, `#` protected
-- Fields: `+name : Type`
-- Methods: `+method(in x : Type) : ReturnType`
-- Constructors: no return type
-- Static members: place `{{static}}` before the visibility symbol
-  Correct: `{{static}} +Name : Type`
-  Incorrect: `+{{static}} Name : Type`
-- Relationships, written source first: inheritance `Child --|> Parent` (`Class ..|> Interface` for an interface), composition `Whole *-- Part`, aggregation `Whole o-- Part`, association `Source --> Target`, dependency `Source ..> Target`
+
+Visibility mapping:
+- `public` and equivalent unrestricted public access: `+`
+- `private`: `-`
+- `protected`: `#`
+- Language-specific visibility that does not directly map to UML should be preserved in the structured output. Use the closest appropriate UML visibility symbol in the diagram without misrepresenting the original access semantics.
+- When visibility is None or cannot be meaningfully classified, do not invent a visibility modifier.
+- If a language-specific visibility modifier cannot be represented accurately using UML visibility symbols, omit the UML visibility symbol rather than inventing an equivalent.
+
+Fields:
+- `+name : Type`
+
+Methods:
+- `+method(in x : Type) : ReturnType`
+
+Constructors:
+- Do not include a return type.
+
+Static members:
+- Place `{{static}}` before the visibility symbol.
+- Correct: `{{static}} +Name : Type`
+- Incorrect: `+{{static}} Name : Type`
+
+Relationships, written source first:
+- Inheritance: `Child --|> Parent`
+- Interface implementation: `Class ..|> Interface`
+- Composition: `Whole *-- Part`
+- Aggregation: `Whole o-- Part`
+- Association: `Source --> Target`
+- Dependency: `Source ..> Target`
 
 ### File-level relationship diagram
 Generate `relationship_plantuml` as a standalone diagram with `@startuml`/`@enduml`.
