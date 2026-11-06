@@ -1,0 +1,6 @@
+node_modules/
+.venv/
+.next/
+**/.next/
+**/__pycache__/
+*.log

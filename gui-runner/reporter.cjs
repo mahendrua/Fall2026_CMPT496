@@ -10,6 +10,14 @@ function diagnoseFailure(errors, output) {
         || combined.match(/waiting for (locator\([^)]*\)[^\r\n]*)/)?.[1]
         || null;
 
+    if (/browser.*disconnected|browser.*closed|Target.*closed|page crashed|browser.*crash/i.test(combined)) {
+        return { category: "browser_infrastructure_failure", locator,
+            summary: "The browser or page closed unexpectedly; investigate a crash, resource exhaustion, or test-initiated closure before blaming the application." };
+    }
+    if (/strict mode violation/i.test(combined)) {
+        return { category: "selector_ambiguity", locator,
+            summary: "The locator matched multiple elements. Verify its accessible name and scope against the interface." };
+    }
     if (/APP_PAGE_ERROR:/.test(combined)) {
         return {
             category: "application_runtime_error",
@@ -24,6 +32,10 @@ function diagnoseFailure(errors, output) {
             summary: "The browser could not connect to the app or a requested network destination."
         };
     }
+    if (/page\.goto:.*(?:Timeout|ERR_|Invalid URL)|Cannot navigate to invalid URL/i.test(combined)) {
+        return { category: "navigation_failure", locator,
+            summary: "Navigation failed. Check BASE_URL, application readiness, route and network configuration before attributing an application defect." };
+    }
     if (
         /locator resolved to <[^>]+>/i.test(combined)
         && /intercepts pointer events|not visible|not enabled|not stable/i.test(combined)
@@ -33,6 +45,10 @@ function diagnoseFailure(errors, output) {
             locator,
             summary: "The locator matched an element, but Playwright could not interact with it. This is not evidence of an incorrect selector."
         };
+    }
+    if (/expect\(/i.test(combined) && /locator resolved to (?:<|[1-9])/i.test(combined)) {
+        return { category: "assertion_mismatch", locator,
+            summary: "The locator resolved, but the observed state did not satisfy the expectation. Verify the requirement before attributing an application defect." };
     }
     if (/locator resolved to 0 elements|waiting for locator|waiting for getBy(?:Role|Label|Text|Placeholder)/i.test(combined)) {
         return {
@@ -101,6 +117,17 @@ class GuiReporter {
             ...(result.stderr || []).map(chunk => ({ stream: "stderr", text: String(chunk).slice(0, 8000) }))
         ];
         const diagnostics = status === "failed" ? diagnoseFailure(errors, output) : null;
+        let screenshot = null;
+        for (const attachment of result.attachments || []) {
+            if (attachment.contentType !== "image/png") continue;
+            try {
+                const fs = require("node:fs");
+                if (attachment.path && fs.statSync(attachment.path).size > 256 * 1024) continue;
+                const data = attachment.body || fs.readFileSync(attachment.path);
+                if (data.length <= 256 * 1024) screenshot = `data:image/png;base64,${data.toString("base64")}`;
+            } catch { /* Missing evidence must not interrupt reporting. */ }
+            if (screenshot) break;
+        }
         const annotations = Object.fromEntries(
             [...(test.annotations || []), ...(result.annotations || [])]
                 .map(annotation => [annotation.type, annotation.description || ""])
@@ -113,6 +140,9 @@ class GuiReporter {
             file: test.location.file.split(/[\\/]/).pop(),
             status,
             duration: result.duration,
+            screenshot,
+            assumptions: [...(test.annotations || []), ...(result.annotations || [])]
+                .filter(annotation => annotation.type === "assumption").map(annotation => annotation.description),
             errors,
             output,
             diagnostics

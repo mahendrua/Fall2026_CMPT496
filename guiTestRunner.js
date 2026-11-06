@@ -221,8 +221,13 @@ function createProxyConfig(hostEntries) {
         lines.push(`acl ${domainAcl} dstdomain ${domains.join(" ")}`);
         lines.push(`acl ${portAcl} port ${ports.join(" ")}`);
         lines.push(`http_access allow ${domainAcl} ${portAcl}`);
+        // Squid otherwise strips Upgrade, breaking framework HMR and websocket-backed UIs.
+        // Keep upgrades scoped to the same destination and port as ordinary HTTP traffic.
+        lines.push(`http_upgrade_request_protocols websocket allow ${domainAcl} ${portAcl}`);
+        lines.push(`http_upgrade_request_protocols WebSocket allow ${domainAcl} ${portAcl}`);
     });
     lines.push("http_access deny all");
+    lines.push("http_upgrade_request_protocols OTHER deny all");
 
     return `${lines.join("\n")}\n`;
 }
@@ -286,6 +291,45 @@ function waitForPort(port, timeoutMs = 15000, signal) {
             });
         };
         attempt();
+    });
+}
+
+function probeLoopbackPort(port, timeoutMs = 2000) {
+    return new Promise(resolve => {
+        let settled = false;
+        const socket = net.createConnection({ host: "127.0.0.1", port });
+        const timeout = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            socket.destroy();
+            resolve({
+                category: "connection_timeout",
+                message: "The published event port did not accept a TCP connection before the diagnostic timeout."
+            });
+        }, timeoutMs);
+        socket.once("connect", () => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            socket.destroy();
+            resolve({
+                category: "websocket_handshake_or_policy",
+                message: "The published event port is reachable. The failure is likely in the WebSocket handshake or renderer connection policy."
+            });
+        });
+        socket.once("error", error => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timeout);
+            resolve({
+                category: error.code === "ECONNREFUSED"
+                    ? "connection_refused"
+                    : error.code === "ETIMEDOUT"
+                        ? "connection_timeout"
+                        : "socket_error",
+                message: `TCP connection to the published event port failed (${error.code || "unknown"}): ${error.message}`
+            });
+        });
     });
 }
 
@@ -425,7 +469,7 @@ class GuiTestRunner {
         this.imageReady = true;
     }
 
-    async start(selectedIds, allowedHosts, appUnderTest = null) {
+    async start(selectedIds, allowedHosts, appUnderTest = null, options = {}) {
         if (this.activeRun) {
             throw new Error("A GUI test run is already active.");
         }
@@ -448,7 +492,12 @@ class GuiTestRunner {
                 throw new Error("The app port must be between 1 and 65535.");
             }
             if (appUnderTest.mode === "host") {
-                appOptions = { mode: "host", port: appPort };
+                const protocol = appUnderTest.protocol || 'http:';
+                const basePath = appUnderTest.basePath || '/';
+                if (!['http:', 'https:'].includes(protocol) || typeof basePath !== 'string' || !basePath.startsWith('/') || basePath.startsWith('//') || /[\\\r\n]/.test(basePath)) {
+                    throw new Error('The application URL protocol or base path is invalid.');
+                }
+                appOptions = { mode: "host", port: appPort, protocol, basePath, framework: appUnderTest.framework || '' };
                 effectiveHosts = [...(Array.isArray(allowedHosts) ? allowedHosts : []), `host.docker.internal:${appPort}`];
             } else {
                 const appDirectory = path.resolve(String(appUnderTest.directory || ""));
@@ -617,18 +666,21 @@ class GuiTestRunner {
                 "--user", "10001:10001",
                 "--env", `GUI_SELECTED_FILES=${JSON.stringify(selectedPaths)}`,
                 "--env", "HOME=/tmp",
+                "--env", `GUI_DEMO_MODE=${options.demoMode === true ? "1" : "0"}`,
                 "--env", "HTTP_PROXY=http://gui-egress:3128",
                 "--env", "HTTPS_PROXY=http://gui-egress:3128",
                 "--env", "NO_PROXY=localhost,127.0.0.1,::1",
                 "--env", `GUI_EVENT_TOKEN=${run.eventToken}`,
                 "--env", `VNC_PASSWORD=${run.vncPassword}`,
+                ...(appOptions ? ['--env', 'GUI_APP_PREFLIGHT=1', '--env', `GUI_APP_FRAMEWORK=${appOptions.framework || ''}`] : []),
+                ...(appOptions?.mode === 'host' && appOptions.framework === 'next' ? ['--env', 'GUI_APP_LOOPBACK_RELAY=1'] : []),
                 ...(appOptions?.mode === "docker" ? [
                     "--env", `GUI_APP_HOST=gui-app`,
                     "--env", `GUI_APP_PORT=${appOptions.port}`,
                     "--env", `BASE_URL=http://gui-app:${appOptions.port}`
                 ] : appOptions?.mode === "host" ? [
-                    "--env", `BASE_URL=http://host.docker.internal:${appOptions.port}`,
-                    "--env", `GUI_SECURE_ORIGIN=http://host.docker.internal:${appOptions.port}`
+                    "--env", `BASE_URL=${appOptions.protocol}//host.docker.internal:${appOptions.port}${appOptions.basePath}`,
+                    ...(appOptions.protocol === 'http:' ? ['--env', `GUI_SECURE_ORIGIN=http://host.docker.internal:${appOptions.port}`] : [])
                 ] : []),
                 this.imageNames.runner
             ], { timeoutMs: 30000, signal: run.abortController.signal });
@@ -646,10 +698,11 @@ class GuiTestRunner {
             this.assertNotCancelled(run);
             this.monitorRun(run);
             const previewHash = new URLSearchParams({ password: run.vncPassword }).toString();
+            run.eventsUrl = `ws://127.0.0.1:${eventsPort}/${run.eventToken}`;
             return {
                 runId: run.name,
                 previewUrl: `http://127.0.0.1:${vncPort}/gui-preview.html#${previewHash}`,
-                eventsUrl: `ws://127.0.0.1:${eventsPort}/${run.eventToken}`
+                eventsUrl: run.eventsUrl
             };
         } catch (error) {
             await this.cleanupRun(run);
@@ -664,12 +717,21 @@ class GuiTestRunner {
     }
 
     async assertContainerRunning(containerId, label) {
-        const result = await runProcess("docker", [
-            "inspect", "--format", "{{.State.Running}}", containerId
-        ], { timeoutMs: 10000 });
-        if (result.stdout !== "true") {
+        let result;
+        try {
+            result = await runProcess("docker", [
+                "inspect", "--format", "{{.State.Running}}|{{.State.Status}}|{{.State.ExitCode}}", containerId
+            ], { timeoutMs: 10000 });
+        } catch (error) {
             const logs = await this.getContainerLogs(containerId);
-            throw new Error(`The ${label} container exited during startup.${logs}`);
+            throw new Error(`Could not inspect the ${label} container: ${error.message}${logs}`);
+        }
+        const [running, status, exitCode] = result.stdout.split("|");
+        if (running !== "true") {
+            const logs = await this.getContainerLogs(containerId);
+            throw new Error(
+                `The ${label} container exited during startup (state: ${status || "unknown"}, exit code: ${exitCode || "unknown"}).${logs}`
+            );
         }
     }
 
@@ -682,6 +744,38 @@ class GuiTestRunner {
         } catch (error) {
             return `\nCould not retrieve container output: ${error.message}`;
         }
+    }
+
+    async diagnoseEventStream(eventsUrl) {
+        const run = this.activeRun;
+        if (!run || run.eventsUrl !== eventsUrl) {
+            return {
+                category: "runner_unavailable",
+                message: "The active GUI test runner is no longer available to diagnose the event connection."
+            };
+        }
+
+        const endpoint = new URL(eventsUrl);
+        if (
+            endpoint.protocol !== "ws:" ||
+            endpoint.hostname !== "127.0.0.1" ||
+            Number(endpoint.port) < 1 ||
+            endpoint.pathname !== `/${run.eventToken}`
+        ) {
+            throw new Error("The GUI event stream diagnostic URL is invalid.");
+        }
+
+        const result = await probeLoopbackPort(Number(endpoint.port));
+
+        if (result.category === "websocket_handshake_or_policy") return result;
+        const [runnerLogs, proxyLogs] = await Promise.all([
+            this.getContainerLogs(run.containerId),
+            this.getContainerLogs(run.proxyContainerId)
+        ]);
+        return {
+            ...result,
+            message: `${result.message}${runnerLogs}${proxyLogs}`
+        };
     }
 
     async getPublishedPort(containerId, containerPort) {
@@ -731,12 +825,17 @@ class GuiTestRunner {
 
     monitorRun(run) {
         run.monitor = runProcess("docker", ["wait", run.containerId], { timeoutMs: 24 * 60 * 60 * 1000 })
-            .then(({ stdout }) => {
+            .then(async ({ stdout }) => {
+                if (run.cancelled || this.activeRun !== run) return;
                 const exitCode = Number(stdout);
+                const logs = exitCode === 0 ? "" : await this.getContainerLogs(run.containerId);
+                if (run.cancelled || this.activeRun !== run) return;
                 this.onEvent({
                     type: "runner_container_exit",
                     exitCode,
-                    message: exitCode === 0 ? "Playwright container finished." : `Playwright container exited with code ${exitCode}.`
+                    message: exitCode === 0
+                        ? "Playwright container finished."
+                        : `Playwright container exited with code ${exitCode}; this can reflect failed tests or a runner failure.${logs}`
                 });
             })
             .catch(error => {
@@ -800,6 +899,11 @@ class GuiTestRunner {
         return true;
     }
 
+    clearFiles() {
+        if (this.activeRun) throw new Error("Stop the current GUI test run before clearing it.");
+        this.uploadedFiles.clear();
+    }
+
     async waitForIdle() {
         const run = this.activeRun;
         if (run?.monitor) await run.monitor;
@@ -815,5 +919,6 @@ module.exports = {
     GuiTestRunner,
     createProxyConfig,
     normalizeAllowedHosts,
+    probeLoopbackPort,
     validateGuiTestFiles
 };

@@ -10,7 +10,8 @@ const {
     createAppEnvironment,
     detectFramework,
     getPreferredPort,
-    getLaunchOptions
+    getLaunchOptions,
+    isPortAvailable
 } = require("../guiLocalApp");
 
 test("selects dev before start and configures supported framework host ports", () => {
@@ -83,6 +84,18 @@ test("passes only a reduced environment to the local app", () => {
         if (previousSecret === undefined) delete process.env.GUI_TEST_SECRET;
         else process.env.GUI_TEST_SECRET = previousSecret;
     }
+});
+
+test("treats a port held only on 127.0.0.1 as unavailable", async () => {
+    const server = net.createServer();
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address();
+    try {
+        assert.equal(await isPortAvailable(port), false);
+    } finally {
+        await new Promise(resolve => server.close(resolve));
+    }
+    assert.equal(await isPortAvailable(port), true);
 });
 
 test("starts and stops a local npm app", async () => {

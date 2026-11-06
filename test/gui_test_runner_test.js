@@ -12,6 +12,14 @@ const {
     validateGuiTestFiles
 } = require("../guiTestRunner");
 
+test('framework websocket upgrades retain the exact HTTP destination allowlist', () => {
+    const config = createProxyConfig(['host.docker.internal:4321']);
+    assert.match(config, /http_upgrade_request_protocols websocket allow allowed_domain_0 allowed_port_0/);
+    assert.match(config, /acl allowed_port_0 port 4321/);
+    assert.match(config, /http_upgrade_request_protocols OTHER deny all/);
+    assert.doesNotMatch(config, /http_upgrade_request_protocols \S+ allow all(?:\s|$)/);
+});
+
 function fileRecord(directory, name, content) {
     const filePath = path.join(directory, name);
     fs.writeFileSync(filePath, content);
@@ -157,6 +165,34 @@ test("keeps uploaded test helpers in a shared relative layout", async () => {
             .find(file => file.relativePath === "helpers/session.ts");
         assert.equal(storedHelper.content.toString(), "export const session = true;");
     } finally {
+        await runner.dispose();
+        fs.rmSync(directory, { recursive: true, force: true });
+    }
+});
+
+test("clears uploaded files only when no run is active", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "gui-test-clear-"));
+    const specPath = path.join(directory, "login.spec.ts");
+    fs.writeFileSync(specPath, "import './test';");
+
+    const runner = new GuiTestRunner({
+        appRoot: directory,
+        resourcesPath: directory,
+        isPackaged: false,
+        onEvent: () => {}
+    });
+    try {
+        runner.addFiles([specPath]);
+        runner.activeRun = {};
+        assert.throws(() => runner.clearFiles(), /Stop the current GUI test run/);
+        assert.equal(runner.listFiles().length, 1);
+
+        runner.activeRun = null;
+        runner.clearFiles();
+        assert.deepEqual(runner.listFiles(), []);
+        assert.equal(runner.addFiles([specPath]).length, 1);
+    } finally {
+        runner.activeRun = null;
         await runner.dispose();
         fs.rmSync(directory, { recursive: true, force: true });
     }
