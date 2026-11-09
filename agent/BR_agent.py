@@ -505,10 +505,20 @@ class BRAgent:
 
         async def run_batch():
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
+
+            completed = 0
+            total = len(current_rules)
+
             async def guarded(rule: CondensedRule):
+                nonlocal completed
                 async with sem:
+
+                    progress(
+                        f"Validating rule {rule.id}/{total}: {rule.rule}",
+                        75
+                    )
                     ctx = rule_contexts.get(str(rule.id), {"code_context": [], "summary_context": [], "lsp_context": []})
-                    return await _validate_single_rule(
+                    result = await _validate_single_rule(
                         structured_llm,
                         rule,
                         ctx["code_context"],
@@ -516,6 +526,16 @@ class BRAgent:
                         ctx["lsp_context"],
                         is_final_pass,
                     )
+                
+                    completed += 1
+
+                    progress(
+                        f"Completed validation {completed}/{total} "
+                        f"(Rule {rule.id}): {rule.rule}",
+                        75 + int((completed / total) * 10)
+                    )
+
+                    return result
             return await asyncio.gather(
                 *(guarded(r) for r in current_rules)
             )
@@ -890,6 +910,21 @@ HOW TO USE LSP CONTEXT:
 - Do not interpret the existence of a symbol, definition, or reference as proof that a business constraint is enforced.
 - If LSP context is unavailable, ignore this section and make your decision using the available code and summary context.
 
+HOW TO INTERPRET SOURCE CODE:
+- The codebase may contain multiple programming languages, including C#, C,
+  JavaScript, TypeScript, TSX, Python, Go, Rust, and Java.
+- Interpret each retrieved code snippet according to the syntax and semantics
+  of its own programming language.
+- Do not assume that every language uses classes, methods, interfaces,
+  inheritance, or object-oriented programming.
+- Recognize language-specific constructs such as functions, structs, traits,
+  interfaces, records, enums, modules, components, and procedural code.
+- Account for language-specific validation and error-handling mechanisms.
+- Do not treat the absence of a particular construct, such as a class or
+  method, as evidence that a business rule is not implemented.
+- When multiple languages are represented in the retrieved context, evaluate
+  the evidence according to the language of each individual snippet.
+
 TASK:
 Determine whether the business rule above is supported by the retrieved code and summary context. Choose exactly one of three outcomes:
 
@@ -942,7 +977,29 @@ Expected output:
   "discard_reason": null
 }}
 
---- Example 2: DISCARD ---
+--- Example 2: VALID (Python) ---
+Rule: "A discount amount must not exceed the order total."
+Code context includes:
+  [CODE CHUNK]
+  File: orders.py
+  Container: apply_discount
+  Name: apply_discount
+  Content:
+    def apply_discount(order, discount):
+        if discount > order.total:
+            raise ValueError("Discount exceeds order total")
+        order.discount = discount
+Expected output:
+{{
+  "decision": "valid",
+  "explanation": {{
+    "evidence": {{"orders.py": ["if discount > order.total: raise ValueError(\\"Discount exceeds order total\\")"]}},
+    "reasoning": "The apply_discount function explicitly checks that the discount does not exceed the order total and raises a ValueError if it does, directly enforcing this business rule."
+  }},
+  "discard_reason": null
+}}
+
+--- Example 3: DISCARD ---
 Rule: "Users must verify their email before placing an order."
 Code context includes:
   [CODE CHUNK]
@@ -966,7 +1023,7 @@ Expected output:
   "discard_reason": "The PlaceOrder method validates the cart and creates the order without any email verification check. The file summary explicitly states no email verification logic is present. The rule is not supported."
 }}
 
---- Example 3: NEED MORE CONTEXT ---
+--- Example 4: NEED MORE CONTEXT ---
 Rule: "Tax is calculated based on the shipping destination's tax rate."
 Code context includes:
   [CODE CHUNK]

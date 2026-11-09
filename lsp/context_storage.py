@@ -161,6 +161,7 @@ def save_codebase_context(
         output_dir,
     )
 
+    logger.info("LSP context storage location: %s", storage_dir)
     storage_dir.mkdir(parents=True, exist_ok=True)
 
     context_data = {

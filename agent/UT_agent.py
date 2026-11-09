@@ -41,6 +41,12 @@ from agent.python_test_harness import (
     make_cases as make_python_cases,
     write_results as write_python_results,
 )
+
+from agent.javascript_test_harness import (
+    check_tests as check_javascript_tests,
+    make_cases as make_javascript_cases,
+    write_results as write_javascript_results,
+)
 from agent.testing_language import (
     detect_test_language,
     unit_test_generation_instructions
@@ -481,6 +487,34 @@ class UTAgent:
             )
 
             write_python_results(
+                test_run,
+                codebase_dir,
+                lambda case: dict(
+                    case.source.model_dump(),
+                    imports=case.imports,
+                    unit_test=case.body,
+                ),
+            )
+
+        elif state["target_language"] == "javascript":
+            cases, rejected = make_javascript_cases(
+                "UT",
+                test_items,
+                body_of=lambda test: test.unit_test,
+                imports_of=lambda test: test.imports,
+            )
+
+            test_run = check_javascript_tests(
+                "Unit",
+                "UT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_dir,
+            )
+
+            write_javascript_results(
                 test_run,
                 codebase_dir,
                 lambda case: dict(

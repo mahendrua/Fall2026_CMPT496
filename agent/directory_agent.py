@@ -842,62 +842,192 @@ Show how the parts connect and the overall shape of the system, not just what ea
 
             formatted_file_summaries = "\n\n".join(directory_file_summaries)
 
-            system_message = f"""You are a business analyst extracting business rules
-            and domain policies from a software system.
+            
+            system_message = f"""You are a senior business analyst analyzing the behavior of a software system.
 
-            Your task is to identify rules that exist between files — policies,
-            constraints, or behaviors that emerge when multiple files or components
-            are considered together.
+            Your task is to identify meaningful business rules that emerge from the
+            interaction of multiple files or components within the current directory.
+
+            A directory-level business rule must describe a meaningful constraint,
+            policy, calculation, or behavioral requirement that is established through
+            the combined behavior of multiple files.
+
+            Be selective: return a rule only when it is a meaningful,
+            independently testable domain policy about what the product accepts,
+            rejects, calculates, permits, or does. Do not treat every technical
+            condition or cross-file interaction as a business rule.
 
             {LANGUAGE_COMPATIBILITY_GUIDANCE}
 
-            Focus strictly on domain behavior and constraints that the system
-            actually enforces, regardless of the programming languages used.
-            Do not confuse implementation details with business rules.
+            CORE REQUIREMENTS:
+
+            - Focus on behavior that emerges from interactions between multiple files.
+            - Identify what the software does, requires, permits, or prevents.
+            - Do not mistake architectural relationships, dependencies, or shared
+            implementation details for business rules.
+            - Do not repeat rules that are entirely implemented within one file.
+            - Do not assume that a behavior is enforced merely because one file
+            references or depends on another.
+            - Base every rule on the supplied file summaries and directory summary.
+            - Be conservative when inferring behavior. Unsupported assumptions
+            must not be presented as system requirements.
             """
 
+            prompt = f"""DIRECTORY:
+            {current_dir}
 
-            prompt = f"""DIRECTORY: {current_dir}
+            DIRECTORY SUMMARY:
+            {directory_summary.purpose}
 
-                        DIRECTORY SUMMARY:
-                        {directory_summary.purpose}
+            FILE-LEVEL SUMMARIES:
+            {formatted_file_summaries}
 
-                        FILE-LEVEL SUMMARIES FOR THIS DIRECTORY:
-                        {formatted_file_summaries}
+            TASK:
 
-                        TASK:
-                        Identify the business rules that exist *between* files — policies, constraints, or behaviors that only emerge when multiple files or components are considered together
-                        A business rule is a constraint, policy, or behavior that the system guarantees to its users — stated in terms of WHAT the system does, not HOW the code implements it.
-                        Do not list rules that are entirely contained within a single file.
+            Identify meaningful business rules that emerge from the combined behavior
+            of multiple files within this directory.
 
-                        State rules in plain language that a non-technical stakeholder could understand.
+            A cross-file business rule describes a constraint, policy, calculation,
+            or behavioral requirement that depends on how multiple files or components
+            work together.
 
-                        OBSERVED RULES:
-                        Rules that are directly and explicitly evidenced by the file summaries above.
-                        List each as a single, concrete statement of what the system requires, allows, or prevents across multiple files.
+            The objective is not to collect all rules mentioned in the file summaries.
+            It is to identify additional rules that can only be understood by considering
+            the combined behavior of multiple files.
 
-                        INFERRED RULES:
-                        Rules that are implied by the system's behavior across the files but not explicitly named.
-                        Begin each entry with "Inference:" and describe the implied rule in plain, non-technical language.
+            ### 1. What qualifies as a cross-file business rule
 
-                        EXAMPLES OF GOOD CROSS-FILE BUSINESS RULES:
-                        - "A user cannot place an order unless their account has been verified and their payment method has been approved."
-                        - "Discount codes can only be applied once per customer per transaction, and the discount amount must not exceed the order total."
-                        - "All exported reports must use the same currency format and rounding rules that are applied during transaction processing."
+            Extract a rule when multiple files collectively establish meaningful
+            application behavior, such as:
 
-                        EXAMPLES OF BAD RULES (do NOT produce these):
-                        - "Every row must have the same number of columns as the header." (this is a single-file rule, not cross-file)
-                        - "The From<T> method uses reflection to map properties." (describes implementation mechanism)
-                        - "GetTextWidth calculates Unicode-aware widths." (technical implementation detail)
-                        - "The validation rules defined in the configuration module are enforced by the processing module." (describes code architecture, not a business rule)
-                        - "The system provides functionality for data processing." (too vague)
+            - A validation requirement performed in one component that determines
+            whether another component can process or accept an entity.
+            - A domain policy that is applied consistently across multiple operations.
+            - A calculation or transformation whose inputs, processing, and resulting
+            behavior are distributed across multiple components.
+            - A workflow constraint where one component's outcome determines whether
+            another component may proceed.
+            - A shared domain constraint that affects multiple operations or subsystems.
+            - A data consistency requirement that is established through the interaction
+            of multiple components.
 
-                        CONSTRAINTS:
-                        - Do not fabricate rules. Every rule must be grounded in the provided summaries.
-                        - If no cross-file buisness rules are visible, return empty lists — do not put business rules that are conatained to a single file.
-                        - Be specific. Instead of "enforces validation", say what is validated and what the constraint is.
-                        - Prefer plain, non-technical language. Avoid referencing programming constructs like method signatures, design patterns, or language-specific features.
-                        - Do not give evidence or reasoning in the output — only list the rules themselves in the structured format."""
+            The rule must describe the resulting behavior or constraint, not merely
+            the fact that the files interact.
+
+            ### 2. What must NOT be extracted
+
+            Do not produce rules that:
+
+            - Are entirely contained within one file.
+            - Simply restate a file-level business rule.
+            - Combine unrelated file-level rules without a meaningful relationship.
+            - Describe class responsibilities, module organization, or dependencies.
+            - Describe how data is passed between functions without establishing
+            a meaningful behavioral constraint.
+            - Describe internal implementation mechanisms or programming decisions.
+            - Describe logging, retries, timeouts, file formats, parsing details,
+            data structures, caches, generic error handling, or framework/API
+            conventions unless they directly enforce a domain policy.
+            - Promote programmer-chosen constants, limits, defaults, or branches
+            to domain requirements without evidence that they represent product
+            policy.
+            - Assume that two components enforce the same policy merely because
+            their summaries describe similar functionality.
+            - Infer a complete workflow when the supplied summaries only establish
+            isolated parts of that workflow.
+            - Describe expected or ideal behavior that is not supported by the
+            supplied information.
+
+            A rule does not become a cross-file business rule simply because
+            similar behavior appears in multiple files.
+
+            ### 3. Observed rules
+
+            Observed rules must be directly supported by the supplied file summaries.
+
+            - Identify the multiple files whose combined behavior establishes the rule.
+            - Describe the actual constraint, policy, or behavior.
+            - Preserve relevant conditions and exceptions.
+            - Do not add assumptions about behavior that is not described.
+            - Do not classify a single-file rule as observed merely because another
+            file references the same functionality.
+
+            ### 4. Inferred rules
+
+            Inferred rules may describe behavior that is not explicitly stated in
+            the summaries but follows reasonably from the combined evidence.
+
+            Only include an inferred rule when:
+
+            - Multiple files provide evidence for the same underlying behavior.
+            - Their responsibilities or interactions support the inference.
+            - The inferred behavior is a reasonable consequence of the supplied evidence.
+            - The inference does not depend on undocumented assumptions.
+
+            Do not emit inferred rules merely to fill the output. If the combined
+            evidence does not establish a specific domain policy, return no
+            inferred rule.
+
+            Begin every inferred rule with "Inference:".
+
+            Do not infer:
+            - User requirements that are not represented in the implementation.
+            - Validation or enforcement that is not demonstrated by the supplied evidence.
+            - Transactional guarantees, security guarantees, or data consistency guarantees
+            without supporting evidence.
+            - Relationships between components that do not establish a behavioral rule.
+
+            Prefer returning no inferred rules over producing speculative ones.
+
+            ### 5. Rule granularity and deduplication
+
+            - Create one rule for each independently meaningful cross-file policy
+            or behavioral constraint.
+            - Combine related conditions when they contribute to the same behavior.
+            - Do not create separate rules for individual steps of one workflow.
+            - Do not repeat a rule using different wording.
+            - Do not produce multiple rules that express the same underlying constraint.
+            - Preserve distinct rules when they govern different behaviors or outcomes.
+            - Combine related conditions that describe one policy; split them only
+            when they are independently testable domain requirements.
+            - Keep each rule concise, specific, and understandable without reading code.
+
+            ### 6. Language and architecture neutrality
+
+            Apply these criteria consistently regardless of programming language.
+
+            - Multiple files may use different programming languages.
+            - Cross-language interactions may establish meaningful business rules.
+            - Do not assume object-oriented architecture.
+            - Do not assume that similarly named types or functions have identical
+            responsibilities across languages.
+            - Recognize behavior implemented through functions, classes, modules,
+            services, interfaces, structs, traits, or other language-specific constructs.
+            - Do not infer runtime communication or execution order from structural
+            relationships alone.
+
+            ### 7. Output requirements
+
+            OBSERVED RULES:
+            List only directly supported cross-file business rules.
+
+            INFERRED RULES:
+            List only carefully justified inferences that follow from the combined evidence.
+            Begin each entry with "Inference:".
+
+            For both categories:
+
+            - Use one concise, standalone statement per rule.
+            - Describe what the system does or requires, not how the code implements it.
+            - Avoid technical implementation terminology unless essential.
+            - Do not include explanations, evidence citations, or reasoning in the output.
+
+            If no meaningful cross-file business rules can be established,
+            return empty observed_rules and inferred_rules lists.
+
+            An empty result is valid and preferable to inventing rules.
+            """
+
 
             messages = [("system", system_message), ("user", prompt)]
             output = structured_llm.invoke(messages)

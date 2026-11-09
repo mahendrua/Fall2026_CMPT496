@@ -8,7 +8,38 @@ from pathlib import Path
 
 from agent.crawl_config import prune
 
-_LANGUAGE_SUFFIXES = {".py": "python", ".cs": "csharp"}
+LANGUAGE_CONFIG = {
+    "python": {
+        "suffixes": {".py"},
+        "framework": "pytest",
+        "body_patterns": (
+            re.compile(r"\b(?:async\s+)?def\s+test_\w+"),
+            re.compile(r"\b(?:import\s+pytest\b|from\s+pytest\b)"),
+        ),
+    },
+    "csharp": {
+        "suffixes": {".cs"},
+        "framework": "xunit",
+        "body_patterns": (
+            re.compile(r"\[\s*(?:Fact|Theory)\s*\]"),
+            re.compile(r"\busing\s+[\w.]+"),
+        ),
+    },
+    "javascript": {
+        "suffixes": {".js", ".jsx", ".mjs", ".cjs"},
+        "framework": "vitest",
+        "body_patterns": (
+            re.compile(r"\b(?:describe|it|test|expect)\s*(?:\.\w+)?\s*\("),
+            re.compile(r"\b(?:vi|vitest)\."),
+        ),
+    },
+}
+
+_LANGUAGE_SUFFIXES = {
+    suffix: language
+    for language, config in LANGUAGE_CONFIG.items()
+    for suffix in config["suffixes"]
+}
 # Bounded suffix inspection only. Academic labs are small; exceeding this
 # without a unique language is treated as undecidable rather than guessed.
 PROJECT_LANGUAGE_SCAN_LIMIT = 2000
@@ -35,11 +66,19 @@ def detect_test_language(
         if Path(source_path).suffix.lower() in _LANGUAGE_SUFFIXES
     }
 
-    if suffixes == {".py"}:
-        return "python"
+    languages = {
+        _LANGUAGE_SUFFIXES[suffix]
+        for suffix in suffixes
+    }
 
-    if suffixes == {".cs"}:
-        return "csharp"
+    if len(languages) == 1:
+        return next(iter(languages))
+
+    if len(languages) > 1:
+        raise ValueError(
+            "Unit-test generation currently supports one language at a time. "
+            f"Found source types: {', '.join(sorted(suffixes))}."
+        )
 
     if suffixes:
         raise ValueError(
@@ -115,18 +154,26 @@ def _project_source_language(codebase_path: str) -> str:
                 continue
             found.add(language)
             if len(found) > 1:
+                detected = ", ".join(sorted(found))
                 raise ValueError(
                     "Cannot determine a test language because the project "
-                    "contains both Python and C# source files."
+                    f"contains multiple source languages: {detected}"
                 )
 
     if found == {"python"}:
         return "python"
     if found == {"csharp"}:
         return "csharp"
+    
+
+    if len(found) == 1:
+        return next(iter(found))
+    
+    supported = ", ".join(sorted(LANGUAGE_CONFIG))
+
     raise ValueError(
         "Cannot determine a test language because the project contains no "
-        "Python or C# source files."
+        f"supported source files. Supported languages: {supported}"
     )
 
 
@@ -175,49 +222,61 @@ def _path_language_from_tests(tests) -> str | None:
         raise
 
 
-def _body_signals(text: str) -> tuple[bool, bool]:
+def _body_signals(text: str) -> set[str]:
     visible = _without_comments_and_strings(text)
-    python = bool(
-        _PYTHON_TEST_DEF.search(visible) or _PYTHON_PYTEST_IMPORT.search(visible)
-    )
-    csharp = bool(
-        _CSHARP_XUNIT_ATTR.search(visible) or _CSHARP_USING.search(visible)
-    )
-    return python, csharp
+    detected = set()
 
+    for language, config in LANGUAGE_CONFIG.items():
+        if any(
+            pattern.search(visible)
+            for pattern in config["body_patterns"]
+        ):
+            detected.add(language)
+
+    # The Vitest import contains a string literal, so inspect the original
+    # text separately rather than the comment/string-stripped text.
+    if re.search(
+        r"\bfrom\s*['\"]vitest['\"]"
+        r"|\brequire\s*\(\s*['\"]vitest['\"]\s*\)",
+        text,
+    ):
+        detected.add("javascript")
+
+    return detected
 
 def _body_language_from_tests(tests) -> str | None:
-    saw_python = False
-    saw_csharp = False
+    detected_languages = set()
 
     for test in tests:
-        python, csharp = _body_signals(_test_source_text(test))
-        if python and csharp:
+        signals = _body_signals(_test_source_text(test))
+
+        if len(signals) > 1:
+            detected = ", ".join(sorted(signals))
             raise ValueError(
                 "Cannot determine a test language because a generated test "
-                "mixes Python and C# syntax."
+                f"contains conflicting language markers: {detected}."
             )
-        saw_python = saw_python or python
-        saw_csharp = saw_csharp or csharp
 
-    if saw_python and saw_csharp:
+        detected_languages.update(signals)
+
+    if len(detected_languages) > 1:
+        detected = ", ".join(sorted(detected_languages))
         raise ValueError(
             "Cannot determine a test language because the generated tests "
-            "mix Python and C# syntax."
+            f"mix multiple languages: {detected}."
         )
-    if saw_python:
-        return "python"
-    if saw_csharp:
-        return "csharp"
-    return None
 
+    if detected_languages:
+        return next(iter(detected_languages))
+
+    return None
 
 def detect_unit_test_language(tests) -> str:
     """
     Determine the harness language for already generated unit tests.
 
-    Combines source-file suffixes with pytest/xUnit body evidence.
-    Contradictory or missing evidence is rejected; C# is never a default.
+    Combines source-file suffixes with language-specific test-framework
+    evidence. Contradictory or missing evidence is rejected.
     """
     if not tests:
         raise ValueError(
@@ -238,9 +297,11 @@ def detect_unit_test_language(tests) -> str:
     if body_language:
         return body_language
 
+    supported = ", ".join(sorted(LANGUAGE_CONFIG))
+
     raise ValueError(
         "Cannot determine a test language because the generated tests "
-        "do not identify Python or C#."
+        f"do not identify a supported language: {supported}."
     )
 
 
@@ -295,4 +356,105 @@ C# / XUNIT REQUIREMENTS:
 - Do not use Moq, FluentAssertions, or other test packages.
 """
 
+    if target_language == "javascript":
+        return """
+JAVASCRIPT / VITEST REQUIREMENTS:
+- Generate exactly one complete Vitest test block in `unit_test`.
+- Use `it(...)` or `test(...)` to define the test.
+- Use `expect(...)` for assertions.
+- Put every required JavaScript import statement in the `imports` array,
+  one complete import statement per entry.
+- Import Vitest functions explicitly:
+  `import { describe, it, expect } from "vitest";`
+- Import only real functions, classes, and modules shown in the supplied
+  source context. Do not invent exports, paths, or APIs.
+- Source files are located relative to the codebase root.
+- Generated test files will be placed in a temporary directory directly
+  inside the codebase root.
+- When importing a source file, use a relative path beginning with `../`
+  followed by its codebase-relative path.
+  For example, if the source file is `src/calculator.js`, use
+  `import { add } from "../src/calculator.js";`.
+- Do not use machine-specific absolute paths.
+- Use valid JavaScript syntax. Do not use TypeScript-only syntax.
+- Use asynchronous tests only when the source behavior requires them.
+- Do not use Jest-specific APIs or assume Jest is installed.
+- Do not modify package configuration or install dependencies.
+- Do not use C# syntax, xUnit attributes, Python syntax, or pytest.
+"""
+
     raise ValueError(f"Unsupported unit-test language: {target_language}")
+
+
+
+
+
+def integration_test_generation_instructions(target_language: str) -> str:
+    """Return language-specific instructions for integration-test generation."""
+
+    if target_language == "python":
+        return """
+PYTHON / PYTEST INTEGRATION TEST REQUIREMENTS:
+
+- Generate exactly one complete, top-level pytest test function.
+- Name the function using the test_* naming convention.
+- Return the complete test function in the integration_test field.
+- Use ordinary Python assert statements.
+- Put every required Python import in the imports array.
+- Each imports entry must be a complete Python import statement.
+- Import only real modules, functions, and classes supported by the
+  supplied source context.
+- Test interactions between multiple application components where possible.
+- Exercise the actual workflow rather than testing an isolated function.
+- Use temporary data or isolated test data where appropriate.
+- Do not invent APIs, classes, methods, or module paths.
+- Do not use unittest unless the existing project architecture requires it.
+- Do not use C# syntax, xUnit, JavaScript syntax, or Vitest.
+"""
+
+    if target_language == "csharp":
+        return """
+C# / XUNIT INTEGRATION TEST REQUIREMENTS:
+
+- Generate exactly one complete xUnit integration test method.
+- Include the appropriate [Fact] or [Theory] attribute.
+- Return the complete test method in the integration_test field.
+- Put every required C# using directive in the imports array.
+- Each imports entry must be a complete using directive, including its
+  semicolon.
+- Use only xUnit assertions and public APIs supported by the supplied
+  source context.
+- Test interactions between multiple application components where possible.
+- Exercise the actual workflow rather than testing an isolated method.
+- Use the application's existing dependency injection and service
+  architecture when supported by the retrieved context.
+- Do not invent classes, constructors, methods, or namespaces.
+- Do not use Moq, FluentAssertions, or other additional test packages.
+"""
+
+    if target_language == "javascript":
+        return """
+JAVASCRIPT / VITEST INTEGRATION TEST REQUIREMENTS:
+
+- Generate exactly one complete Vitest test block.
+- Use it(...) or test(...) to define the integration test.
+- Use expect(...) for assertions.
+- Return the complete test block in the integration_test field.
+- Put every required JavaScript import statement in the imports array.
+- Each imports entry must be a complete JavaScript import statement.
+- Import Vitest functions explicitly when required:
+  import { describe, it, expect } from "vitest";
+- Import only real modules, functions, and classes supported by the
+  supplied source context.
+- Use valid JavaScript syntax, not TypeScript-only syntax.
+- Test interactions between multiple application components where possible.
+- Exercise the actual workflow rather than testing an isolated function.
+- Do not invent exports, module paths, or APIs.
+- Do not use Jest-specific APIs or assume Jest is installed.
+- Do not modify package configuration or install dependencies.
+- Do not use C# syntax, xUnit, Python syntax, or pytest.
+"""
+
+    raise ValueError(
+        f"Unsupported integration-test language: {target_language}"
+    )

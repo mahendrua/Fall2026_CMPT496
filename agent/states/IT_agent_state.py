@@ -61,9 +61,10 @@ class ITGraphState(TypedDict):
         TestRun from agent/test_harness.py: which integration tests were kept, repaired,
         dropped, passed and failed. Set by the runner node.
     """
+    target_language: str
     validated_rules: list[ValidatedRule]
     integration_tests: list[IntegrationTest]
-    workflow_contexts: dict[int, dict]
+    workflow_contexts: dict[str, dict]
     workflow_groups: list[WorkflowGroup]
     test_imports: set
     test_path: str

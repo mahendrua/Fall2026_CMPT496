@@ -34,14 +34,13 @@ class WorkflowGroups(BaseModel):
     workflows: list[WorkflowGroupOutput]
 
 class IntegrationTest(BaseModel):
-    """
-    @brief Represents a generated integration test for a complete business workflow.
-    """
     model_config = ConfigDict(extra="forbid")
-    workflow_name: str = Field(...,description="Name of the workflow this integration test validates.")
-    workflow_description: str = Field(...,description="Description of the workflow being tested.")
-    rule_ids: list[int] = Field(default_factory=list,description="Business rule IDs covered by this workflow test.")
+
+    workflow_name: str
+    workflow_description: str
+    rule_ids: list[int] = Field(default_factory=list)
     imports: list[str] = Field(default_factory=list)
+    source_file_paths: list[str] = Field(default_factory=list)
 
     @field_validator("imports")
     @classmethod
@@ -51,15 +50,18 @@ class IntegrationTest(BaseModel):
         for imp in imports:
             imp = imp.strip()
 
-            if imp.startswith("using "):
-                imp = imp[6:]
-
-            imp = imp.rstrip(";")
-
-            if "/" in imp or "\\" in imp:
+            if not imp:
                 continue
+
+            # Normalize C# using directives.
+            if imp.startswith("using "):
+                imp = imp[6:].rstrip(";").strip()
+
+                if "/" in imp or "\\" in imp:
+                    continue
 
             cleaned.append(imp)
 
         return cleaned
-    integration_test: str = Field(...,description="Executable integration test method for the workflow.")
+
+    integration_test: str

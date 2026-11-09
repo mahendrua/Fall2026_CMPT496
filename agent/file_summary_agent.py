@@ -469,6 +469,14 @@ Extract business rules that are **directly evidenced** by code in this file.
 
 A business rule is a constraint, policy, threshold, validation, access control check, or behavioral requirement **that governs how the software product behaves for its users or within its problem domain**.
 
+Do not treat every condition, error check, default, constant, or transformation
+as a business rule. Include a candidate only when it expresses a meaningful,
+independently testable domain policy or requirement about the product's data,
+users, or workflow. It must affect what the product accepts, rejects,
+calculates, permits, or does in a domain-relevant situation. A technical
+implementation detail is not a business rule merely because it is enforced by
+code.
+
 **Do NOT extract** operational, infrastructure, or DevOps rules such as:
 - CI/CD pipeline configuration (branch triggers, build matrix, deployment gates)
 - Build system settings (SDK versions, build configurations, restore steps)
@@ -478,10 +486,18 @@ A business rule is a constraint, policy, threshold, validation, access control c
 
 These are development-process rules, not product business rules. If a file contains only infrastructure or DevOps configuration (e.g., CI/CD YAML, build scripts, deployment manifests), return an empty business rules list.
 
+Also exclude technical behavior that does not express a domain policy, including
+logging, retries, timeouts, file formats, parsing details, internal data
+structures, cache behavior, generic error handling, and framework or API
+conventions. Describe a constraint only when the code shows it governs domain
+behavior; do not promote a programmer-chosen limit or default into a product
+requirement without domain evidence.
+
 Rules:
-- Treat domain-specific constants, conversion formulas, format-selection conditions,
-  ranges, thresholds, and input/output constraints as business rules when they
-  determine how the program behaves.
+- Treat a constant, formula, condition, range, threshold, or input/output
+    constraint as a business rule only when it defines a domain policy or
+    domain-specific outcome. Do not emit a separate rule for every branch or
+    implementation constant.
 - Describe requirements as behaviors observed in the current
   implementation, not as universal requirements for all
   possible implementations.
@@ -489,12 +505,11 @@ Rules:
   names, or design choices are instructor-defined requirements.
 - When the original specification is unavailable, do not claim
   that an extracted rule is required by the assignment.
-- Do not return an empty business-rule list merely because the code is made of
-  small pure functions or does not raise exceptions.
-- If the file defines domain behaviour through numeric constants or conditional
-  transformations, extract a separate concise rule for each distinct behaviour.
-- Return an empty list only when the file truly contains no domain constraint,
-  policy, calculation rule, validation rule, or behavioural requirement.
+- Return an empty list when the file contains only technical behavior or when
+    no meaningful domain policy or requirement is directly evidenced. Empty is
+    preferable to classifying implementation details as business rules.
+- Combine conditions that express one domain policy; split them only when they
+    represent independently testable domain requirements.
 - Only extract rules supported by code you can see. Do not speculate about cross-file behavior.
 - For each rule, provide a concise statement of the business rule
 - If no business rules are evident, return an empty list.
@@ -511,6 +526,17 @@ if (order.Items.Count == 0)
 Return:
 - rule: "Order total must be non-negative"
 - rule: "An order must contain at least one item to be processed"
+
+Negative example — do NOT extract technical implementation behavior:
+Given this code:
+```python
+if len(items) > 100:
+    items = items[:100]
+logger.info("processed")
+```
+Do not call the list-size limit a business rule unless the source establishes
+that 100 is a domain policy. Logging is not a business rule. Return an empty
+list for these behaviors alone.
 
 Negative example — do NOT extract rules like these:
 Given this CI/CD configuration:
