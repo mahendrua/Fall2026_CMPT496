@@ -1,0 +1,16 @@
+[
+  {
+    "id": 901,
+    "rule": "The calculator must return the sum of two integers.",
+    "imports": [
+      "import org.junit.jupiter.api.Test;",
+      "import static org.junit.jupiter.api.Assertions.*;"
+    ],
+    "source_directory": "",
+    "source_file_paths": [
+      "src/main/java/Calculator.java"
+    ],
+    "unit_test": "@Test\nvoid testAddition() {\n    Calculator calculator = new Calculator();\n    assertEquals(5, calculator.add(2, 3));\n    assertEquals(0, calculator.add(-2, 2));\n}",
+    "test_mode": "function"
+  }
+]

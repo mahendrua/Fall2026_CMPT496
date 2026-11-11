@@ -50,6 +50,14 @@ from agent.python_test_harness import (
     make_cases as make_python_cases,
     write_results as write_python_results,
 )
+
+from agent.java_test_harness import (
+    check_tests as check_java_tests,
+    make_cases as make_java_cases,
+    make_fixer as make_java_fixer,
+    write_results as write_java_results,
+)
+
 MAX_CONCURRENCY = 10
 DEFAULT_CODEBASE_K = 30
 DEFAULT_FILE_SUMMARY_K = 15
@@ -856,6 +864,15 @@ class ITAgent:
                 imports_of=lambda test: test.imports,
             )
 
+        elif target_language == "java":
+            cases, rejected = make_java_cases(
+                "IT",
+                list(enumerate(integration_tests, 1)),
+                body_of=lambda test: test.integration_test,
+                imports_of=lambda test: test.imports,
+                codebase_path=codebase_path,
+            )
+
         else:
             raise ValueError(
                 f"Unsupported integration-test language: {target_language}"
@@ -933,7 +950,7 @@ class ITAgent:
                 ),
             )
 
-        else:  # JavaScript
+        elif target_language == "javascript":
 
             test_run = check_javascript_tests(
                 "Integration",
@@ -955,6 +972,35 @@ class ITAgent:
                     imports=case.imports,
                     integration_test=case.body,
                 ),
+            )
+
+        elif target_language == "java":
+
+            test_run = check_java_tests(
+                "Integration",
+                "IT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_dir,
+                fix=make_java_fixer(self.llm, context_for),
+                loop=self._loop,
+            )
+
+            write_java_results(
+                test_run,
+                codebase_dir,
+                lambda case: dict(
+                    case.source.model_dump(),
+                    imports=case.imports,
+                    integration_test=case.body,
+                ),
+            )
+
+        else:
+            raise ValueError(
+                f"Unsupported integration-test language: {target_language}"
             )
 
         progress(test_run.message(), 100, True)

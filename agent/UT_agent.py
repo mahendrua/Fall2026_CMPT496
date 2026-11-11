@@ -47,6 +47,15 @@ from agent.javascript_test_harness import (
     make_cases as make_javascript_cases,
     write_results as write_javascript_results,
 )
+
+
+from agent.java_test_harness import (
+    check_tests as check_java_tests,
+    make_cases as make_java_cases,
+    make_fixer as make_java_fixer,
+    write_results as write_java_results,
+)
+
 from agent.testing_language import (
     detect_test_language,
     unit_test_generation_instructions
@@ -115,7 +124,7 @@ class UTAgent:
 
         return builder.compile()
 
-    def run(self, validated_rules: list[ValidatedRule], codebase_name: str, codebase_path: str, lsp_context: list[str] | None = None):
+    def run(self, validated_rules: list[ValidatedRule], codebase_name: str, codebase_path: str, lsp_context: CodebaseContext | None = None):
         """
         @brief Executes the UTAgent workflow.
         @param input_rules Dictionary of validated business rules from BR_agent output. Keys are file or directory paths,
@@ -524,6 +533,41 @@ class UTAgent:
                 ),
             )
 
+        elif state["target_language"] == "java":
+            cases, rejected = make_java_cases(
+                "UT",
+                test_items,
+                body_of=lambda test: test.unit_test,
+                imports_of=lambda test: test.imports,
+                codebase_path=codebase_path,
+            )
+
+            def context_for(case):
+                ctx = rule_contexts.get(str(case.source.id), {})
+                return "\n\n".join(ctx.get("code_context", []))
+
+            test_run = check_java_tests(
+                "Unit",
+                "UT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_dir,
+                fix=make_java_fixer(self.llm, context_for),
+                loop=self._loop,
+            )
+
+            write_java_results(
+                test_run,
+                codebase_dir,
+                lambda case: dict(
+                    case.source.model_dump(),
+                    imports=case.imports,
+                    unit_test=case.body,
+                ),
+            )
+
         else:
             cases, rejected = make_csharp_cases(
                 "UT",
@@ -656,7 +700,7 @@ async def _generate_single_test(
     target_language: str,
     test_mode: str = "function",
     codebase_path: str | None = None,
-    lsp_context: CodebaseContext | None = None
+    lsp_context: list[str] | None = None
 ) -> tuple:
     try:
         code_text, summary_text = generation_context_texts(

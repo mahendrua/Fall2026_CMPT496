@@ -34,6 +34,14 @@ from agent.python_test_harness import (
     make_cases as make_python_cases,
     write_results as write_python_results,
 )
+
+from agent.java_test_harness import (
+    check_tests as check_java_tests,
+    make_cases as make_java_cases,
+    make_fixer as make_java_fixer,
+    write_results as write_java_results,
+)
+
 from agent.testing_language import detect_unit_test_language
 import os
 import sys
@@ -45,11 +53,6 @@ from utils.chroma_utils import collection_name
 from lsp.context import CodebaseContext
 from lsp.retriever import retrieve_lsp_context
 
-from agent.javascript_test_harness import (
-    check_tests as check_javascript_tests,
-    make_cases as make_javascript_cases,
-    write_results as write_javascript_results,
-)
 
 # Code chunks retrieved per broken test for the repair prompt.
 REPAIR_CODEBASE_K = 15
@@ -143,11 +146,11 @@ class UTVAgent:
         )
 
         # Language errors must happen before any harness JSON is written.
-        target_language = detect_unit_test_language(input_tests, codebase_path=codebase_path)
+        target_language = detect_unit_test_language(input_tests)
         progress(f"Selected {target_language} unit-test validation.", 8)
 
         code_collection = None
-        if target_language in ("csharp", "javascript"):
+        if target_language in ("csharp", "javascript", "java"):
             if self._injected_model is None:
                 self.llm = make_llm()
             else:
@@ -177,7 +180,7 @@ class UTVAgent:
 
         self._loop = (
             asyncio.new_event_loop()
-            if target_language in ("csharp", "javascript")
+            if target_language in ("csharp", "javascript", "java")
             else None
         )
         try:
@@ -217,6 +220,7 @@ class UTVAgent:
                 test_items,
                 body_of=lambda test: test.unit_test,
                 imports_of=lambda test: test.imports,
+                codebase_path=codebase_path,
             )
             test_run = check_python_tests(
                 "Unit",
@@ -302,7 +306,82 @@ class UTVAgent:
                 loop=self._loop,
             )
 
-        else:
+        elif state["target_language"] == "java":
+
+            cases, rejected = make_java_cases(
+                "UT",
+                test_items,
+                body_of=lambda test: test.unit_test,
+                imports_of=lambda test: test.imports,
+                codebase_path=codebase_path,
+            )
+
+            code_collection = state.get("code_collection")
+
+            def context_for(case):
+                test = case.source
+                code_context = []
+
+                if code_collection is not None and code_collection.count():
+                    query_text = f"{test.rule} {' '.join(case.errors[:3])}"
+
+                    results = code_collection.query(
+                        query_texts=[query_text],
+                        n_results=min(
+                            REPAIR_CODEBASE_K,
+                            code_collection.count(),
+                        ),
+                    )
+
+                    docs = results.get("documents", [[]])[0]
+                    metas = results.get("metadatas", [[]])[0]
+
+                    code_context = [
+                        self._format_code_result(
+                            doc,
+                            meta,
+                            test.source_directory,
+                        )
+                        for doc, meta in zip(docs, metas)
+                    ]
+
+                retrieved_lsp_context = retrieve_lsp_context(
+                    state.get("lsp_context"),
+                    test.source_file_paths,
+                )
+
+                context_parts = []
+
+                if code_context:
+                    context_parts.append(
+                        "[RETRIEVED CODE CONTEXT]\n"
+                        + "\n\n".join(code_context)
+                    )
+
+                if retrieved_lsp_context:
+                    context_parts.append(
+                        "[RETRIEVED LSP CONTEXT]\n"
+                        + "\n\n".join(retrieved_lsp_context)
+                    )
+
+                return "\n\n".join(context_parts)
+
+            test_run = check_java_tests(
+                "Unit",
+                "UT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_subdir,
+                fix=make_java_fixer(
+                    self.llm,
+                    context_for,
+                ),
+                loop=self._loop,
+            )
+
+        elif state["target_language"] == "csharp":
             code_collection = state.get("code_collection")
             cases, rejected = make_csharp_cases(
                 "UT",
@@ -352,6 +431,12 @@ class UTVAgent:
                 loop=self._loop,
             )
 
+        else:
+            raise ValueError(
+                f"Unsupported unit-test validation language: "
+                f"{state['target_language']}"
+            )
+
         return {"test_run": test_run}
 
     def writer_node(self, state: UTVGraphState) -> UTVGraphState:
@@ -383,15 +468,21 @@ class UTVAgent:
 
         if state["target_language"] == "python":
             write_python_results(test_run, codebase_subdir, to_json)
+
         elif state["target_language"] == "javascript":
             write_javascript_results(test_run, codebase_subdir, to_json)
+
+        elif state["target_language"] == "java":
+            write_java_results(test_run, codebase_subdir, to_json)
+
         elif state["target_language"] == "csharp":
             write_csharp_results(test_run, codebase_subdir, to_json)
+
         else:
             raise ValueError(
-                f"Unsupported unit-test validation language: {state['target_language']}"
+                f"Unsupported unit-test validation language: "
+                f"{state['target_language']}"
             )
-
 
         progress(test_run.message(), 100, True)
         return {}

@@ -33,6 +33,14 @@ LANGUAGE_CONFIG = {
             re.compile(r"\b(?:vi|vitest)\."),
         ),
     },
+    "java": {
+        "suffixes": {".java"},
+        "framework": "junit5",
+        "body_patterns": (
+            re.compile(r"@\s*Test\b"),
+            re.compile(r"\bimport\s+org\.junit\.jupiter\b"),
+        ),
+    },
 }
 
 _LANGUAGE_SUFFIXES = {
@@ -383,6 +391,30 @@ JAVASCRIPT / VITEST REQUIREMENTS:
 - Do not use C# syntax, xUnit attributes, Python syntax, or pytest.
 """
 
+    if target_language == "java":
+        return """
+JAVA / JUNIT 5 REQUIREMENTS:
+
+- Generate exactly one complete JUnit 5 test method.
+- Return the test method only in the unit_test field.
+- Do not generate a surrounding class declaration.
+- Use the @Test annotation.
+- Use JUnit 5 assertions such as assertEquals, assertTrue,
+  assertFalse, assertNull, and assertThrows.
+- Put every required Java import statement in the imports array.
+- Each imports entry must be a complete Java import statement,
+  including its semicolon.
+- Import only real classes, methods, and packages supported by
+  the supplied source context.
+- Preserve the source code's actual package and class names.
+- Use package-private access when the generated test belongs
+  to the same package as the source class.
+- Do not invent constructors, methods, classes, or APIs.
+- Do not use JUnit 4, TestNG, Mockito, or additional test dependencies.
+- Do not generate a main method or standalone Java application.
+- Do not use Python, C#, or JavaScript test syntax.
+"""
+
     raise ValueError(f"Unsupported unit-test language: {target_language}")
 
 
@@ -453,6 +485,31 @@ JAVASCRIPT / VITEST INTEGRATION TEST REQUIREMENTS:
 - Do not use Jest-specific APIs or assume Jest is installed.
 - Do not modify package configuration or install dependencies.
 - Do not use C# syntax, xUnit, Python syntax, or pytest.
+"""
+
+
+    if target_language == "java":
+        return """
+JAVA / JUNIT 5 INTEGRATION TEST REQUIREMENTS:
+
+- Generate exactly one complete JUnit 5 integration test method.
+- Return the test method only in the integration_test field.
+- Do not generate a surrounding class declaration.
+- Include the appropriate @Test annotation.
+- Use JUnit 5 assertions.
+- Put every required Java import statement in the imports array.
+- Each imports entry must be a complete Java import statement,
+  including its semicolon.
+- Import only real classes, methods, and packages supported by
+  the supplied source context.
+- Test interactions between multiple application components.
+- Exercise an actual application workflow rather than an isolated method.
+- Preserve the source code's actual package and class names.
+- Use existing constructors, dependencies, and application
+  architecture supported by the retrieved context.
+- Do not invent APIs, classes, constructors, or methods.
+- Do not use JUnit 4, TestNG, Mockito, or additional test dependencies.
+- Do not use Python, C#, or JavaScript test syntax.
 """
 
     raise ValueError(

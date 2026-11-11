@@ -1,0 +1,15 @@
+{
+  "generated": 1,
+  "kept": 1,
+  "repaired": [],
+  "dropped": [],
+  "passed": 1,
+  "failed": 0,
+  "skipped": 0,
+  "failed_tests": [],
+  "removed_stale_files": [],
+  "project_error": "",
+  "junit_report_dir": "/Users/ianayotte/CMPT_498_Checkpoint/Fall2026_CMPT496/java_harness_test_output/utagent_integration/gradle-java-test/ut_java_workspace/reports",
+  "harness": "junit5",
+  "message": "Unit tests: 1 of 1 kept. 1 passed, 0 failed."
+}
