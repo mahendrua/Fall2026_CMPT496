@@ -41,13 +41,39 @@ LANGUAGE_CONFIG = {
             re.compile(r"\bimport\s+org\.junit\.jupiter\b"),
         ),
     },
+    "c": {
+        "suffixes": {".c"},
+        "framework": None,
+        "body_patterns": (),
+    },
+    "cpp": {
+        "suffixes": {
+            ".C", ".cpp", ".cc", ".cxx", ".cp", ".c++",
+            ".hpp", ".hh", ".hxx", ".h++", ".H",
+        },
+        "framework": None,
+        "body_patterns": (),
+    },
 }
 
+# Keep suffix matching case-sensitive for .C, which commonly identifies C++.
 _LANGUAGE_SUFFIXES = {
     suffix: language
     for language, config in LANGUAGE_CONFIG.items()
     for suffix in config["suffixes"]
 }
+
+_AMBIGUOUS_SUFFIXES = {".h"}
+
+
+def _source_suffix(path: str | Path) -> str:
+    """Return a source suffix while preserving the significant .C distinction."""
+    suffix = Path(path).suffix
+
+    if suffix == ".C":
+        return ".C"
+
+    return suffix.lower()
 # Bounded suffix inspection only. Academic labs are small; exceeding this
 # without a unique language is treated as undecidable rather than guessed.
 PROJECT_LANGUAGE_SCAN_LIMIT = 2000
@@ -62,25 +88,26 @@ def detect_test_language(
     Determine the single supported language represented by selected rules.
 
     Each item in source_file_groups is one rule's source_file_paths list.
-    When those paths carry no language evidence, codebase_path may supply a
-    trusted project-level .py/.cs scan. Rule-path evidence always wins.
+    Explicit source-file extensions take priority. Ambiguous C/C++ headers
+    are resolved using selected translation units or project include
+    relationships. A project-level scan is used only when selected paths
+    provide no language evidence.
     """
     suffixes = {
-        Path(source_path).suffix.lower()
+        _source_suffix(source_path)
         for source_files in source_file_groups
         for source_path in source_files
-        # Only code files say which language the tests need; a rule can
-        # also cite documentation such as README.md.
-        if Path(source_path).suffix.lower() in _LANGUAGE_SUFFIXES
+        if (
+            _source_suffix(source_path) in _LANGUAGE_SUFFIXES
+            or _source_suffix(source_path) in _AMBIGUOUS_SUFFIXES
+        )
     }
 
     languages = {
         _LANGUAGE_SUFFIXES[suffix]
         for suffix in suffixes
+        if suffix in _LANGUAGE_SUFFIXES
     }
-
-    if len(languages) == 1:
-        return next(iter(languages))
 
     if len(languages) > 1:
         raise ValueError(
@@ -88,11 +115,26 @@ def detect_test_language(
             f"Found source types: {', '.join(sorted(suffixes))}."
         )
 
-    if suffixes:
-        raise ValueError(
-            "Unit-test generation currently supports one language at a time. "
-            f"Found source types: {', '.join(sorted(suffixes))}."
-        )
+    # A translation unit provides stronger evidence than an ambiguous header.
+    if languages:
+        return next(iter(languages))
+
+    ambiguous_headers = [
+        source_path
+        for source_files in source_file_groups
+        for source_path in source_files
+        if _source_suffix(source_path) in _AMBIGUOUS_SUFFIXES
+    ]
+
+    if ambiguous_headers:
+        if not codebase_path:
+            raise ValueError(
+                "Cannot determine whether the selected .h files belong to "
+                "C or C++. Provide the project directory or select an "
+                "unambiguous source file."
+            )
+
+        return _resolve_header_language(ambiguous_headers, codebase_path)
 
     if codebase_path:
         return _project_source_language(codebase_path)
@@ -103,6 +145,7 @@ def detect_test_language(
     )
 
 
+
 def _is_inside_project(path: Path, project_root: Path) -> bool:
     try:
         path.resolve().relative_to(project_root)
@@ -111,16 +154,183 @@ def _is_inside_project(path: Path, project_root: Path) -> bool:
     return True
 
 
-def _project_source_language(codebase_path: str) -> str:
+def _resolve_header_language(
+    headers: list[str],
+    codebase_path: str,
+) -> str:
     """
-    Infer python or csharp from .py/.cs filenames under a trusted lab.
+    Resolve .h headers using their relationships with C/C++ translation units.
 
-    Does not read file contents. Uses crawl_config.prune so ignored and
-    Checkpoint-generated folders are skipped. os.walk does not follow
-    directory symlinks. Source-file symlinks that resolve outside the
-    project are ignored.
+    A header included by only C translation units is treated as C. A header
+    included by only C++ translation units is treated as C++. Conflicting
+    or missing evidence is rejected rather than guessed.
     """
     root = Path(codebase_path)
+
+    if not root.exists() or not root.is_dir():
+        raise ValueError(
+            "Cannot resolve ambiguous headers because the project directory "
+            f"is missing or invalid: {codebase_path}"
+        )
+
+    project_root = root.resolve()
+    selected_headers = []
+
+    for header in headers:
+        candidate = Path(header)
+
+        if not candidate.is_absolute():
+            candidate = project_root / candidate
+
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(project_root)
+        except (ValueError, OSError):
+            continue
+
+        selected_headers.append(resolved)
+
+    if not selected_headers:
+        raise ValueError(
+            "Cannot resolve the selected .h files because none could be "
+            "resolved inside the project directory."
+        )
+
+    header_names = {
+        header.name
+        for header in selected_headers
+    }
+
+    include_pattern = re.compile(
+        r'^\s*#\s*include\s*["<]([^">]+)[">]',
+        re.MULTILINE,
+    )
+
+    found_languages = set()
+    visited = 0
+
+    for dirpath, dirs, filenames in os.walk(
+        project_root,
+        followlinks=False,
+    ):
+        prune(dirpath, dirs)
+
+        dirs[:] = [
+            name
+            for name in dirs
+            if name not in _EXTRA_IGNORED_DIRS
+            and not (Path(dirpath) / name).is_symlink()
+        ]
+
+        visited += 1
+
+        if visited > PROJECT_LANGUAGE_SCAN_LIMIT:
+            raise ValueError(
+                "Cannot resolve ambiguous headers because the project scan "
+                "exceeded its file budget."
+            )
+
+        for filename in filenames:
+            source_path = Path(dirpath) / filename
+            suffix = _source_suffix(filename)
+            language = _LANGUAGE_SUFFIXES.get(suffix)
+
+            if language not in {"c", "cpp"}:
+                continue
+
+            visited += 1
+
+            if visited > PROJECT_LANGUAGE_SCAN_LIMIT:
+                raise ValueError(
+                    "Cannot resolve ambiguous headers because the project "
+                    "scan exceeded its file budget."
+                )
+
+            if source_path.is_symlink() and not _is_inside_project(
+                source_path,
+                project_root,
+            ):
+                continue
+
+            try:
+                source_text = source_path.read_text(
+                    encoding="utf-8",
+                    errors="ignore",
+                )
+            except OSError:
+                continue
+
+            for include in include_pattern.findall(source_text):
+                include_path = Path(include)
+
+                possible_paths = [
+                    (source_path.parent / include_path).resolve(),
+                    (project_root / include_path).resolve(),
+                ]
+
+                matches_selected_header = any(
+                    possible_path in selected_headers
+                    for possible_path in possible_paths
+                )
+
+                # A basename match is useful when include directories are
+                # supplied by the build system rather than relative to the
+                # translation unit. Only use it when the name is unique
+                # among the selected headers.
+                if (
+                    not matches_selected_header
+                    and include_path.name in header_names
+                ):
+                    matching_headers = [
+                        header
+                        for header in selected_headers
+                        if header.name == include_path.name
+                    ]
+
+                    matches_selected_header = len(matching_headers) == 1
+
+                if matches_selected_header:
+                    found_languages.add(language)
+
+    if len(found_languages) == 1:
+        return next(iter(found_languages))
+
+    if len(found_languages) > 1:
+        raise ValueError(
+            "Cannot determine the language of the selected .h files because "
+            "they are included by both C and C++ source files."
+        )
+
+    # If no include relationship was found, a project containing only one
+    # C-family language provides weaker fallback evidence.
+    project_languages = _project_source_languages(codebase_path)
+    c_family_languages = project_languages.intersection({"c", "cpp"})
+
+    if len(c_family_languages) == 1:
+        return next(iter(c_family_languages))
+
+    if len(c_family_languages) > 1:
+        raise ValueError(
+            "Cannot determine whether the selected .h files belong to C or "
+            "C++ because the project contains both languages and no "
+            "unambiguous include relationship was found."
+        )
+
+    raise ValueError(
+        "Cannot determine whether the selected .h files belong to C or C++. "
+        "No matching C or C++ translation units were found."
+    )
+
+def _project_source_languages(codebase_path: str) -> set[str]:
+    """
+    Collect supported source languages present in a project.
+
+    Does not read file contents. Uses crawl_config.prune so ignored and
+    Checkpoint-generated folders are skipped. Directory symlinks are not
+    followed, and source-file symlinks outside the project are ignored.
+    """
+    root = Path(codebase_path)
+
     if not root.exists() or not root.is_dir():
         raise ValueError(
             "Cannot determine a test language because the project directory "
@@ -128,18 +338,24 @@ def _project_source_language(codebase_path: str) -> str:
         )
 
     project_root = root.resolve()
-    found: set[str] = set()
+    found = set()
     visited = 0
 
-    for dirpath, dirs, filenames in os.walk(project_root, followlinks=False):
+    for dirpath, dirs, filenames in os.walk(
+        project_root,
+        followlinks=False,
+    ):
         prune(dirpath, dirs)
+
         dirs[:] = [
             name
             for name in dirs
             if name not in _EXTRA_IGNORED_DIRS
             and not (Path(dirpath) / name).is_symlink()
         ]
+
         visited += 1
+
         if visited > PROJECT_LANGUAGE_SCAN_LIMIT:
             raise ValueError(
                 "Cannot determine a test language because the project scan "
@@ -148,42 +364,58 @@ def _project_source_language(codebase_path: str) -> str:
 
         for name in filenames:
             visited += 1
+
             if visited > PROJECT_LANGUAGE_SCAN_LIMIT:
                 raise ValueError(
-                    "Cannot determine a test language because the project scan "
-                    "exceeded its file budget before a unique language was proven."
-                )
-            suffix = Path(name).suffix.lower()
-            language = _LANGUAGE_SUFFIXES.get(suffix)
-            if language is None:
-                continue
-            candidate = Path(dirpath) / name
-            if candidate.is_symlink() and not _is_inside_project(candidate, project_root):
-                continue
-            found.add(language)
-            if len(found) > 1:
-                detected = ", ".join(sorted(found))
-                raise ValueError(
                     "Cannot determine a test language because the project "
-                    f"contains multiple source languages: {detected}"
+                    "scan exceeded its file budget before a unique language "
+                    "was proven."
                 )
 
-    if found == {"python"}:
-        return "python"
-    if found == {"csharp"}:
-        return "csharp"
-    
+            suffix = _source_suffix(name)
+            language = _LANGUAGE_SUFFIXES.get(suffix)
+
+            if language is None:
+                continue
+
+            candidate = Path(dirpath) / name
+
+            if (
+                candidate.is_symlink()
+                and not _is_inside_project(candidate, project_root)
+            ):
+                continue
+
+            found.add(language)
+
+    return found
+
+
+def _project_source_language(codebase_path: str) -> str:
+    """
+    Infer the single supported language present in a project.
+
+    Mixed-language projects are rejected when selected source paths do not
+    provide enough evidence to identify the intended language.
+    """
+    found = _project_source_languages(codebase_path)
 
     if len(found) == 1:
         return next(iter(found))
-    
+
+    if len(found) > 1:
+        detected = ", ".join(sorted(found))
+        raise ValueError(
+            "Cannot determine a test language because the project contains "
+            f"multiple source languages: {detected}"
+        )
+
     supported = ", ".join(sorted(LANGUAGE_CONFIG))
 
     raise ValueError(
         "Cannot determine a test language because the project contains no "
         f"supported source files. Supported languages: {supported}"
     )
-
 
 _PYTHON_TEST_DEF = re.compile(r"\b(?:async\s+)?def\s+test_\w*")
 _PYTHON_PYTEST_IMPORT = re.compile(r"\b(?:import\s+pytest\b|from\s+pytest\b)")
