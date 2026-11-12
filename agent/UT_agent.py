@@ -56,6 +56,13 @@ from agent.java_test_harness import (
     write_results as write_java_results,
 )
 
+from agent.cpp_test_harness import (
+    check_tests as check_cpp_tests,
+    make_cases as make_cpp_cases,
+    make_fixer as make_cpp_fixer,
+    write_results as write_cpp_results,
+)
+
 from agent.testing_language import (
     detect_test_language,
     unit_test_generation_instructions
@@ -559,6 +566,41 @@ class UTAgent:
             )
 
             write_java_results(
+                test_run,
+                codebase_dir,
+                lambda case: dict(
+                    case.source.model_dump(),
+                    imports=case.imports,
+                    unit_test=case.body,
+                ),
+            )
+
+        elif state["target_language"] == "cpp":
+            cases, rejected = make_cpp_cases(
+                "UT",
+                test_items,
+                body_of=lambda test: test.unit_test,
+                imports_of=lambda test: test.imports,
+                codebase_path=codebase_path,
+            )
+
+            def context_for(case):
+                ctx = rule_contexts.get(str(case.source.id), {})
+                return "\n\n".join(ctx.get("code_context", []))
+
+            test_run = check_cpp_tests(
+                "Unit",
+                "UT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_dir,
+                fix=make_cpp_fixer(self.llm, context_for),
+                loop=self._loop,
+            )
+
+            write_cpp_results(
                 test_run,
                 codebase_dir,
                 lambda case: dict(

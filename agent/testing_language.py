@@ -51,8 +51,11 @@ LANGUAGE_CONFIG = {
             ".C", ".cpp", ".cc", ".cxx", ".cp", ".c++",
             ".hpp", ".hh", ".hxx", ".h++", ".H",
         },
-        "framework": None,
-        "body_patterns": (),
+        "framework": "googletest",
+        "body_patterns": (
+            re.compile(r"\b(?:TEST|TEST_F|TEST_P)\s*\("),
+            re.compile(r"#\s*include\s*[<\"]gtest/gtest\.h[>\"]"),
+        ),
     },
 }
 
@@ -645,6 +648,29 @@ JAVA / JUNIT 5 REQUIREMENTS:
 - Do not use JUnit 4, TestNG, Mockito, or additional test dependencies.
 - Do not generate a main method or standalone Java application.
 - Do not use Python, C#, or JavaScript test syntax.
+"""
+
+    if target_language == "cpp":
+        return """\
+C++ / GOOGLE TEST REQUIREMENTS:
+
+- Generate exactly one complete GoogleTest test case in the unit_test field.
+- Use TEST(SuiteName, TestName) to define the test.
+- Do not generate a main function or a surrounding test executable.
+- Use GoogleTest assertions such as EXPECT_EQ, ASSERT_EQ, EXPECT_TRUE,
+  ASSERT_TRUE, EXPECT_FALSE, ASSERT_FALSE, EXPECT_THROW, and ASSERT_THROW.
+- Put every required C++ include directive in the imports array.
+- Each imports entry must be a complete #include directive.
+- Include <gtest/gtest.h> when required by the generated test.
+- Import only real project headers and use only public APIs supported
+  by the supplied source context.
+- Preserve the actual namespaces, class names, constructors, and method names.
+- Do not invent functions, classes, constructors, or APIs.
+- Do not modify the project's CMake configuration or introduce dependencies.
+- Do not use Catch2, doctest, CUnit, or other testing frameworks.
+- Do not generate a standalone application or a main function.
+- Use valid C++ syntax and the project's supported C++ standard.
+- Do not use Python, C#, Java, JavaScript, pytest, or xUnit syntax.
 """
 
     raise ValueError(f"Unsupported unit-test language: {target_language}")
