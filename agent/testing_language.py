@@ -61,6 +61,16 @@ LANGUAGE_CONFIG = {
             re.compile(r"#\s*include\s*[<\"]gtest/gtest\.h[>\"]"),
         ),
     },
+
+    "kotlin": {
+        "suffixes": {".kt"},
+        "framework": "junit5",
+        "body_patterns": (
+            re.compile(r"@\s*Test\b"),
+            re.compile(r"\bfun\s+\w+\s*\("),
+            re.compile(r"\bimport\s+kotlin(?:\.test)?\."),
+        ),
+    },
 }
 
 # Keep suffix matching case-sensitive for .C, which commonly identifies C++.
@@ -480,6 +490,17 @@ def _body_signals(text: str) -> set[str]:
         ):
             detected.add(language)
 
+    # Kotlin and Java both use the JUnit 5 @Test annotation.
+    # Kotlin-specific syntax provides stronger language evidence.
+    kotlin_specific = (
+        re.search(r"\bfun\s+\w+\s*\(", visible)
+        or re.search(r"\bimport\s+kotlin(?:\.test)?\.", text)
+    )
+
+    if kotlin_specific:
+        detected.add("kotlin")
+        detected.discard("java")
+
     # The Vitest import contains a string literal, so inspect the original
     # text separately rather than the comment/string-stripped text.
     if re.search(
@@ -701,6 +722,32 @@ C / UNITY REQUIREMENTS:
 - Do not use C++, GoogleTest, Catch2, doctest, C#, Java,
   JavaScript, Python, pytest, or xUnit syntax.
 """
+
+    if target_language == "kotlin":
+        return """\
+KOTLIN / JUNIT 5 REQUIREMENTS:
+
+- Generate exactly one complete Kotlin JUnit 5 test function.
+- Return the test function only in the unit_test field.
+- Do not generate a surrounding class declaration.
+- Annotate the function with @Test.
+- Use Kotlin function syntax: fun testName() { ... }.
+- Use JUnit 5 assertions such as assertEquals, assertTrue,
+  assertFalse, assertNull, assertNotNull, and assertThrows.
+- Put every required Kotlin import statement in the imports array.
+- Each imports entry must be a complete Kotlin import statement.
+- Import the JUnit 5 Test annotation and assertion methods when required.
+- Import only real classes, methods, and packages supported by
+  the supplied source context.
+- Preserve the source code's actual package, class, and function names.
+- Use Kotlin syntax, including val and var where appropriate.
+- Do not invent constructors, functions, classes, or APIs.
+- Do not use Java test syntax, JUnit 4, TestNG, Mockito,
+  or additional test frameworks.
+- Do not generate a main function or standalone Kotlin application.
+"""
+
+
     raise ValueError(f"Unsupported unit-test language: {target_language}")
 
 
@@ -829,6 +876,30 @@ C / UNITY INTEGRATION TEST REQUIREMENTS:
   JavaScript, Python, pytest, or xUnit syntax.
 """
 
+    if target_language == "kotlin":
+        return """\
+KOTLIN / JUNIT 5 INTEGRATION TEST REQUIREMENTS:
+
+- Generate exactly one complete Kotlin JUnit 5 integration-test function.
+- Return the test function only in the integration_test field.
+- Do not generate a surrounding class declaration.
+- Annotate the function with @Test.
+- Use Kotlin function syntax: fun testName() { ... }.
+- Use JUnit 5 assertions for all test verification.
+- Put every required Kotlin import statement in the imports array.
+- Each imports entry must be a complete Kotlin import statement.
+- Import only real classes, methods, and packages supported by
+  the supplied source context.
+- Test interactions between multiple application components.
+- Exercise an actual application workflow rather than an isolated method.
+- Preserve the source code's actual package, class, and function names.
+- Use existing constructors, dependencies, and application architecture
+  supported by the retrieved context.
+- Use Kotlin syntax and the project's actual APIs.
+- Do not invent APIs, classes, constructors, or functions.
+- Do not use JUnit 4, TestNG, Mockito, or additional test frameworks.
+- Do not generate a main function or standalone Kotlin application.
+"""
     raise ValueError(
         f"Unsupported integration-test language: {target_language}"
     )

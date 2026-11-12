@@ -72,6 +72,13 @@ from agent.c_test_harness import (
     write_results as write_c_results,
 )
 
+from agent.kotlin_test_harness import (
+    check_tests as check_kotlin_tests,
+    make_cases as make_kotlin_cases,
+    make_fixer as make_kotlin_fixer,
+    write_results as write_kotlin_results,
+)
+
 MAX_CONCURRENCY = 10
 DEFAULT_CODEBASE_K = 30
 DEFAULT_FILE_SUMMARY_K = 15
@@ -822,10 +829,8 @@ class ITAgent:
             appropriate language-specific test harness.
 
         @details
-        Python tests are validated and executed using pytest.
-        C# tests are compiled, repaired when possible, and executed using xUnit.
-        JavaScript tests are validated, repaired when possible, and executed
-        using Vitest.
+        Each supported language uses its own test harness. Tests that fail
+        compilation can be repaired using retrieved code and LSP context.
 
         @param state Current workflow state containing integration_tests,
                     workflow_contexts, and target language information.
@@ -880,6 +885,15 @@ class ITAgent:
 
         elif target_language == "java":
             cases, rejected = make_java_cases(
+                "IT",
+                list(enumerate(integration_tests, 1)),
+                body_of=lambda test: test.integration_test,
+                imports_of=lambda test: test.imports,
+                codebase_path=codebase_path,
+            )
+
+        elif target_language == "kotlin":
+            cases, rejected = make_kotlin_cases(
                 "IT",
                 list(enumerate(integration_tests, 1)),
                 body_of=lambda test: test.integration_test,
@@ -1030,6 +1044,30 @@ class ITAgent:
                 ),
             )
 
+        elif target_language == "kotlin":
+
+            test_run = check_kotlin_tests(
+                "Integration",
+                "IT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_dir,
+                fix=make_kotlin_fixer(self.llm, context_for),
+                loop=self._loop,
+            )
+
+            write_kotlin_results(
+                test_run,
+                codebase_dir,
+                lambda case: dict(
+                    case.source.model_dump(),
+                    imports=case.imports,
+                    integration_test=case.body,
+                ),
+            )
+
         elif target_language == "c":
 
             test_run = check_c_tests(
@@ -1053,7 +1091,7 @@ class ITAgent:
                     integration_test=case.body,
                 ),
             )
-            
+
         elif target_language == "cpp":
 
             test_run = check_cpp_tests(
@@ -1086,6 +1124,7 @@ class ITAgent:
         progress(test_run.message(), 100, True)
 
         return {"test_run": test_run}
+
 
     # Helper methods
 

@@ -75,6 +75,13 @@ from agent.testing_language import (
     unit_test_generation_instructions
 )
 
+from agent.kotlin_test_harness import (
+    check_tests as check_kotlin_tests,
+    make_cases as make_kotlin_cases,
+    make_fixer as make_kotlin_fixer,
+    write_results as write_kotlin_results,
+)
+
 MAX_CONCURRENCY = 10
 DEFAULT_CODEBASE_K = 15
 DEFAULT_FILE_SUMMARY_K = 5
@@ -651,6 +658,42 @@ class UTAgent:
                     unit_test=case.body,
                 ),
             )
+
+        elif state["target_language"] == "kotlin":
+            cases, rejected = make_kotlin_cases(
+                "UT",
+                test_items,
+                body_of=lambda test: test.unit_test,
+                imports_of=lambda test: test.imports,
+                codebase_path=codebase_path,
+            )
+
+            def context_for(case):
+                ctx = rule_contexts.get(str(case.source.id), {})
+                return "\n\n".join(ctx.get("code_context", []))
+
+            test_run = check_kotlin_tests(
+                "Unit",
+                "UT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_dir,
+                fix=make_kotlin_fixer(self.llm, context_for),
+                loop=self._loop,
+            )
+
+            write_kotlin_results(
+                test_run,
+                codebase_dir,
+                lambda case: dict(
+                    case.source.model_dump(),
+                    imports=case.imports,
+                    unit_test=case.body,
+                ),
+            )
+
 
         else:
             cases, rejected = make_csharp_cases(
