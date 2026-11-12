@@ -65,6 +65,13 @@ from agent.cpp_test_harness import (
     write_results as write_cpp_results,
 )
 
+from agent.c_test_harness import (
+    check_tests as check_c_tests,
+    make_cases as make_c_cases,
+    make_fixer as make_c_fixer,
+    write_results as write_c_results,
+)
+
 MAX_CONCURRENCY = 10
 DEFAULT_CODEBASE_K = 30
 DEFAULT_FILE_SUMMARY_K = 15
@@ -880,6 +887,15 @@ class ITAgent:
                 codebase_path=codebase_path,
             )
 
+        elif target_language == "c":
+            cases, rejected = make_c_cases(
+                "IT",
+                list(enumerate(integration_tests, 1)),
+                body_of=lambda test: test.integration_test,
+                imports_of=lambda test: test.imports,
+                codebase_path=codebase_path,
+            )
+
         elif target_language == "cpp":
             cases, rejected = make_cpp_cases(
                 "IT",
@@ -1014,6 +1030,30 @@ class ITAgent:
                 ),
             )
 
+        elif target_language == "c":
+
+            test_run = check_c_tests(
+                "Integration",
+                "IT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_dir,
+                fix=make_c_fixer(self.llm, context_for),
+                loop=self._loop,
+            )
+
+            write_c_results(
+                test_run,
+                codebase_dir,
+                lambda case: dict(
+                    case.source.model_dump(),
+                    imports=case.imports,
+                    integration_test=case.body,
+                ),
+            )
+            
         elif target_language == "cpp":
 
             test_run = check_cpp_tests(

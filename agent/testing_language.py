@@ -43,8 +43,12 @@ LANGUAGE_CONFIG = {
     },
     "c": {
         "suffixes": {".c"},
-        "framework": None,
-        "body_patterns": (),
+        "framework": "unity",
+        "body_patterns": (
+            re.compile(r"\bvoid\s+test_\w+\s*\(\s*void\s*\)"),
+            re.compile(r"\bTEST_ASSERT_[A-Z0-9_]+\s*\("),
+            re.compile(r'#\s*include\s*[<"]unity\.h[>"]'),
+        ),
     },
     "cpp": {
         "suffixes": {
@@ -672,7 +676,31 @@ C++ / GOOGLE TEST REQUIREMENTS:
 - Use valid C++ syntax and the project's supported C++ standard.
 - Do not use Python, C#, Java, JavaScript, pytest, or xUnit syntax.
 """
+    if target_language == "c":
+        return """\
+C / UNITY REQUIREMENTS:
 
+- Generate exactly one complete C test function in the unit_test field.
+- Use the signature: void test_<descriptive_name>(void).
+- Do not generate a main function.
+- Do not generate UNITY_BEGIN(), UNITY_END(), or RUN_TEST() calls.
+  The test harness provides the test runner.
+- Use Unity assertions such as TEST_ASSERT_EQUAL_INT,
+  TEST_ASSERT_EQUAL_STRING, TEST_ASSERT_TRUE, TEST_ASSERT_FALSE,
+  TEST_ASSERT_NULL, TEST_ASSERT_NOT_NULL, and TEST_ASSERT_EQUAL.
+- Put every required C include directive in the imports array.
+- Each imports entry must be a complete #include directive.
+- Include <unity.h> when required by the generated test.
+- Include only real project headers and use only functions,
+  structures, enums, and public APIs supported by the supplied source.
+- Preserve the actual function names, structure names, and field names.
+- Do not invent functions, structures, fields, or APIs.
+- Do not modify the project's build configuration or introduce
+  additional testing frameworks.
+- Use valid C syntax and the project's supported C standard.
+- Do not use C++, GoogleTest, Catch2, doctest, C#, Java,
+  JavaScript, Python, pytest, or xUnit syntax.
+"""
     raise ValueError(f"Unsupported unit-test language: {target_language}")
 
 
@@ -768,6 +796,37 @@ JAVA / JUNIT 5 INTEGRATION TEST REQUIREMENTS:
 - Do not invent APIs, classes, constructors, or methods.
 - Do not use JUnit 4, TestNG, Mockito, or additional test dependencies.
 - Do not use Python, C#, or JavaScript test syntax.
+"""
+
+
+    if target_language == "c":
+        return """\
+C / UNITY INTEGRATION TEST REQUIREMENTS:
+
+- Generate exactly one complete C integration-test function.
+- Use the signature: void test_<descriptive_name>(void).
+- Return only the function implementation in integration_test.
+- Do not generate a main function.
+- Do not generate UNITY_BEGIN(), UNITY_END(), or RUN_TEST() calls.
+  The test harness provides the test runner.
+- Use Unity assertions for all test verification, such as
+  TEST_ASSERT_EQUAL_INT, TEST_ASSERT_EQUAL_STRING,
+  TEST_ASSERT_TRUE, TEST_ASSERT_FALSE, TEST_ASSERT_NULL,
+  TEST_ASSERT_NOT_NULL, and TEST_ASSERT_EQUAL.
+- Put every required C include directive in the imports array.
+- Each imports entry must be a complete #include directive.
+- Include <unity.h> when required.
+- Import only real project headers and use only functions,
+  structures, enums, and APIs supported by the supplied source context.
+- Test interactions between multiple application components where possible.
+- Exercise an actual application workflow rather than an isolated function.
+- Use existing initialization and cleanup functions when supported
+  by the retrieved source context.
+- Do not invent functions, structures, fields, or APIs.
+- Do not introduce additional testing frameworks or dependencies.
+- Use valid C syntax and the project's supported C standard.
+- Do not use C++, GoogleTest, Catch2, doctest, C#, Java,
+  JavaScript, Python, pytest, or xUnit syntax.
 """
 
     raise ValueError(
