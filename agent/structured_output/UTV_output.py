@@ -4,7 +4,10 @@
 @details Includes the unit test candidate model and the AI's answer when it repairs a test
 that does not compile (shared with the integration test agent via agent/test_harness.py).
 """
+from typing import Literal
 from pydantic import BaseModel, Field, ConfigDict
+
+TestMode = Literal["function", "script"]
 
 class UnitTest(BaseModel):
     """
@@ -17,6 +20,14 @@ class UnitTest(BaseModel):
     source_directory: str = Field(..., description="The directory this test pertains to.")
     source_file_paths: list[str] = Field(default_factory=list, description="File paths from which this test was originally derived.")
     unit_test: str = Field(..., description = "Corresponding Unit Test generated for a validated business rule")
+    test_mode: TestMode = Field(
+        "function",
+        description=(
+            "Trusted generation mode. function: import-safe modules may be imported. "
+            "script: run the file as a subprocess. Set by Checkpoint from Tree-sitter, "
+            "not by the LLM."
+        ),
+    )
 
 class TestRepair(BaseModel):
     """

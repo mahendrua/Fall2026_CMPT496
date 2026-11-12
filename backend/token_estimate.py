@@ -47,6 +47,13 @@ from agent.crawl_config import ACCEPTABLE_EXTENSIONS, prune  # noqa: E402
 # (_summarize_one, the block from "### Tasks" to "File path:").
 FILE_SUMMARY_PROMPT_TOKENS = 993
 
+# Consistency Review: one call per source file that has generated outputs.
+# Measured with count_tokens(): the system prompt (381), the answer schema
+# sent for structured output (1,069) and the user message frame (57). Not yet
+# measured on a real run, and the file's summary, rules and tests are added
+# on top, so the stage is reported as a lower bound.
+CONSISTENCY_PROMPT_TOKENS = 1507
+
 # Per directory, directory_agent runs: context_analyser + summarizer +
 # judgement + business_rules_extractor. The context-retrieval loop and up to
 # 2 refinement rounds push the upper end higher.
@@ -454,6 +461,23 @@ def estimate_pipeline(codebase: str, app_dir: Path = None):
         "note": "Renders existing PlantUML via plantuml.jar. No API cost.",
     })
 
+    # One call per file with outputs (at most one re-ask each); the file's
+    # source is sent once more, with its summary, rules and tests.
+    stages.append({
+        "stage": "consistency_review",
+        "uses_ai": True,
+        "confidence": "projected",
+        "lower_bound": True,
+        "calls": n_clean,
+        "calls_max": n_clean * 2,
+        "input_tokens": int((content_clean + CONSISTENCY_PROMPT_TOKENS * n_clean) * TOKENIZER_CORRECTION),
+        "note": (
+            f"Lower bound: one call per file ({n_clean}) with the file's source and "
+            f"{CONSISTENCY_PROMPT_TOKENS} tokens of prompt; its summary, rules and tests "
+            "add to this. A second call is made only for an answer that cannot be read."
+        ),
+    })
+
     # --- totals ------------------------------------------------------------
 
     known = [s for s in stages if s["input_tokens"] is not None]
@@ -545,7 +569,9 @@ def format_report(
             lines.append(f"    {s['stage']:<32} needs a prior run")
             continue
 
-        if "input_tokens_max" in s:
+        if s.get("lower_bound"):
+            lines.append(f"    {s['stage']:<32} at least {s['input_tokens']:,}")
+        elif "input_tokens_max" in s:
             lines.append(
                 f"    {s['stage']:<32} "
                 f"{s['input_tokens']:,} - {s['input_tokens_max']:,}"

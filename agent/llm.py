@@ -305,12 +305,21 @@ def _retrying(base, label):
 # Model construction
 # ---------------------------------------------------------
 
-def build_chat_model(config: LLMConfig, max_output_tokens=None, retry=True):
+def build_chat_model(
+    config: LLMConfig,
+    max_output_tokens=None,
+    retry=True,
+    timeout=None,
+):
     """
     The LangChain chat model for one provider.
 
     Imports are inside the branches so a provider's package is only needed
     when that provider is used (PyInstaller still finds them).
+
+    timeout, when set, is the provider SDK request timeout in seconds.
+    Google treats max_retries=0 as "use the SDK default", so verification
+    keeps max_retries=1 (one HTTP attempt, no extra retries).
     """
     provider = config.provider
     label = PROVIDER_NAMES[provider]
@@ -362,6 +371,9 @@ def build_chat_model(config: LLMConfig, max_output_tokens=None, retry=True):
     else:
         raise ValueError(f"Unsupported provider: {provider}")
 
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+
     if retry:
         model_class = _retrying(model_class, label)
 
@@ -382,15 +394,25 @@ def make_llm(max_output_tokens=None):
 # Key verification
 # ---------------------------------------------------------
 
-def verify_llm_key(provider, model, api_key):
+def _is_timeout_error(exc):
+    if isinstance(exc, TimeoutError):
+        return True
+    name = type(exc).__name__
+    if name in {"Timeout", "APITimeoutError", "ReadTimeout", "ConnectTimeout"}:
+        return True
+    text = str(exc).lower()
+    return "timed out" in text or "timeout" in text or "deadline" in text
+
+
+def verify_llm_key(provider, model, api_key, timeout=None):
     """
     Check a key by making one tiny real call with the exact provider and model
     the pipeline will use, so a key with no access to that model is caught now
     rather than part-way through a run.
 
     Returns {"status": "accepted" | "rejected" | "unverified", "message", ...}.
-    "unverified" means we could not ask (network down, rate limited): that is
-    not a rejection, so the key can still be saved.
+    "unverified" means we could not ask (network down, rate limited, timeout).
+    That is not evidence the credential is invalid; the key is not saved.
     """
     provider = (provider or "").strip().lower()
 
@@ -402,7 +424,12 @@ def verify_llm_key(provider, model, api_key):
 
     # Not inside the try: a missing package should surface as an error, not
     # be mistaken for an unverifiable key.
-    llm = build_chat_model(config, max_output_tokens=32, retry=False)
+    llm = build_chat_model(
+        config,
+        max_output_tokens=32,
+        retry=False,
+        timeout=timeout,
+    )
 
     try:
         reply = llm.invoke("hi")
@@ -411,10 +438,18 @@ def verify_llm_key(provider, model, api_key):
         code = status_code(exc)
         detail = str(exc).strip()[:300] or type(exc).__name__
 
-        if code is None or code in (408, 429) or code >= 500:
+        if (
+            _is_timeout_error(exc)
+            or code is None
+            or code in (408, 429)
+            or code >= 500
+        ):
             return {
                 "status": "unverified",
-                "message": f"Key saved, but not verified. Could not confirm with {label} ({detail}).",
+                "message": (
+                    f"Could not verify this key with {label} ({detail}). "
+                    "The key was not saved."
+                ),
                 "model": None,
                 "tokens": None,
             }

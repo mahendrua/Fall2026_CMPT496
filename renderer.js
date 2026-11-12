@@ -15,6 +15,27 @@ let errorsMade = false;
 
 // Currently selected codebase
 let selectedCodebasePath = "";
+let selectedProjectSource = null;
+let githubBranchRequest = 0;
+let activeGithubImportRequest = null;
+let githubImportInProgress = false;
+let githubRepositoryUrl = "";
+let githubRepositoryBranches = null;
+let githubAnalysisMode = null;
+let githubTargetBranch = "";
+let githubPullRequests = [];
+let githubPullRequestPage = 1;
+let githubPullRequestsHaveMore = false;
+let selectedGithubPullRequest = null;
+let selectedGithubPullRequestDetails = null;
+let githubOverviewRequest = 0;
+let githubAnalysisRequest = 0;
+// The pull request (repository, number and head commit) whose AI analysis is
+// shown or still running, so reopening it does not pay for a second analysis.
+let githubAnalysisKey = null;
+let selectedGithubComparisonFileIndex = 0;
+let githubComparisonFileRequest = 0;
+let githubComparisonUnified = false;
 
 
 // Selections
@@ -23,8 +44,83 @@ let selectedRules = [];
 // Backend response buffer
 let backendOutputBuffer = "";
 
-//loadingscreen 
-let activeCommand = null;
+//loadingscreen
+const commandRequests = new window.CommandRequestTracker();
+let activeRequestId = null;
+let operationReturnPage = null;
+
+// The saved check a finished pipeline or Consistency Review operation can
+// open: the codebase it ran on and the check ID it produced.
+let reviewTarget = null;
+
+// True between a pipeline click and the command being sent (a short delay).
+let pipelineStarting = false;
+
+// A new check replaces the saved result that unsaved review notes belong to,
+// so a run that would do so does not start; the user saves or discards first.
+function blockedByUnsavedReviews(codebasePath) {
+    const unsaved = window.ConsistencyReviewScreen.unsavedReviews(codebasePath);
+    if (!unsaved) return false;
+    showErrorPopup(
+        `You have ${unsaved} unsaved review ${unsaved === 1 ? "note" : "notes"} for this codebase in `
+        + "View Insights → Consistency Review. Save or discard them there first: a new check replaces "
+        + "the result they belong to."
+    );
+    return true;
+}
+
+// Shows "Open Consistency Review" on the Complete screen when a check was saved.
+function offerReview(codebasePath, checkId) {
+    reviewTarget = checkId ? { codebasePath, checkId } : null;
+    document.getElementById("loadingOpenReviewBtn").classList.toggle("hidden", !checkId);
+}
+
+// Backend calls whose response goes to the caller's promise rather than the
+// shared handler below (the Consistency Review screen). They never become the
+// active request, so they cannot take over the loading screen or error popup.
+const directRequests = new Map();
+
+// options.onEvent receives the request's streamed messages (progress, provider
+// waits, running token totals) before the final response resolves the promise.
+function backendCall(command, args = {}, options = {}) {
+    const request = commandRequests.begin(command);
+
+    return new Promise(resolve => {
+        directRequests.set(request.requestId, { resolve, onEvent: options.onEvent });
+
+        const refuse = error => {
+            const failure = commandRequests.fail(request.requestId, error);
+            directRequests.delete(request.requestId);
+            resolve(failure ? failure.response : { success: false, error });
+        };
+
+        window.electronAPI.executeCommand(command, args, request.requestId)
+            .then(ack => {
+                if (ack?.accepted === true && ack.request_id === request.requestId) {
+                    commandRequests.accept(request.requestId);
+                } else {
+                    refuse(ack?.error || "The backend did not accept the command.");
+                }
+            })
+            .catch(error => refuse(error.message || "Could not send the command to the backend."));
+    });
+}
+
+// Resolves a direct call's promise with its final response. True if the
+// response belonged to a direct call (handled, or still in progress).
+function settleDirectRequest(correlated) {
+    const requestId = correlated?.request?.requestId;
+    if (!requestId || !directRequests.has(requestId)) return false;
+
+    const entry = directRequests.get(requestId);
+    if (correlated.terminal) {
+        directRequests.delete(requestId);
+        entry.resolve(correlated.response);
+    } else if (entry.onEvent && correlated.response && correlated.response.accepted !== true) {
+        try { entry.onEvent(correlated.response); } catch (error) { console.error("Progress handler failed:", error); }
+    }
+    return true;
+}
 let pipelineMode = false;
 
 let totalSteps = 1;
@@ -46,7 +142,38 @@ let insightFolderHistory = [];
 let currentInsightFolderPath = null;
 let insightRootPath = null;
 let insightParentPath = null;
+let insightsPanelRequest = 0;
+const unitTestPreviewPaths = new Set();
+const unitTestPreviewPendingPaths = new Set();
+let unitTestPreviewLoading = false;
 let suppressAutoEnterOnce = false;
+let guiUploadedTests = [];
+let guiTestResults = new Map();
+let guiEventSocket = null;
+let guiEventConnection = null;
+let guiCspViolationListener = null;
+let guiRunActive = false;
+let guiRunCompleted = false;
+let guiInfrastructureError = false;
+let guiPreviewConnected = false;
+let guiPreviewTimer = null;
+window.addEventListener("message", event => {
+    const frame = document.getElementById("guiPreview");
+    if (!frame?.src || event.source !== frame.contentWindow) return;
+    if (event.origin !== new URL(frame.src).origin || event.data?.type !== "checkpoint-preview-status") return;
+    const message = String(event.data.message || "").slice(0, 500);
+    if (/Connected to browser preview|successfully reconnected/.test(message)) guiPreviewConnected = true;
+    if (guiPreviewTimer !== null) clearTimeout(guiPreviewTimer);
+    guiPreviewTimer = null;
+    document.getElementById("guiPreviewStatus").textContent = message;
+    appendGuiLog(`Preview: ${message}`);
+});
+let guiGenerationInProgress = false;
+let guiGenerationSourceDirectory = null;
+let guiGenerationAppPort = null;
+let guiGeneratedTestFiles = [];
+let guiRunFailures = [];
+let guiRepairAttempted = false;
 
 //output
 let pendingLine = '';
@@ -91,6 +218,7 @@ const PROVIDER_MODELS = {
 
 let cachedKeys = [];
 let pendingKey = null;
+let pendingVerifyRequestId = null;
 
 function fillModelSuggestions(provider) {
     const list = document.getElementById("modelSuggestions");
@@ -206,19 +334,30 @@ document.getElementById('submitApiKeyBtn').addEventListener('click', async () =>
     });
 });
 
-refreshApiKeyList();
+window.addEventListener("checkpoint-authenticated", () => {
+    showPage("homePage");
+    refreshApiKeyList().catch(error => {
+        console.error("Could not load API key settings after authentication:", error);
+    });
+});
 
 // ============================================
 // Backend Communication Helpers
 // ============================================
 
-function showLoading(title, message) {
+// options.noPercent hides the step percentage bar, for steps whose backend
+// reports no percentage (the bar would otherwise sit at a meaningless value).
+function showLoading(title, message, options = {}) {
 
 
     const overlay =
         document.getElementById("loadingOverlay");
 
     if (!overlay) return;
+
+    // Processing starts from Run Operations, including its task-selection
+    // subpages. Acknowledging its result returns to the main operations page.
+    operationReturnPage = "analysisPage";
 
     overlay.classList.remove("hidden");
 
@@ -228,6 +367,8 @@ function showLoading(title, message) {
     // show spinner & loading bar
     document.getElementById("loadingSpinner").classList.remove("hidden");
     document.getElementById("stepProgressContainer").classList.remove("hidden");
+    document.getElementById("loadingStepProgressContainer").classList.toggle("hidden", Boolean(options.noPercent));
+    document.getElementById("loadingStepProgressText").classList.toggle("hidden", Boolean(options.noPercent));
 
     // Hide pipeline progress by default
     document.getElementById("pipelineProgressContainer").classList.add("hidden");
@@ -235,6 +376,8 @@ function showLoading(title, message) {
 
     //hide ok button
     document.getElementById("loadingOkBtn").classList.add("hidden");
+    document.getElementById("loadingOpenReviewBtn").classList.add("hidden");
+    showReportButton(null);
     document.getElementById("loadingCancelBtn").classList.remove("hidden");
     document.getElementById("loadingCancelBtn").disabled = false;
 
@@ -327,6 +470,24 @@ function showLoadingWarning(text) {
 }
 
 
+// The run report (US-049) of the full run that just finished. The Complete
+// screen's "Open Report" button opens it in its own window.
+let runReportPath = null;
+
+function showReportButton(reportPath) {
+
+    runReportPath = reportPath || null;
+
+    const button =
+        document.getElementById("loadingReportBtn");
+
+    if (!button) return;
+
+    button.classList.toggle("hidden", !runReportPath);
+
+}
+
+
 function updateTokenMeter(response) {
 
     const meter =
@@ -399,9 +560,11 @@ function finishLoading(message = "Process completed successfully!") {
     }
 
 
-    // hide spinner and progress bars
+    // hide spinner and progress bars; the message itself (inside the step
+    // container) stays visible
     document.getElementById("loadingSpinner").classList.add("hidden");
-    document.getElementById("stepProgressContainer").classList.add("hidden");
+    document.getElementById("loadingStepProgressContainer").classList.add("hidden");
+    document.getElementById("loadingStepProgressText").classList.add("hidden");
     document.getElementById("pipelineProgressContainer").classList.add("hidden");
     document.getElementById("stepProgressTitle").classList.add("hidden");
 
@@ -425,6 +588,14 @@ function hideLoading() {
         cancelButton.classList.add("hidden");
         cancelButton.disabled = false;
     }
+}
+
+function returnToOperationPage() {
+    hideLoading();
+    document.getElementById("loadingOkBtn").classList.add("hidden");
+    document.getElementById("loadingOpenReviewBtn").classList.add("hidden");
+    showPage(operationReturnPage || "analysisPage");
+    operationReturnPage = null;
 }
 
 function showErrorPopup(message) {
@@ -481,19 +652,49 @@ function updateStepProgressBar(percent){
 
 async function runBackendCommand(command,args={}){
 
+    const request = commandRequests.begin(command);
+    activeRequestId = request.requestId;
+    if (command === "verify_api_key") {
+        pendingVerifyRequestId = request.requestId;
+    }
 
-    activeCommand = command;
+    try {
+        const acknowledgement = await window.electronAPI.executeCommand(
+            command,
+            args,
+            request.requestId
+        );
 
+        if (acknowledgement?.accepted === true && acknowledgement.request_id === request.requestId) {
+            commandRequests.accept(request.requestId);
+        } else {
+            await handleBackendResponse({
+                ...acknowledgement,
+                request_id: request.requestId,
+                command,
+                success: false,
+                error: acknowledgement?.error || "The backend did not accept the command."
+            });
+        }
 
-    return await window.electronAPI.executeCommand(
-        command,
-        args
-    );
+        return acknowledgement;
+    } catch (error) {
+        await handleBackendResponse({
+            request_id: request.requestId,
+            command,
+            success: false,
+            error: error.message || "Could not send the command to the backend."
+        });
+        return { request_id: request.requestId, success: false, error: error.message };
+    }
 
 }
 
 async function refreshErrorLog() {
+    const requestId = insightsPanelRequest;
     const response = await window.electronAPI.getErrorLog();
+
+    if (requestId !== insightsPanelRequest) return;
 
     if (response?.success) {
         renderErrorPreview(response.errors);
@@ -1226,6 +1427,84 @@ function usageHeader(text) {
     return header;
 }
 
+function usageMetric(label, value, ratio, kind) {
+
+    const metric = document.createElement("article");
+    metric.className = `usage-metric usage-metric-${kind}`;
+
+    const title = document.createElement("span");
+    title.className = "usage-metric-label";
+    title.textContent = label;
+
+    const number = document.createElement("strong");
+    number.className = "usage-metric-value";
+    number.textContent = value;
+
+    const svgNS = "http://www.w3.org/2000/svg";
+    const visual = document.createElementNS(svgNS, "svg");
+    visual.classList.add("usage-metric-visual");
+    visual.setAttribute("aria-hidden", "true");
+    visual.setAttribute("viewBox", kind === "calls" ? "0 0 76 40" : "0 0 76 48");
+    visual.setAttribute("focusable", "false");
+    if (kind === "calls") {
+        visual.classList.add("usage-wave");
+        const wave = document.createElementNS(svgNS, "path");
+        wave.setAttribute("d", "M2 21h10l5-12 8 23 8-18 7 12 7-8 6 3h11");
+        wave.setAttribute("fill", "none");
+        wave.setAttribute("stroke", "currentColor");
+        wave.setAttribute("stroke-width", "2.5");
+        wave.setAttribute("stroke-linecap", "round");
+        wave.setAttribute("stroke-linejoin", "round");
+        visual.appendChild(wave);
+    } else {
+        const heights = [15, 25, 20, 38, 30, 44, 35];
+        heights.forEach((height, index) => {
+            const bar = document.createElementNS(svgNS, "rect");
+            bar.setAttribute("x", String(3 + index * 10));
+            bar.setAttribute("y", String(46 - height * (0.35 + Math.max(0, Math.min(1, ratio / 100)) * 0.65)));
+            bar.setAttribute("width", "5");
+            bar.setAttribute("height", String(height * (0.35 + Math.max(0, Math.min(1, ratio / 100)) * 0.65)));
+            bar.setAttribute("rx", "2");
+            visual.appendChild(bar);
+        });
+    }
+
+    metric.append(title, number, visual);
+    return metric;
+}
+
+function usageDetail(label, value, icon) {
+
+    const row = document.createElement("div");
+    row.className = "usage-detail-row";
+
+    const iconNode = document.createElement("span");
+    iconNode.className = "usage-detail-icon";
+    iconNode.setAttribute("aria-hidden", "true");
+    iconNode.textContent = icon;
+
+    const copy = document.createElement("div");
+    copy.className = "usage-detail-copy";
+    const title = document.createElement("span");
+    title.className = "usage-detail-label";
+    title.textContent = label;
+    const text = document.createElement("strong");
+    text.className = "usage-detail-value";
+    text.textContent = value;
+    copy.append(title, text);
+
+    row.append(iconNode, copy);
+    return row;
+}
+
+function usageTime(seconds) {
+
+    const time = document.createElement("span");
+    time.textContent = formatSeconds(seconds);
+    if (Number(seconds) >= 60) time.className = "usage-time-long";
+    return time;
+}
+
 function renderRunUsage(run) {
 
     const output =
@@ -1243,9 +1522,7 @@ function renderRunUsage(run) {
     }
 
     const card = document.createElement("div");
-    card.className = "summary-card usage-card";
-
-    card.appendChild(usageHeader("AI Usage — Last Run"));
+    card.className = "summary-card usage-card usage-dashboard";
 
     const totals = run.totals || {};
 
@@ -1253,30 +1530,50 @@ function renderRunUsage(run) {
         ? ` (${totals.failed_calls} failed)`
         : "";
 
-    const overview = [
-        ["Codebase", run.codebase || "—"],
-        ["Status", usageStatus(run.status)],
-        ["Started", formatStamp(run.started_at)],
-        ["Duration", formatSeconds(run.elapsed_seconds)],
-        ["AI calls", formatCount(totals.calls) + failedNote],
-        ["Input tokens", formatCount(totals.input_tokens)],
-        ["Output tokens", formatCount(totals.output_tokens)],
-        ["Total tokens", formatCount(totals.total_tokens)],
-        ["Run ID", run.run_id || "—"],
-    ];
+    const titlebar = document.createElement("div");
+    titlebar.className = "usage-titlebar";
+    const title = usageHeader("AI Usage — Last Run");
+    title.classList.add("usage-title");
+    const project = document.createElement("span");
+    project.className = "usage-project";
+    project.textContent = run.codebase || "—";
+    const status = usageStatus(run.status || "unknown");
+    status.classList.add("usage-run-status");
+    titlebar.append(title, project, status);
+    card.appendChild(titlebar);
 
-    // Only when Google made us wait, so a slow run reads as throttled,
-    // not stuck.
-    if (totals.waits) {
-        overview.splice(4, 0, [
-            "Waited for Google",
-            `${totals.waits} time${totals.waits === 1 ? "" : "s"}, ` +
-            formatSeconds(totals.waited_seconds),
-        ]);
-    }
+    const dashboard = document.createElement("div");
+    dashboard.className = "usage-dashboard-grid";
+    const details = document.createElement("section");
+    details.className = "usage-details";
+    details.setAttribute("aria-label", "Run details and timings");
+    details.append(
+        usageDetail("Duration", formatSeconds(run.elapsed_seconds), "⏱️"),
+        usageDetail("Waited", `${formatCount(totals.waits)} times, ${formatSeconds(totals.waited_seconds ?? 0)}`, "⏳")
+    );
+    const identity = document.createElement("div");
+    identity.className = "usage-identity-card";
+    identity.append(
+        usageDetail("Started", formatStamp(run.started_at), "📅"),
+        usageDetail("Run ID", run.run_id || "—", "📁")
+    );
+    details.appendChild(identity);
 
-    card.appendChild(usageTable(null, overview))
-        .classList.add("usage-overview");
+    const tokenMetrics = document.createElement("section");
+    tokenMetrics.className = "usage-metrics";
+    tokenMetrics.setAttribute("aria-label", "Token and API call metrics");
+    const inputs = Number(totals.input_tokens) || 0;
+    const outputs = Number(totals.output_tokens) || 0;
+    const total = Number(totals.total_tokens) || 0;
+    const maxToken = Math.max(inputs, outputs, total);
+    tokenMetrics.append(
+        usageMetric("Input Tokens", formatCount(totals.input_tokens), maxToken ? inputs / maxToken * 100 : 0, "input"),
+        usageMetric("Output Tokens", formatCount(totals.output_tokens), maxToken ? outputs / maxToken * 100 : 0, "output"),
+        usageMetric("Total Tokens", formatCount(totals.total_tokens), maxToken ? 100 : 0, "total"),
+        usageMetric("AI Calls" + failedNote, formatCount(totals.calls), 0, "calls")
+    );
+    dashboard.append(details, tokenMetrics);
+    card.appendChild(dashboard);
 
     if (run.error) {
         const error = document.createElement("pre");
@@ -1293,7 +1590,7 @@ function renderRunUsage(run) {
 
         card.appendChild(usageHeader("By Step"));
 
-        card.appendChild(usageTable(
+        const byStep = usageTable(
             ["Step", "Status", "Time", "Calls", "Input", "Output", "Total"],
             stages.map(stage => [
                 stage.stage,
@@ -1311,7 +1608,9 @@ function renderRunUsage(run) {
                 formatCount(totals.output_tokens),
                 formatCount(totals.total_tokens),
             ]
-        ));
+        );
+        byStep.classList.add("usage-data-table");
+        card.appendChild(byStep);
     }
 
     const calls = run.calls || [];
@@ -1324,16 +1623,26 @@ function renderRunUsage(run) {
             .sort((a, b) => (b.duration_seconds ?? 0) - (a.duration_seconds ?? 0))
             .slice(0, 5);
 
-        card.appendChild(usageTable(
+        const slowTable = usageTable(
             ["Step", "Time", "Input", "Output", "Status"],
             slowest.map(call => [
-                call.stage,
-                formatSeconds(call.duration_seconds),
+                `⚙️ ${call.stage || "—"}`,
+                usageTime(call.duration_seconds),
                 formatCount(call.input_tokens),
                 formatCount(call.output_tokens),
                 usageStatus(call.status),
             ])
-        ));
+        );
+        slowTable.classList.add("usage-data-table", "usage-slowest-table");
+        [...slowTable.tBodies[0].rows].forEach(row => {
+            row.cells[1].classList.add("usage-time-cell");
+            row.cells[2].classList.add("usage-number-cell");
+            row.cells[3].classList.add("usage-number-cell");
+        });
+        const slowTableShell = document.createElement("div");
+        slowTableShell.className = "usage-table-shell";
+        slowTableShell.appendChild(slowTable);
+        card.appendChild(slowTableShell);
     }
 
     const failed = calls.filter(call => call.status === "failed");
@@ -1358,18 +1667,24 @@ function renderRunUsage(run) {
 
         card.appendChild(usageHeader("Waits for Google"));
 
-        const reasonText = reason => reason === "429"
-            ? "429 rate limit"
-            : `${reason} Google busy`;
+        const reasonText = reason => {
+            const badge = document.createElement("span");
+            badge.className = `usage-reason ${reason === "429" ? "rate-limit" : ""}`;
+            badge.textContent = reason === "429" ? "429 rate limit" : `${reason} Google busy`;
+            return badge;
+        };
 
-        card.appendChild(usageTable(
+        const waitsTable = usageTable(
             ["Step", "Reason", "Waited"],
             waits.map(wait => [
-                wait.stage,
+                `⚙️ ${wait.stage || "—"}`,
                 reasonText(wait.reason),
                 formatSeconds(wait.seconds),
             ])
-        ));
+        );
+        waitsTable.classList.add("usage-data-table", "usage-waits-table");
+        [...waitsTable.tBodies[0].rows].forEach(row => row.cells[2].classList.add("usage-number-cell"));
+        card.appendChild(waitsTable);
     }
 
     const note = document.createElement("p");
@@ -1403,7 +1718,146 @@ function renderTextPreview(text) {
     output.appendChild(pre);
 }
 
+function renderUnitTestsPreview(data) {
+
+    const output = document.getElementById("viewDisplayOutputBox");
+    output.innerHTML = "";
+
+    const title = document.createElement("h2");
+    title.className = "summary-header";
+    title.textContent = "Unit Tests";
+    output.appendChild(title);
+
+    const generated = Array.isArray(data.generated) ? data.generated : [];
+    const validated = Array.isArray(data.validated) ? data.validated : [];
+    const discarded = Array.isArray(data.discarded) ? data.discarded : [];
+    const report = data.report && typeof data.report === "object" ? data.report : null;
+    const sourceTests = generated.length
+        ? generated
+        : [...validated, ...discarded];
+
+    if (report) {
+        const summary = document.createElement("p");
+        summary.className = "unit-test-summary";
+        summary.textContent = [
+            `Generated: ${report.generated ?? sourceTests.length}`,
+            `Passed: ${report.passed ?? "—"}`,
+            `Failed: ${report.failed ?? "—"}`,
+            `Skipped: ${report.skipped ?? "—"}`
+        ].join(" · ");
+        output.appendChild(summary);
+
+        if (report.project_error) {
+            const error = document.createElement("p");
+            error.className = "unit-test-project-error";
+            error.textContent = `Tests were not run because the test project could not be built: ${report.project_error}`;
+            output.appendChild(error);
+        } else if (report.message) {
+            const note = document.createElement("p");
+            note.className = "unit-test-note";
+            note.textContent = report.message;
+            output.appendChild(note);
+        }
+    }
+
+    if (!sourceTests.length) {
+        const empty = document.createElement("p");
+        empty.className = "unit-test-empty";
+        empty.textContent = "No saved unit-test results are available for this codebase.";
+        output.appendChild(empty);
+        return;
+    }
+
+    const byId = entries => new Map(entries
+        .filter(entry => entry && entry.id !== undefined)
+        .map(entry => [String(entry.id), entry]));
+    const validatedById = byId(validated);
+    const discardedById = byId(discarded);
+    const failedNames = new Set((Array.isArray(report?.failed_tests) ? report.failed_tests : [])
+        .flatMap(value => String(value).match(/\bUT_[\w]+\b/g) || []));
+    const list = document.createElement("div");
+    list.className = "unit-test-list";
+
+    sourceTests.forEach((test, index) => {
+        if (!test || typeof test !== "object") return;
+
+        const id = test.id === undefined ? `item-${index + 1}` : String(test.id);
+        const name = `UT_${id}`;
+        const dropped = discardedById.get(id);
+        const kept = validatedById.get(id);
+        let statusLabel;
+        let statusClass;
+        let reason = "";
+
+        if (dropped) {
+            statusLabel = "Discarded";
+            statusClass = "discarded";
+            reason = dropped.reason || "This generated test was discarded during validation.";
+        } else if (report?.project_error) {
+            statusLabel = "Not run";
+            statusClass = "not-run";
+            reason = "The test project did not build, so this test was not executed.";
+        } else if (!report) {
+            statusLabel = "Not run";
+            statusClass = "not-run";
+            reason = "No saved test report is available for this test.";
+        } else if (failedNames.has(name)) {
+            statusLabel = "Failed";
+            statusClass = "failed";
+        } else if ((Number(report?.passed) || 0) + (Number(report?.failed) || 0) > 0) {
+            // Match the status calculation already used by the saved Run Report:
+            // failed test names identify failures; otherwise a test run with
+            // recorded pass/fail results marks the kept test as passed.
+            statusLabel = "Passed";
+            statusClass = "passed";
+        } else if (kept) {
+            statusLabel = "Not run";
+            statusClass = "not-run";
+            reason = "The test was validated, but the saved report records no execution result.";
+        } else {
+            statusLabel = "Not run";
+            statusClass = "not-run";
+        }
+
+        const item = document.createElement("article");
+        item.className = "unit-test-item";
+        const header = document.createElement("div");
+        header.className = "unit-test-item-header";
+        const nameNode = document.createElement("h3");
+        nameNode.textContent = name;
+        const badge = document.createElement("span");
+        badge.className = `unit-test-status ${statusClass}`;
+        badge.textContent = statusLabel;
+        header.append(nameNode, badge);
+        item.appendChild(header);
+
+        const description = document.createElement("p");
+        description.className = "unit-test-details";
+        description.textContent = reason || (test.source_file_paths?.length
+            ? `Source: ${test.source_file_paths.join(", ")}`
+            : "Saved unit-test result.");
+        item.appendChild(description);
+
+        const finalTest = kept || dropped || test;
+        const code = document.createElement("pre");
+        code.className = "unit-test-code";
+        const imports = Array.isArray(finalTest.imports) ? finalTest.imports.join("\n") : "";
+        const body = finalTest.unit_test || finalTest.test || "";
+        code.textContent = [imports, body].filter(Boolean).join("\n\n") || "Test source was not saved.";
+        item.appendChild(code);
+        list.appendChild(item);
+    });
+
+    output.appendChild(list);
+}
+
 function showPage(pageId) {
+
+    if (pageId === "codebasePipelinePage") {
+        document.getElementById("projectSourceChoices").classList.remove("hidden");
+        document.getElementById("localFolderPanel").classList.add("hidden");
+        document.getElementById("githubConnectPanel").classList.add("hidden");
+    }
 
     document.querySelectorAll('.page').forEach(page => {
         page.classList.add('hidden');
@@ -1414,6 +1868,14 @@ function showPage(pageId) {
 
 function showButtons(buttonId) {
 
+    insightsPanelRequest += 1;
+
+    // Another view is taking the output box: the Consistency Review screen
+    // must not draw into it when a background load or check finishes.
+    if (buttonId !== "viewConsistencyBtns" && window.ConsistencyReviewScreen) {
+        window.ConsistencyReviewScreen.hide();
+    }
+
     document.querySelectorAll('.viewBtnContainer').forEach(buttonContainer => {
         if (buttonContainer.id !== "mainViewBtns") {
 
@@ -1422,6 +1884,250 @@ function showButtons(buttonId) {
     });
 
     document.getElementById(buttonId).classList.remove('hidden');
+    document.getElementById("guiTestingReportView").classList.add("hidden");
+    document.getElementById("viewDisplayOutputBox").classList.remove("hidden");
+}
+
+function formatGuiReportDuration(milliseconds) {
+    const seconds = Math.max(0, Number(milliseconds) || 0) / 1000;
+    return seconds < 60
+        ? `${seconds.toFixed(1)} seconds`
+        : `${Math.floor(seconds / 60)} min ${(seconds % 60).toFixed(0)} sec`;
+}
+
+function renderGuiReportList(reports) {
+    const container = document.getElementById("guiTestingReportsList");
+    container.replaceChildren();
+    if (!reports.length) {
+        const empty = document.createElement("p");
+        empty.className = "gui-report-empty";
+        empty.textContent = "No GUI testing reports have been saved yet.";
+        container.appendChild(empty);
+        return;
+    }
+
+    reports.forEach(report => {
+        const button = document.createElement("button");
+        button.className = "output-file-btn btn-secondary gui-report-select";
+        const date = report.startedAt ? new Date(report.startedAt).toLocaleString() : "Date unavailable";
+        button.textContent = `${report.appName || "Application"} · ${date} · ${report.status}`;
+        button.addEventListener("click", () => loadGuiTestingReport(report.id));
+        container.appendChild(button);
+    });
+}
+
+async function refreshGuiTestingReports() {
+    const container = document.getElementById("guiTestingReportsList");
+    container.replaceChildren();
+    const loading = document.createElement("p");
+    loading.className = "gui-report-empty";
+    loading.textContent = "Loading saved GUI testing reports...";
+    container.appendChild(loading);
+
+    try {
+        const response = await window.electronAPI.listGuiTestingReports();
+        if (!response?.success) throw new Error(response?.error || "Could not load saved reports.");
+        renderGuiReportList(response.reports || []);
+        if (!(response.reports || []).length) {
+            renderGuiTestingReportMessage("Select a report after completing a GUI test run.");
+        }
+    } catch (error) {
+        renderGuiReportList([]);
+        renderGuiTestingReportMessage(error.message || "Could not load saved GUI testing reports.");
+    }
+}
+
+function guiReportElement(tag, className, text) {
+    const element = document.createElement(tag);
+    if (className) element.className = className;
+    if (text !== undefined && text !== null) element.textContent = String(text);
+    return element;
+}
+
+function renderGuiTestingReportMessage(message) {
+    const output = document.getElementById("guiTestingReportContent");
+    output.replaceChildren(guiReportElement("p", "gui-report-empty", message));
+    document.getElementById("viewDisplayOutputBox").classList.add("hidden");
+    document.getElementById("guiTestingReportView").classList.remove("hidden");
+}
+
+function renderGuiTestingReport(report) {
+    const output = document.getElementById("guiTestingReportContent");
+    output.replaceChildren();
+    document.getElementById("viewDisplayOutputBox").classList.add("hidden");
+    document.getElementById("guiTestingReportView").classList.remove("hidden");
+
+    const top = guiReportElement("div", "gui-report-header");
+    const heading = guiReportElement("div");
+    heading.append(
+        guiReportElement("h1", "", `${report.appName || "Application"} GUI Testing`),
+        guiReportElement("p", "gui-report-subtitle", report.startedAt
+            ? new Date(report.startedAt).toLocaleString()
+            : "Testing date unavailable")
+    );
+    const exportButton = guiReportElement("button", "btn-primary", "Export PDF");
+    const exportStatus = guiReportElement("span", "gui-report-export-status");
+    exportButton.type = "button";
+    exportButton.addEventListener("click", async () => {
+        exportButton.disabled = true;
+        try {
+            const result = await window.electronAPI.exportGuiTestingReportPdf(report.id);
+            if (result?.cancelled) return;
+            if (!result?.success) throw new Error(result?.error || "PDF export failed.");
+            exportStatus.textContent = `PDF saved to ${result.filePath}`;
+        } catch (error) {
+            exportStatus.textContent = error.message || "Could not export this report.";
+        } finally {
+            exportButton.disabled = false;
+        }
+    });
+    const exportActions = guiReportElement("div", "gui-report-export-actions");
+    exportActions.append(exportButton, exportStatus);
+    top.append(heading, exportActions);
+    output.appendChild(top);
+
+    const metadata = guiReportElement("div", "gui-report-metadata");
+    [
+        ["Status", report.status || "unknown"],
+        ["Date", report.startedAt ? new Date(report.startedAt).toLocaleString() : "Unavailable"],
+        ["Framework", report.framework || "Not specified"],
+        ["Browser", report.browser || "Not specified"],
+        ["Duration", formatGuiReportDuration(report.durationMs)]
+    ].forEach(([label, value]) => {
+        const item = guiReportElement("div", "gui-report-meta-item");
+        item.append(guiReportElement("span", "gui-report-meta-label", label), guiReportElement("strong", "", value));
+        metadata.appendChild(item);
+    });
+    output.appendChild(metadata);
+
+    const summary = guiReportElement("div", "gui-report-summary");
+    [
+        ["Total tests", report.total || 0, "total"],
+        ["Passed", report.passed || 0, "passed"],
+        ["Failed", report.failed || 0, "failed"],
+        ["Skipped", report.skipped || 0, "skipped"]
+    ].forEach(([label, value, kind]) => {
+        const card = guiReportElement("div", `gui-report-card gui-report-${kind}`);
+        card.append(guiReportElement("span", "", label), guiReportElement("strong", "", value));
+        summary.appendChild(card);
+    });
+    output.appendChild(summary);
+
+    const chartSection = guiReportElement("section", "gui-report-chart-section");
+    const chartTitle = guiReportElement("h2", "", "Test outcomes");
+    const chart = guiReportElement("div", "gui-report-chart");
+    const total = Math.max(0, Number(report.total) || 0);
+    const passed = Math.max(0, Number(report.passed) || 0);
+    const failed = Math.max(0, Number(report.failed) || 0);
+    const skipped = Math.max(0, Number(report.skipped) || 0);
+    const passDegrees = total ? passed / total * 360 : 0;
+    const failDegrees = total ? failed / total * 360 : 0;
+    const skipDegrees = total ? skipped / total * 360 : 0;
+    chart.style.background = total
+        ? `conic-gradient(#16835d 0deg ${passDegrees}deg, #c0394b ${passDegrees}deg ${passDegrees + failDegrees}deg, #8793a5 ${passDegrees + failDegrees}deg ${passDegrees + failDegrees + skipDegrees}deg, #e7ebf1 ${passDegrees + failDegrees + skipDegrees}deg 360deg)`
+        : "#e7ebf1";
+    chart.setAttribute("role", "img");
+    chart.setAttribute("aria-label", `${passed} passed, ${failed} failed, ${skipped} skipped`);
+    const rate = guiReportElement("strong", "gui-report-pass-rate", `${Number(report.passPercentage) || 0}%`);
+    chart.appendChild(rate);
+    const legend = guiReportElement("div", "gui-report-legend");
+    [["Passed", passed, "passed"], ["Failed", failed, "failed"], ["Skipped", skipped, "skipped"]]
+        .forEach(([label, value, kind]) => {
+            legend.appendChild(guiReportElement("span", `gui-report-legend-${kind}`, `${label}: ${value}`));
+        });
+    chartSection.append(chartTitle, chart, legend);
+    output.appendChild(chartSection);
+
+    const testsSection = guiReportElement("section", "gui-report-tests");
+    testsSection.appendChild(guiReportElement("h2", "", "Individual test results"));
+    const tests = Array.isArray(report.tests) ? report.tests : [];
+    if (!tests.length) {
+        testsSection.appendChild(guiReportElement("p", "gui-report-empty", "No individual test results were recorded."));
+    }
+    const table = guiReportElement("table", "gui-report-table");
+    const header = guiReportElement("thead");
+    const headerRow = guiReportElement("tr");
+    ["Test name", "Status", "Execution time", "Details"].forEach(label => {
+        headerRow.appendChild(guiReportElement("th", "", label));
+    });
+    header.appendChild(headerRow);
+    table.appendChild(header);
+    const tableBody = guiReportElement("tbody");
+    tests.forEach(test => {
+        const row = guiReportElement("tr", `gui-report-row gui-report-row-${test.status || "unknown"}`);
+        const statusCell = guiReportElement("td");
+        statusCell.appendChild(
+            guiReportElement("span", `gui-report-badge gui-report-badge-${test.status || "unknown"}`, test.status || "unknown")
+        );
+        row.append(
+            guiReportElement("td", "gui-report-test-name", test.name || "Untitled test"),
+            statusCell,
+            guiReportElement("td", "gui-report-test-duration", test.durationMs === null
+                ? "Interrupted"
+                : formatGuiReportDuration(test.durationMs))
+        );
+        const detailCell = guiReportElement("td");
+        const details = guiReportElement("details", "gui-report-test-details");
+        details.appendChild(guiReportElement("summary", "", "View details"));
+        const body = guiReportElement("div", "gui-report-test-body");
+        [
+            ["Purpose", test.purpose || "Not provided by the test."],
+            ["Expected result", test.expectedResult || "Not provided by the test."],
+            ["Actual result", test.actualResult || "No result was reported."]
+        ].forEach(([label, value]) => {
+            const paragraph = guiReportElement("p");
+            paragraph.append(guiReportElement("strong", "", `${label}: `), document.createTextNode(value));
+            body.appendChild(paragraph);
+        });
+        if (test.failureExplanation) {
+            const explanation = guiReportElement("div", "gui-report-failure-explanation");
+            explanation.append(
+                guiReportElement("h3", "", "Failure analysis"),
+                guiReportElement("p", "", `${test.failureExplanation.likelyCause} (${test.failureExplanation.confidence} confidence)`),
+                guiReportElement("p", "", `Suggested investigation: ${test.failureExplanation.investigation}`)
+            );
+            body.appendChild(explanation);
+        }
+        if ((test.errors || []).length || (test.output || []).length || test.diagnostics) {
+            const evidence = guiReportElement("details", "gui-report-evidence");
+            evidence.appendChild(guiReportElement("summary", "", "Execution evidence"));
+            (test.errors || []).forEach(error => {
+                evidence.appendChild(guiReportElement("pre", "gui-report-evidence-text", error.message || "Test error"));
+            });
+            if (test.diagnostics) {
+                evidence.appendChild(guiReportElement("p", "", `Diagnostic: ${test.diagnostics.summary || test.diagnostics.category || "No diagnostic summary."}`));
+            }
+            (test.output || []).forEach(entry => {
+                evidence.appendChild(guiReportElement("pre", "gui-report-evidence-text", `${entry.stream || "output"}: ${entry.text || ""}`));
+            });
+            body.appendChild(evidence);
+        }
+        details.appendChild(body);
+        detailCell.appendChild(details);
+        row.appendChild(detailCell);
+        tableBody.appendChild(row);
+    });
+    table.appendChild(tableBody);
+    if (tests.length) testsSection.appendChild(table);
+    output.appendChild(testsSection);
+
+    if ((report.errors || []).length) {
+        const runErrors = guiReportElement("details", "gui-report-run-errors");
+        runErrors.appendChild(guiReportElement("summary", "", "Run and startup diagnostics"));
+        report.errors.forEach(error => runErrors.appendChild(guiReportElement("pre", "gui-report-evidence-text", error.message)));
+        output.appendChild(runErrors);
+    }
+}
+
+async function loadGuiTestingReport(reportId) {
+    renderGuiTestingReportMessage("Loading report...");
+    try {
+        const response = await window.electronAPI.getGuiTestingReport(reportId);
+        if (!response?.success) throw new Error(response?.error || "Could not load the selected report.");
+        renderGuiTestingReport(response.report);
+    } catch (error) {
+        renderGuiTestingReportMessage(error.message || "Could not load the selected report.");
+    }
 }
 
 function setFAQSupportActive(activeButton) {
@@ -1524,16 +2230,324 @@ async function loadValidatedRulesSelection() {
     }
 }
 
+function showGuiMessage(message) {
+    const messageElement = document.getElementById("guiUploadError");
+    messageElement.textContent = message || "";
+    messageElement.classList.toggle("hidden", !message);
+}
+
+function updateGuiRunControls() {
+    const hasSelection = document.querySelector("#guiTestList input:checked");
+    document.getElementById("runGuiTestsBtn").disabled = guiRunActive || !hasSelection;
+    document.getElementById("uploadGuiTestsBtn").disabled = guiRunActive;
+    document.getElementById("startGuiLocalAppBtn").disabled = guiRunActive || guiGenerationInProgress;
+    document.getElementById("guiDemoMode").disabled = guiRunActive;
+    document.getElementById("generateGuiTestsBtn").disabled = guiRunActive || guiGenerationInProgress;
+    document.getElementById("guiTestBackBtn").disabled = guiGenerationInProgress;
+    document.getElementById("stopGuiTestsBtn").classList.toggle("hidden", !guiRunActive);
+    document.getElementById("stopGuiTestsBtn").disabled = !guiRunActive;
+    document.getElementById("clearGuiTestsBtn").disabled = guiRunActive || guiGenerationInProgress;
+}
+
+function renderGuiTestFiles() {
+    const list = document.getElementById("guiTestList");
+    list.replaceChildren();
+    const hasNamedSpecs = guiUploadedTests.some(test => /\.(?:spec|test)\.(?:js|ts)$/i.test(test.name));
+
+    if (!guiUploadedTests.length) {
+        const empty = document.createElement("p");
+        empty.className = "gui-empty-state";
+        empty.textContent = "No test files uploaded yet.";
+        list.appendChild(empty);
+        updateGuiRunControls();
+        return;
+    }
+
+    guiUploadedTests.forEach(test => {
+        const label = document.createElement("label");
+        label.className = "gui-test-item";
+
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.value = test.id;
+        checkbox.checked = test.selected ?? (!hasNamedSpecs || /\.(?:spec|test)\.(?:js|ts)$/i.test(test.name));
+        checkbox.addEventListener("change", () => {
+            test.selected = checkbox.checked;
+            updateGuiRunControls();
+        });
+
+        const name = document.createElement("span");
+        name.textContent = `${test.name} (${Math.ceil(test.size / 1024)} KB)`;
+
+        label.append(checkbox, name);
+        list.appendChild(label);
+    });
+    updateGuiRunControls();
+}
+
+function appendGuiLog(message) {
+    const logs = document.getElementById("guiExecutionLogs");
+    const lines = (logs.textContent === "Ready." ? [] : logs.textContent.split("\n"));
+    lines.push(`[${new Date().toLocaleTimeString()}] ${String(message)}`);
+    logs.textContent = lines.slice(-300).join("\n");
+    logs.scrollTop = logs.scrollHeight;
+}
+
+function setGuiCount(name, value) {
+    document.getElementById(`gui${name}Count`).textContent = String(value);
+}
+
+function resetGuiDashboard() {
+    guiTestResults = new Map();
+    guiRunCompleted = false;
+    document.getElementById("guiResultsList").replaceChildren();
+    document.getElementById("guiExecutionLogs").textContent = "";
+    document.getElementById("guiCurrentTest").textContent = "Starting isolated Playwright browser...";
+    setGuiCount("Total", 0);
+    setGuiCount("Passed", 0);
+    setGuiCount("Failed", 0);
+    setGuiCount("Running", 0);
+}
+
+function updateGuiResult(testId, title, status, errorMessage = "") {
+    const results = document.getElementById("guiResultsList");
+    let item = guiTestResults.get(testId);
+    if (!item) {
+        item = document.createElement("div");
+        item.className = "gui-result-item";
+        const name = document.createElement("span");
+        name.className = "gui-result-name";
+        const statusEl = document.createElement("strong");
+        statusEl.className = "gui-status";
+        item.append(name, statusEl);
+        guiTestResults.set(testId, item);
+        results.appendChild(item);
+    }
+
+    item.querySelector(".gui-result-name").textContent = title;
+    const statusEl = item.querySelector(".gui-status");
+    statusEl.textContent = status.toUpperCase();
+    statusEl.className = `gui-status gui-status-${status}`;
+
+    if (errorMessage) {
+        let details = item.querySelector(".gui-result-error");
+        if (!details) {
+            details = document.createElement("span");
+            details.className = "gui-result-error";
+            item.appendChild(details);
+        }
+        details.textContent = errorMessage;
+    }
+}
+
+function handleGuiTestEvent(event) {
+    if (!event) return;
+
+    if (["run_started", "test_started", "test_finished", "test_error", "runner_error", "run_complete"].includes(event.type)) {
+        window.electronAPI.reportGuiTestEvent(event);
+    }
+
+    if (event.type === "report_storage_error") {
+        appendGuiLog(event.message || "The GUI testing report could not be saved.");
+        return;
+    }
+    if (event.type === "runner_log") {
+        appendGuiLog(event.message);
+        return;
+    }
+    if (event.type === "local_app_log") {
+        appendGuiLog(`App ${String(event.stream || "output").toUpperCase()}: ${event.message || ""}`);
+        return;
+    }
+    if (event.type === 'local_app_status' || event.type === 'app_preflight') {
+        document.getElementById('guiAppStatus').textContent = event.message;
+        appendGuiLog(event.message);
+        return;
+    }
+    if (event.type === "local_app_exit") {
+        guiGenerationAppPort = null;
+        document.getElementById('stopGuiLocalAppBtn').classList.add('hidden');
+        if (!guiInfrastructureError) document.getElementById('guiAppStatus').textContent = event.message?.includes('stopped')
+            ? (guiRunCompleted ? 'GUI testing completed. Local application stopped.' : 'Local application stopped.')
+            : 'Local application exited. See technical diagnostics.';
+        appendGuiLog(event.message || "The local app process exited.");
+        return;
+    }
+    if (event.type === "local_app_started") {
+        document.getElementById('guiAppStatus').textContent = event.message;
+        appendGuiLog(event.message);
+        return;
+    }
+    if (event.type === "runner_status") {
+        appendGuiLog(event.message);
+        if (event.status === "stopped") {
+            if (guiPreviewTimer !== null) clearTimeout(guiPreviewTimer);
+            guiPreviewTimer = null;
+            guiRunCompleted = true;
+            document.getElementById("guiPreview").contentWindow?.postMessage({
+                type: "checkpoint-preview-ended", message: "Preview session stopped by user."
+            }, "*");
+            guiRunActive = false;
+            updateGuiRunControls();
+        }
+        return;
+    }
+    if (event.type === "runner_ready") {
+        appendGuiLog(event.message);
+        return;
+    }
+    if (event.type === "preview_diagnostic") {
+        appendGuiLog(event.message);
+        document.getElementById("guiPreviewStatus").textContent = event.message;
+        return;
+    }
+    if (event.type === "runner_container_exit") {
+        document.getElementById("guiPreview").contentWindow?.postMessage({
+            type: "checkpoint-preview-ended", message: event.message || "Docker container exited"
+        }, "*");
+        if (!guiRunCompleted) {
+            guiEventConnection?.notifyRunnerExit(event.message);
+        } else if (event.exitCode !== 0) {
+            appendGuiLog(event.message || `Playwright container exited with code ${event.exitCode}.`);
+        }
+        return;
+    }
+    if (event.type === "run_started") {
+        document.getElementById('guiAppStatus').textContent = 'Running GUI tests...';
+        setGuiCount("Total", event.total || 0);
+        document.getElementById("guiCurrentTest").textContent =
+            event.total ? `Running ${event.total} test${event.total === 1 ? "" : "s"}` : "No tests were discovered";
+        appendGuiLog(`Discovered ${event.total || 0} test case(s).`);
+        if (!event.total) appendGuiLog("No Playwright tests were found in the selected files.");
+        return;
+    }
+    if (event.type === "test_started") {
+        document.getElementById("guiCurrentTest").textContent = `Running: ${event.title}`;
+        setGuiCount("Running", 1);
+        updateGuiResult(event.testId, event.title, "running");
+        appendGuiLog(`Running ${event.file}:${event.line} — ${event.title}`);
+        return;
+    }
+    if (event.type === "test_finished") {
+        if (event.status === "failed") guiRunFailures.push(event);
+        const errorList = event.errors || [];
+        if (event.expectedResult) appendGuiLog(`Expected: ${event.expectedResult}`);
+        (event.assumptions || []).forEach(assumption => appendGuiLog(`Unconfirmed assumption: ${assumption}`));
+        if (event.status === "failed") appendGuiLog(`Observed: ${errorList.map(error => error.message).join("\n") || "No observation supplied by Playwright"}`);
+        const errorMessage = errorList.map(error => error.message).filter(Boolean).join("\n");
+        updateGuiResult(event.testId, event.title, event.status, errorMessage);
+        if (typeof event.screenshot === "string" && event.screenshot.length <= 350000
+            && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(event.screenshot)) {
+            const item = guiTestResults.get(event.testId);
+            if (item) {
+                let screenshot = item.querySelector("img.gui-failure-screenshot");
+                if (!screenshot) {
+                    screenshot = document.createElement("img");
+                    screenshot.className = "gui-failure-screenshot";
+                    screenshot.alt = "Playwright failure screenshot";
+                    screenshot.style.maxWidth = "100%";
+                    item.appendChild(screenshot);
+                }
+                screenshot.src = event.screenshot;
+            }
+        }
+        setGuiCount("Running", 0);
+        const count = Array.from(guiTestResults.values()).reduce((totals, item) => {
+            const status = item.querySelector(".gui-status").textContent.toLowerCase();
+            if (status === "passed") totals.passed += 1;
+            if (status === "failed") totals.failed += 1;
+            return totals;
+        }, { passed: 0, failed: 0 });
+        setGuiCount("Passed", count.passed);
+        setGuiCount("Failed", count.failed);
+        appendGuiLog(`${event.status.toUpperCase()}: ${event.title} (${event.duration} ms)`);
+        errorList.forEach(error => {
+            if (error.message) appendGuiLog(error.message);
+            if (error.stack) appendGuiLog(error.stack);
+        });
+        if (event.diagnostics) {
+            appendGuiLog(`Failure category: ${event.diagnostics.category}`);
+            appendGuiLog(event.diagnostics.summary);
+            if (event.diagnostics.locator) appendGuiLog(`Failing locator: ${event.diagnostics.locator}`);
+        }
+        (event.output || []).forEach(output => {
+            appendGuiLog(`${String(output.stream || "output").toUpperCase()}: ${output.text || ""}`);
+        });
+        return;
+    }
+    if (event.type === "test_error" || event.type === "runner_error") {
+        if (event.type === 'runner_error' || /APP_PREFLIGHT/.test(event.message || '')) {
+            guiInfrastructureError = true;
+            document.getElementById('guiAppStatus').textContent = event.message;
+        }
+        appendGuiLog(event.message || "The GUI test runner encountered an error.");
+        return;
+    }
+    if (event.type === "run_complete") {
+        const selectorFailure = !guiRepairAttempted && guiRunFailures.find(failure =>
+            failure.diagnostics?.category === "locator_timeout"
+        );
+        if (selectorFailure) {
+            const generatedFile = guiGeneratedTestFiles.find(filePath =>
+                filePath.split(/[\\/]/).pop() === selectorFailure.file
+            );
+            if (generatedFile) {
+                guiRepairAttempted = true;
+                guiRunActive = true;
+                updateGuiRunControls();
+                document.getElementById("guiCurrentTest").textContent =
+                    "Checking whether the failed locator can be safely repaired...";
+                appendGuiLog("A locator timeout was found. Checking the selector against app source; only one repair attempt is allowed.");
+                void requestGuiSelectorRepair(generatedFile, selectorFailure);
+                return;
+            }
+            appendGuiLog("A locator timed out, but its generated spec could not be matched to a source file. Repair was not attempted.");
+        }
+        guiRunCompleted = true;
+        if (guiPreviewTimer !== null) clearTimeout(guiPreviewTimer);
+        guiPreviewTimer = null;
+        document.getElementById("guiPreviewStatus").textContent = guiPreviewConnected
+            ? "Test execution finished; preview session ended."
+            : "Tests finished before the browser preview initialized. Try Demo Mode to observe short tests.";
+        document.getElementById("guiPreview").contentWindow?.postMessage({
+            type: "checkpoint-preview-ended", message: "Preview session ended normally; test execution finished."
+        }, "*");
+        guiEventConnection?.finish();
+        guiEventConnection = null;
+        guiEventSocket = null;
+        if (guiCspViolationListener) {
+            document.removeEventListener("securitypolicyviolation", guiCspViolationListener);
+            guiCspViolationListener = null;
+        }
+        setGuiCount("Total", event.total || 0);
+        setGuiCount("Passed", event.passed || 0);
+        setGuiCount("Failed", event.failed || 0);
+        setGuiCount("Running", 0);
+        guiRunActive = false;
+        updateGuiRunControls();
+        document.getElementById("guiCurrentTest").textContent =
+            `Run ${event.status}: ${event.passed || 0} passed, ${event.failed || 0} failed, ${event.skipped || 0} skipped`;
+        appendGuiLog(`Run finished — ${event.status}.`);
+        void stopLocalGuiApp();
+        if (!event.total && !guiInfrastructureError) {
+            showGuiMessage("No Playwright tests were found. Use test() or it() declarations in your selected files.");
+        }
+        return;
+    }
+}
+
 
 //loading complete button
 document.getElementById("loadingCancelBtn").addEventListener("click", async () => {
-    if (!activeCommand) return;
+    const request = commandRequests.get(activeRequestId);
+    if (!request) return;
 
     const cancelButton = document.getElementById("loadingCancelBtn");
-    const cancelledCommand = activeCommand;
+    const cancelledRequestId = request.requestId;
+    const cancelledCommand = request.command;
     cancelButton.disabled = true;
 
-    const response = await window.electronAPI.cancelCommand();
+    const response = await window.electronAPI.cancelCommand(cancelledRequestId);
 
     if (!response?.success) {
         cancelButton.disabled = false;
@@ -1545,21 +2559,56 @@ document.getElementById("loadingCancelBtn").addEventListener("click", async () =
     errorsMade = true;
 
     await window.electronAPI.recordErrorLog({
+        request_id: cancelledRequestId,
         command: cancelledCommand,
         message: cancellationMessage,
         code: "CANCELLED"
     });
 
+    commandRequests.fail(cancelledRequestId, cancellationMessage, { cancelled: true });
+    if (activeRequestId === cancelledRequestId) activeRequestId = null;
+    finishLoading(cancellationMessage);
+    document.getElementById("loadingTitle").textContent = "Cancelled";
     activeCommand = null;
-    hideLoading();
-    showPage("homePage");
 });
 
-document.getElementById("loadingOkBtn").addEventListener("click", () => {
+// Opens the whole-project result of the check that just finished, by its ID:
+// the review screen says so if the saved result has since become another one.
+document.getElementById("loadingOpenReviewBtn").addEventListener("click", () => {
+
+    const target = reviewTarget;
+    if (!target) return;
 
     hideLoading();
     document.getElementById("loadingOkBtn").classList.add("hidden");
-    showPage('homePage');
+    document.getElementById("loadingOpenReviewBtn").classList.add("hidden");
+
+    showPage('mainViewPage');
+    showButtons("viewConsistencyBtns");
+    const output = document.getElementById("viewDisplayOutputBox");
+    output.innerHTML = "";
+    window.ConsistencyReviewScreen.open(output, { call: backendCall }, target.codebasePath,
+        { scope: "full", expectCheckId: target.checkId });
+
+});
+
+document.getElementById("loadingOkBtn").addEventListener("click", () => {
+    returnToOperationPage();
+});
+
+document.getElementById("loadingReportBtn").addEventListener("click", async () => {
+
+    if (!runReportPath) return;
+
+    // Opening the report dismisses the completion overlay but keeps the
+    // selected codebase's Run Operations page in place behind its window.
+    returnToOperationPage();
+
+    const response = await window.electronAPI.openReport(runReportPath);
+
+    if (!response?.success) {
+        showErrorPopup(response?.error || "Could not open the run report.");
+    }
 
 });
 
@@ -1571,13 +2620,425 @@ document.getElementById('analysisBtn')
 
 
         if (!pathSubmitted) {
-            showPage('codebasePipelinePage');
+            showProjectSourcePicker();
         } else {
             showPage('analysisPage');
         }
 
     
     });
+
+document.getElementById("guiTestCasesBtn").addEventListener("click", () => {
+    showGuiMessage("");
+    showPage("guiTestPage");
+});
+
+async function stopLocalGuiApp() {
+    const response = await window.electronAPI.stopLocalGuiApp();
+    if (!response?.success) {
+        appendGuiLog(response?.error || "Could not stop the local app.");
+    }
+}
+
+document.getElementById('startGuiLocalAppBtn').addEventListener('click', async () => {
+    const directory = await window.electronAPI.selectCodebase();
+    if (!directory) return;
+    guiGenerationInProgress = true;
+    document.getElementById('stopGuiLocalAppBtn').classList.remove('hidden');
+    document.getElementById('guiAppStatus').textContent = 'Detecting and starting the selected application...';
+    updateGuiRunControls();
+    try {
+        const result = await window.electronAPI.startLocalGuiApp({ appDirectory: directory });
+        if (result?.cancelled) { document.getElementById('guiAppStatus').textContent = 'Application startup cancelled.'; return; }
+        if (!result?.success) throw new Error(result?.error || 'Application startup failed.');
+        guiGenerationAppPort = result.port;
+        document.getElementById('guiAppStatus').textContent = `${result.label || result.framework}: application ready on port ${result.port}. Upload tests to continue.`;
+        appendGuiLog(`Application: ${result.dockerUrl}. Command: ${result.command}`);
+    } catch (error) { document.getElementById('guiAppStatus').textContent = error.message; appendGuiLog(error.message); }
+    finally { guiGenerationInProgress = false; updateGuiRunControls(); }
+});
+document.getElementById('stopGuiLocalAppBtn').addEventListener('click', async () => {
+    await stopLocalGuiApp();
+    guiGenerationAppPort = null;
+    document.getElementById('stopGuiLocalAppBtn').classList.add('hidden');
+    document.getElementById('guiAppStatus').textContent = 'Local application stopped.';
+});
+
+async function requestGuiSelectorRepair(testFile, event) {
+    activeCommand = "repair_gui_test_case";
+    const failure = {
+        category: event.diagnostics.category,
+        diagnostics: event.diagnostics,
+        errors: (event.errors || []).slice(0, 1).map(error => ({
+            message: String(error.message || "").slice(0, 4000)
+        })),
+        output: (event.output || []).slice(0, 2).map(item => ({
+            stream: item.stream,
+            text: String(item.text || "").slice(0, 4000)
+        }))
+    };
+    try {
+        const response = await window.electronAPI.repairGeneratedGuiTest({ testFile, failure });
+        if (!response?.success) {
+            activeCommand = null;
+            document.getElementById("guiGenerationStatus").textContent = "Automatic selector repair could not start.";
+            document.getElementById("guiGenerationDetails").textContent = response?.error || "The backend did not accept the repair request.";
+            appendGuiLog(document.getElementById("guiGenerationDetails").textContent);
+            guiRunActive = false;
+            guiRunCompleted = true;
+            updateGuiRunControls();
+            await stopLocalGuiApp();
+        }
+    } catch (error) {
+        activeCommand = null;
+        document.getElementById("guiGenerationStatus").textContent = "Automatic selector repair failed.";
+        document.getElementById("guiGenerationDetails").textContent = error.message || "Could not request the repair.";
+        appendGuiLog(document.getElementById("guiGenerationDetails").textContent);
+        guiRunActive = false;
+        guiRunCompleted = true;
+        updateGuiRunControls();
+        await stopLocalGuiApp();
+    }
+}
+
+document.getElementById("generateGuiTestsBtn").addEventListener("click", async () => {
+    const resultPanel = document.getElementById("guiGenerationResult");
+    const status = document.getElementById("guiGenerationStatus");
+    const details = document.getElementById("guiGenerationDetails");
+    const filesList = document.getElementById("guiGeneratedFiles");
+
+    let sourceDirectory;
+    try {
+        sourceDirectory = await window.electronAPI.selectCodebase();
+    } catch (error) {
+        resultPanel.classList.remove("hidden");
+        status.textContent = "Could not select the app source folder.";
+        details.textContent = error.message || "The folder picker failed.";
+        return;
+    }
+    if (!sourceDirectory) return;
+
+    resultPanel.classList.remove("hidden");
+    filesList.replaceChildren();
+    details.textContent = `Detecting the framework and starting the app...\nSource folder: ${sourceDirectory}`;
+    status.textContent = "Starting the local app...";
+    guiGenerationSourceDirectory = sourceDirectory;
+    guiGenerationAppPort = null;
+    guiGeneratedTestFiles = [];
+    guiRunFailures = [];
+    guiRepairAttempted = false;
+    guiGenerationInProgress = true;
+    updateGuiRunControls();
+
+    try {
+        const appResult = await window.electronAPI.startLocalGuiApp({
+            appDirectory: sourceDirectory
+        });
+        if (appResult?.cancelled) {
+            guiGenerationInProgress = false;
+            updateGuiRunControls();
+            status.textContent = "Local app startup cancelled.";
+            details.textContent = "The project was not started.";
+            return;
+        }
+        if (!appResult?.success) {
+            guiGenerationInProgress = false;
+            updateGuiRunControls();
+            status.textContent = "Could not start the local app.";
+            details.textContent = appResult?.error || "The project's npm script failed to start.";
+            return;
+        }
+
+        guiGenerationAppPort = appResult.port;
+        sourceDirectory = appResult.appDirectory;
+        guiGenerationSourceDirectory = sourceDirectory;
+        status.textContent = `Detected ${appResult.framework}. App started on port ${appResult.port}; generating GUI test cases...`;
+        details.textContent = [
+            `Framework: ${appResult.framework}`,
+            `Local app: ${appResult.dockerUrl}`,
+            `Command: ${appResult.command}`,
+            `Source folder: ${sourceDirectory}`
+        ].join("\n");
+        activeCommand = "generate_gui_test_cases";
+        const response = await runBackendCommand("generate_gui_test_cases", {
+            codebase: sourceDirectory
+        });
+        if (response?.accepted !== true && response?.success !== true) {
+            await stopLocalGuiApp();
+            guiGenerationInProgress = false;
+            activeCommand = null;
+            updateGuiRunControls();
+            status.textContent = "Could not start GUI test generation.";
+            details.textContent = response?.error || "The backend did not accept the request.";
+        }
+    } catch (error) {
+        await stopLocalGuiApp();
+        guiGenerationInProgress = false;
+        activeCommand = null;
+        updateGuiRunControls();
+        status.textContent = "Could not start GUI test generation.";
+        details.textContent = error.message || "The backend request failed.";
+    }
+});
+
+document.getElementById("guiTestBackBtn").addEventListener("click", async () => {
+    if (guiRunActive) {
+        const response = await window.electronAPI.stopGuiTests();
+        if (!response?.success) {
+            showGuiMessage(response?.error || "Could not stop the GUI test run.");
+            return;
+        }
+    }
+    await stopLocalGuiApp();
+    showPage("homePage");
+});
+
+document.getElementById("uploadGuiTestsBtn").addEventListener("click", async () => {
+    showGuiMessage("");
+    let response;
+    try {
+        response = await window.electronAPI.selectGuiTestFiles();
+    } catch (error) {
+        showGuiMessage(error.message || "Could not upload the selected test files.");
+        return;
+    }
+    if (response?.cancelled) return;
+    if (!response?.success) {
+        showGuiMessage(response?.error || "Could not upload the selected test files.");
+        return;
+    }
+
+    const previousSelections = new Map(guiUploadedTests.map(test => [test.id, test.selected]));
+    guiUploadedTests = (response.tests || []).map(test => ({
+        ...test,
+        selected: previousSelections.has(test.id) ? previousSelections.get(test.id) : undefined
+    }));
+    renderGuiTestFiles();
+    appendGuiLog(`Loaded ${guiUploadedTests.length} test/support file(s).`);
+});
+
+document.getElementById("clearGuiTestsBtn").addEventListener("click", async () => {
+    if (guiRunActive || guiGenerationInProgress) return;
+    const response = await window.electronAPI.clearGuiTests();
+    if (!response?.success) {
+        showGuiMessage(response?.error || "Could not clear the last GUI test.");
+        return;
+    }
+
+    guiUploadedTests = [];
+    guiGeneratedTestFiles = [];
+    guiRunFailures = [];
+    guiRepairAttempted = false;
+    guiGenerationSourceDirectory = null;
+    guiGenerationAppPort = null;
+    guiInfrastructureError = false;
+    guiPreviewConnected = false;
+    if (guiPreviewTimer !== null) clearTimeout(guiPreviewTimer);
+    guiPreviewTimer = null;
+
+    resetGuiDashboard();
+    document.getElementById("guiResultsList").replaceChildren(
+        guiReportElement("p", "gui-empty-state", "Results will appear here after execution begins.")
+    );
+    document.getElementById("guiExecutionLogs").textContent = "Ready.";
+    document.getElementById("guiCurrentTest").textContent = "Waiting for a test run";
+    document.getElementById("guiPreviewStatus").textContent = "Preview idle";
+    setGuiPreviewExpanded(false);
+    const preview = document.getElementById("guiPreview");
+    preview.removeAttribute("src");
+    preview.classList.add("hidden");
+    document.getElementById("guiPreviewEmpty").classList.remove("hidden");
+    document.getElementById("expandGuiPreviewBtn").disabled = true;
+    document.getElementById("guiGenerationResult").classList.add("hidden");
+    document.getElementById("guiGenerationDetails").textContent = "";
+    document.getElementById("guiGeneratedFiles").replaceChildren();
+    showGuiMessage("");
+    renderGuiTestFiles();
+});
+
+function connectGuiRun(response) {
+    guiInfrastructureError = false;
+    guiRunActive = true;
+    guiRunCompleted = false;
+    updateGuiRunControls();
+    const preview = document.getElementById("guiPreview");
+    guiPreviewConnected = false;
+    if (guiPreviewTimer !== null) clearTimeout(guiPreviewTimer);
+    guiPreviewTimer = setTimeout(() => {
+        guiPreviewTimer = null;
+        if (!guiRunCompleted && !guiPreviewConnected) {
+            document.getElementById("guiPreviewStatus").textContent = "Preview server or iframe has not initialized. Test execution continues; check preview connection diagnostics.";
+        }
+    }, 12000);
+    document.getElementById("guiPreviewStatus").textContent = "Loading browser preview...";
+    preview.onload = () => {
+        if (!guiRunCompleted) appendGuiLog("Preview iframe loaded; waiting for the VNC connection.");
+    };
+    preview.onerror = () => {
+        document.getElementById("guiPreviewStatus").textContent = "Preview iframe failed to load. Check that the local preview server is ready; tests continue.";
+    };
+    preview.src = response.previewUrl;
+    preview.classList.remove("hidden");
+    document.getElementById("guiPreviewEmpty").classList.add("hidden");
+    document.getElementById("expandGuiPreviewBtn").disabled = false;
+
+    guiEventConnection?.cancel();
+    guiEventConnection = null;
+    if (guiEventSocket) guiEventSocket.close();
+    guiEventSocket = null;
+    if (guiCspViolationListener) {
+        document.removeEventListener("securitypolicyviolation", guiCspViolationListener);
+    }
+
+    guiCspViolationListener = event => {
+        if ((event.effectiveDirective === "frame-src" || event.effectiveDirective === "frame-src-elem")
+            && String(event.blockedURI || "").startsWith("http://127.0.0.1")) {
+            const message = "Preview iframe was blocked by Content Security Policy. Test results remain connected.";
+            document.getElementById("guiPreviewStatus").textContent = message;
+            appendGuiLog(message);
+            return;
+        }
+        if (
+            event.effectiveDirective === "connect-src" &&
+            String(event.blockedURI || "").startsWith("ws:")
+        ) {
+            const blockedEndpoint =
+                String(event.blockedURI || "").match(/^(wss?:\/\/[^/]+)/)?.[1]
+                || "the local WebSocket endpoint";
+            const message = `GUI event stream blocked by Content Security Policy: ${blockedEndpoint} (${event.effectiveDirective}).`;
+            appendGuiLog(message);
+            guiEventConnection?.stopWithError(message);
+        }
+    };
+    document.addEventListener("securitypolicyviolation", guiCspViolationListener);
+
+    guiEventConnection = window.GuiEventConnection({
+        url: response.eventsUrl,
+        WebSocketImpl: WebSocket,
+        onOpen: socket => {
+            guiEventSocket = socket;
+            socket.send("viewer_ready");
+        },
+        onMessage: message => {
+            try {
+                handleGuiTestEvent(JSON.parse(message.data));
+            } catch (error) {
+                appendGuiLog(`Could not read a runner event: ${error.message}`);
+            }
+        },
+        onStatus: message => appendGuiLog(message),
+        onFailure: async message => {
+            guiEventSocket = null;
+            guiRunCompleted = true;
+            guiRunActive = false;
+            updateGuiRunControls();
+            document.getElementById("guiCurrentTest").textContent = "Could not connect to the test runner";
+            appendGuiLog(message);
+            window.electronAPI.reportGuiTestEvent({ type: "runner_error", message });
+            showGuiMessage(message);
+            try {
+                const diagnostic = await window.electronAPI.diagnoseGuiEventStream(response.eventsUrl);
+                appendGuiLog(`Event stream diagnosis (${diagnostic.category}): ${diagnostic.message}`);
+            } catch (error) {
+                appendGuiLog(`Could not retrieve event stream diagnostics: ${error.message}`);
+            }
+            if (guiCspViolationListener) {
+                document.removeEventListener("securitypolicyviolation", guiCspViolationListener);
+                guiCspViolationListener = null;
+            }
+            const stopResponse = await window.electronAPI.stopGuiTests();
+            if (!stopResponse?.success) {
+                appendGuiLog(stopResponse?.error || "Could not stop the isolated Playwright runner after event-stream failure.");
+            }
+            await stopLocalGuiApp();
+        }
+    });
+}
+
+document.getElementById("runGuiTestsBtn").addEventListener("click", async () => {
+    const selectedIds = Array.from(
+        document.querySelectorAll("#guiTestList input[type='checkbox']:checked"),
+        checkbox => checkbox.value
+    );
+    if (!selectedIds.length) {
+        showGuiMessage("Select at least one test file to run.");
+        return;
+    }
+
+    showGuiMessage("");
+    const allowedHosts = document.getElementById("guiAllowedHosts").value
+        .split(/[,\s]+/)
+        .map(host => host.trim())
+        .filter(Boolean);
+    if (!allowedHosts.length && !guiGenerationAppPort) {
+        showGuiMessage("Enter at least one allowed website host before running tests.");
+        return;
+    }
+    resetGuiDashboard();
+    guiRunActive = true;
+    updateGuiRunControls();
+    let response;
+    try {
+        response = await window.electronAPI.startGuiTests(selectedIds, allowedHosts, {
+            demoMode: document.getElementById("guiDemoMode").checked
+        });
+    } catch (error) {
+        guiRunActive = false;
+        updateGuiRunControls();
+        showGuiMessage(error.message || "Could not start the GUI test run.");
+        appendGuiLog(error.message || "Could not start the GUI test run.");
+        return;
+    }
+    if (!response?.success) {
+        guiRunActive = false;
+        updateGuiRunControls();
+        const wasStopped = /stopped during startup/i.test(response?.error || "");
+        if (!wasStopped) showGuiMessage(response?.error || "Could not start the GUI test run.");
+        appendGuiLog(response?.error || "Could not start the GUI test run.");
+        document.getElementById("guiCurrentTest").textContent = "Run failed to start";
+        return;
+    }
+
+    connectGuiRun(response);
+});
+
+document.getElementById("stopGuiTestsBtn").addEventListener("click", async () => {
+    guiEventConnection?.cancel();
+    guiEventConnection = null;
+    guiEventSocket = null;
+    if (guiCspViolationListener) {
+        document.removeEventListener("securitypolicyviolation", guiCspViolationListener);
+        guiCspViolationListener = null;
+    }
+    const response = await window.electronAPI.stopGuiTests();
+    if (!response?.success) {
+        showGuiMessage(response?.error || "Could not stop the GUI test run.");
+        return;
+    }
+    guiRunActive = false;
+    updateGuiRunControls();
+});
+
+document.getElementById("expandGuiPreviewBtn").addEventListener("click", event => {
+    setGuiPreviewExpanded(true);
+});
+
+document.getElementById("collapseGuiPreviewBtn").addEventListener("click", () => {
+    setGuiPreviewExpanded(false);
+});
+
+document.addEventListener("keydown", event => {
+    if (event.key === "Escape") setGuiPreviewExpanded(false);
+});
+
+function setGuiPreviewExpanded(expanded) {
+    document.getElementById("guiPreviewFrame").classList.toggle("gui-preview-expanded", expanded);
+    document.getElementById("expandGuiPreviewBtn").textContent = expanded ? "Collapse Preview" : "Expand Preview";
+    document.getElementById("collapseGuiPreviewBtn").classList.toggle("hidden", !expanded);
+}
+
+window.electronAPI.onGuiTestEvent(handleGuiTestEvent);
+renderGuiTestFiles();
 
 
 document.getElementById('faqAndSupportBtn')
@@ -1595,12 +3056,28 @@ document.getElementById('mainViewBtn')
 
         
         showPage('mainViewPage');
+        showButtons("mainViewBtns");
+        document.getElementById("viewDisplayOutputBox").innerHTML = "";
         refreshErrorLog();
 
     });
 
+document.getElementById("viewGuiTestingReportsBtn").addEventListener("click", async () => {
+    showButtons("viewGuiReportsBtns");
+    renderGuiTestingReportMessage("Select a saved GUI testing report to view its summary and test details.");
+    await refreshGuiTestingReports();
+});
+
+document.getElementById("refreshGuiReportsBtn").addEventListener("click", refreshGuiTestingReports);
+
 document.getElementById("errorPopupCloseBtn")
-    .addEventListener("click", hideErrorPopup);
+    .addEventListener("click", () => {
+        hideErrorPopup();
+        // Failed operation responses dismiss their loading overlay before
+        // showing this popup. Cancellation-request errors leave the operation
+        // active, so closing that popup must not dismiss its progress screen.
+        if (!activeCommand && operationReturnPage) returnToOperationPage();
+    });
 
 document.getElementById("viewDisplaySourcesBtn")
 .addEventListener("click", () => {
@@ -1652,6 +3129,19 @@ document.getElementById("viewDisplayErrorsBtn")
 
 });
 
+document.getElementById("viewConsistencyBtn")
+.addEventListener("click", () => {
+
+    showButtons("viewConsistencyBtns");
+
+    const output = document.getElementById("viewDisplayOutputBox");
+    output.innerHTML = "";
+
+    // Reads saved results only: no check is run and no model is called.
+    window.ConsistencyReviewScreen.open(output, { call: backendCall }, selectedCodebasePath);
+
+});
+
 document.getElementById("viewUsageBtn")
 .addEventListener("click", async () => {
 
@@ -1660,6 +3150,109 @@ document.getElementById("viewUsageBtn")
     await runBackendCommand("get_run_usage");
 
 });
+
+// The run report (US-049) in its own window: the selected codebase's, or the
+// most recent one when no codebase has been selected yet this session.
+document.getElementById("viewRunReportBtn")
+.addEventListener("click", async () => {
+
+    showButtons("mainViewBtns");
+    const requestId = insightsPanelRequest;
+    const output = document.getElementById("viewDisplayOutputBox");
+    output.replaceChildren();
+
+    if (window.ConsistencyReviewScreen) {
+        window.ConsistencyReviewScreen.hide();
+    }
+
+    const codebaseName = getSelectedCodebaseName();
+    if (!codebaseName) {
+        renderRunReportEmpty("Select a codebase to view its run report.");
+        return;
+    }
+
+    let response;
+    try {
+        response = await window.electronAPI.getRunReportHtml(codebaseName);
+    } catch (error) {
+        response = { success: false, error: "Could not load the run report." };
+    }
+
+    // A different Insights section or codebase may have been selected while IPC was pending.
+    if (requestId !== insightsPanelRequest || codebaseName !== getSelectedCodebaseName()) return;
+
+    if (!response?.success || response.codebase !== codebaseName || typeof response.html !== "string") {
+        renderRunReportEmpty(response?.error || "No run report is available for this codebase.");
+        return;
+    }
+
+    const frame = document.createElement("iframe");
+    frame.className = "run-report-frame";
+    frame.title = `Run report for ${response.codebase}`;
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.setAttribute("referrerpolicy", "no-referrer");
+    frame.addEventListener("load", () => {
+        frame.contentWindow?.postMessage({
+            type: "checkpoint:set-report-theme",
+            theme: document.body.dataset.theme === "light" ? "light" : "dark"
+        }, "*");
+    });
+
+    const embeddedHtml = createEmbeddedRunReportHtml(
+        response.html,
+        document.body.dataset.theme === "light" ? "light" : "dark"
+    );
+    if (!embeddedHtml) {
+        renderRunReportEmpty("This saved report could not be displayed because its document structure is invalid.");
+        return;
+    }
+
+    frame.srcdoc = embeddedHtml;
+    output.replaceChildren(frame);
+
+});
+
+function renderRunReportEmpty(message) {
+    const output = document.getElementById("viewDisplayOutputBox");
+    if (!output) return;
+
+    const state = document.createElement("section");
+    state.className = "run-report-empty";
+    state.setAttribute("role", "status");
+    const title = document.createElement("h2");
+    title.textContent = "Run Report unavailable";
+    const detail = document.createElement("p");
+    detail.textContent = message;
+    state.append(title, detail);
+    output.replaceChildren(state);
+}
+
+function createEmbeddedRunReportHtml(reportHtml, theme) {
+    // The report's own CSP runs only its own script, matched by hash, so nothing
+    // here may add or change a <script>. Marking <html> is enough: the report's
+    // script then hides its back button, routes its links in the page and
+    // listens for the theme message.
+    const htmlTag = /<html(?=[\s>])/i.exec(reportHtml);
+    const headEnd = reportHtml.toLowerCase().indexOf("</head>");
+    if (!htmlTag || headEnd < htmlTag.index) return null;
+    const tagEnd = htmlTag.index + htmlTag[0].length;
+
+    const htmlAttributes = ` data-checkpoint-embedded="true" data-checkpoint-theme="${theme}"`;
+    // A second policy can only narrow the report's own; it covers reports saved before they had one.
+    const headInjection = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
+<style>
+html[data-checkpoint-theme="dark"] { color-scheme: dark; --bg:#0d111a; --panel:#141a24; --text:#fff; --muted:#94a3b8; --line:rgba(255,255,255,.08); --accent:#e52b38; --accent-soft:rgba(229,43,56,.15); --code-bg:#101722; --ok:#86efac; --ok-bg:rgba(34,197,94,.15); --bad:#ff8a93; --bad-bg:rgba(229,43,56,.15); --warn:#fbbf24; --warn-bg:rgba(245,158,11,.15); --none:#94a3b8; --none-bg:rgba(148,163,184,.12); --flash:rgba(229,43,56,.2); }
+html[data-checkpoint-theme="light"] { color-scheme: light; --bg:#f1f4f8; --panel:#fff; --text:#172033; --muted:#475569; --line:rgba(15,23,42,.13); --accent:#d92332; --accent-soft:rgba(229,43,56,.1); --code-bg:#f7f9fc; --ok:#166534; --ok-bg:rgba(34,197,94,.12); --bad:#a51d29; --bad-bg:rgba(229,43,56,.1); --warn:#854d0e; --warn-bg:rgba(245,158,11,.13); --none:#64748b; --none-bg:rgba(100,116,139,.1); --flash:#fff4c2; }
+html[data-checkpoint-embedded="true"] body { min-width:0; background:var(--bg); color:var(--text); }
+html[data-checkpoint-embedded="true"] #report-back,
+html[data-checkpoint-embedded="true"] #report-back-help { display:none !important; }
+html[data-checkpoint-embedded="true"] .viewport { min-height:240px; max-height:560px; background:var(--code-bg); }
+html[data-checkpoint-embedded="true"] #tabs a:focus-visible,
+html[data-checkpoint-embedded="true"] .view-switch button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+</style>`;
+
+    return reportHtml.slice(0, tagEnd) + htmlAttributes + reportHtml.slice(tagEnd, headEnd) + headInjection + reportHtml.slice(headEnd);
+}
 
 document.getElementById("viewDisplaySummariesBtn")
     .addEventListener("click", () => {
@@ -1718,77 +3311,207 @@ document.getElementById("viewDisplayFilesBtn").addEventListener("click", () => {
 
 });
 
-document.getElementById("viewDisplayBusinessRulesBtn").addEventListener("click", () => {
+let businessRulesRequest = 0;
 
-    showButtons("viewBusinessRulesBtns");
+document.getElementById("viewDisplayBusinessRulesBtn").addEventListener("click", async () => {
+    showButtons("mainViewBtns");
 
+    const output = document.getElementById("viewDisplayOutputBox");
+    const requestId = ++businessRulesRequest;
+    const codebasePath = selectedCodebasePath;
+    output.innerHTML = "";
 
-    
+    const title = document.createElement("h2");
+    title.className = "business-rules-title";
+    title.textContent = "Business Rules";
+    output.appendChild(title);
 
-});
+    if (!codebasePath) {
+        const message = document.createElement("p");
+        message.className = "business-rules-empty";
+        message.textContent = "Select a codebase first from the pipeline page.";
+        output.appendChild(message);
+        return;
+    }
 
-document.getElementById("viewUnitTestsBtn")
-    .addEventListener("click", () => {
+    const loading = document.createElement("p");
+    loading.className = "business-rules-loading";
+    loading.textContent = "Loading business rules…";
+    output.appendChild(loading);
 
-        showButtons("viewFilesBtns");
-        setActiveFileListView({ includePdfs: false, onlyPdfs: false, recursivePdfs: false });
+    let response;
+    try {
+        response = await window.electronAPI.getBusinessRules(codebasePath);
+    } catch (error) {
+        response = { success: false, error: error.message || "Could not load business rules." };
+    }
 
-        const codebaseName = getSelectedCodebaseName();
-        if (!codebaseName) {
-            renderTextPreview("Select a codebase first from the pipeline page.");
+    if (requestId !== businessRulesRequest || codebasePath !== selectedCodebasePath) return;
+    output.innerHTML = "";
+    output.appendChild(title);
+
+    if (!response?.success) {
+        const message = document.createElement("p");
+        message.className = "business-rules-unavailable";
+        message.textContent = response?.error || "Could not load business rules.";
+        output.appendChild(message);
+        return;
+    }
+
+    const validated = response.validated || { exists: false, loaded: false, count: null, rules: [] };
+    const discarded = response.discarded || { exists: false, loaded: false, count: null, rules: [] };
+    const summary = document.createElement("div");
+    summary.className = "business-rules-summary";
+    for (const [label, file] of [["Validated", validated], ["Discarded", discarded]]) {
+        const badge = document.createElement("span");
+        badge.className = `business-rules-count ${label.toLowerCase()}`;
+        badge.textContent = `${label}: ${file.loaded ? file.count : "Unavailable"}`;
+        summary.appendChild(badge);
+    }
+    output.appendChild(summary);
+
+    const allRules = [
+        ...(validated.loaded ? validated.rules.map((rule) => ({
+            text: typeof rule === "string" ? rule : rule.text,
+            source: typeof rule === "string" ? "" : (rule.source || ""),
+            status: "Validated"
+        })) : []),
+        ...(discarded.loaded ? discarded.rules.map((rule) => ({
+            text: typeof rule === "string" ? rule : rule.text,
+            source: typeof rule === "string" ? "" : (rule.source || ""),
+            status: "Discarded"
+        })) : [])
+    ];
+
+    const toolbar = document.createElement("div");
+    toolbar.className = "business-rules-toolbar";
+    const search = document.createElement("input");
+    search.type = "search";
+    search.className = "business-rules-search";
+    search.placeholder = "Search rules...";
+    search.setAttribute("aria-label", "Search rules");
+    const status = document.createElement("select");
+    status.className = "business-rules-filter";
+    status.setAttribute("aria-label", "Filter by status");
+    [["All", "all"], ["Validated", "validated"], ["Discarded", "discarded"]].forEach(([label, value]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label;
+        status.appendChild(option);
+    });
+    const folder = document.createElement("select");
+    folder.className = "business-rules-filter";
+    folder.setAttribute("aria-label", "Filter by source folder");
+    const allFolders = document.createElement("option");
+    allFolders.value = "all";
+    allFolders.textContent = "All Folders";
+    folder.appendChild(allFolders);
+    [...new Set(allRules.map((rule) => rule.source).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, undefined, { sensitivity: "base" }))
+        .forEach((source) => {
+            const option = document.createElement("option");
+            option.value = source;
+            option.textContent = source;
+            folder.appendChild(option);
+        });
+    const clear = document.createElement("button");
+    clear.type = "button";
+    clear.className = "business-rules-clear";
+    clear.textContent = "✕ Clear Filters";
+    toolbar.append(search, status, folder, clear);
+    output.appendChild(toolbar);
+
+    const list = document.createElement("div");
+    list.className = "business-rules-list";
+    output.appendChild(list);
+
+    const hasAnyRuleFile = validated.exists || discarded.exists;
+    if (!hasAnyRuleFile) {
+        const empty = document.createElement("p");
+        empty.className = "business-rules-empty";
+        empty.textContent = "No business-rule validation results are available for this codebase.";
+        list.appendChild(empty);
+    }
+
+    const addStatusMessage = (message, className = "business-rules-empty") => {
+        const empty = document.createElement("p");
+        empty.className = className;
+        empty.textContent = message;
+        list.appendChild(empty);
+    };
+
+    if (validated.exists && !validated.loaded) {
+        addStatusMessage(`Validated rules unavailable${validated.error ? `: ${validated.error}` : "."}`, "business-rules-unavailable");
+    } else if (validated.loaded && validated.count === 0) {
+        addStatusMessage("No validated rules");
+    }
+    if (discarded.exists && !discarded.loaded) {
+        addStatusMessage(`Discarded rules unavailable${discarded.error ? `: ${discarded.error}` : "."}`, "business-rules-unavailable");
+    } else if (discarded.loaded && discarded.count === 0) {
+        addStatusMessage("No discarded rules");
+    }
+
+    const renderRows = () => {
+        list.querySelectorAll(".business-rule-row, .business-rules-no-match").forEach((node) => node.remove());
+        if (!hasAnyRuleFile || allRules.length === 0) return;
+
+        const query = search.value.trim().toLocaleLowerCase();
+        const selectedStatus = status.value;
+        const selectedFolder = folder.value;
+        const matches = allRules.filter((rule) =>
+            (selectedStatus === "all" || rule.status.toLowerCase() === selectedStatus) &&
+            (selectedFolder === "all" || rule.source === selectedFolder) &&
+            rule.text.toLocaleLowerCase().includes(query)
+        );
+
+        if (matches.length === 0) {
+            const noMatch = document.createElement("div");
+            noMatch.className = "business-rules-no-match";
+            const message = document.createElement("p");
+            message.textContent = "No matching rules";
+            const clearLink = document.createElement("button");
+            clearLink.type = "button";
+            clearLink.className = "business-rules-clear";
+            clearLink.textContent = "Clear Filters";
+            clearLink.addEventListener("click", () => clear.click());
+            noMatch.append(message, clearLink);
+            list.appendChild(noMatch);
             return;
         }
 
-        try{
-            const rootPath = `agent/UT_agent_output/${codebaseName}`;
+        matches.forEach((rule) => {
+            const row = document.createElement("article");
+            row.className = "business-rule-row";
+            const badge = document.createElement("span");
+            const statusClass = rule.status.toLowerCase();
+            badge.className = `business-rule-status ${statusClass}`;
+            badge.textContent = rule.status;
+            const text = document.createElement("p");
+            text.className = "business-rule-text";
+            text.textContent = rule.text;
+            row.append(badge, text);
+            list.appendChild(row);
+        });
+    };
 
-            resetInsightFolderNavigation(rootPath);
-
-            runPreviewCommand("files", {
-                path: rootPath
-            });
-        } catch (error) {
-            const rootPath = `backend/agent/UT_agent_output/${codebaseName}`;
-
-            resetInsightFolderNavigation(rootPath);
-
-            runPreviewCommand("files", {
-                path: rootPath
-            });
-        }
-
-    });
-
-//Hardcoded to see if outputs work
-document.getElementById("validatedBusinessRulesBtn").addEventListener("click", () => {
-
-    const codebaseName = getSelectedCodebaseName();
-    if (!codebaseName) {
-        renderTextPreview("Select a codebase first from the pipeline page.");
-        return;
-    }
-
-    try{
-        runPreviewCommand(
-            "open_file",
-            {
-                path: `agent/BR_agent_output/${codebaseName}/validated_rules.json`
-            }
-        );
-    } catch (error) {
-        runPreviewCommand(
-            "open_file",
-            {
-                path: `backend/agent/BR_agent_output/${codebaseName}/validated_rules.json`
-            }
-        );
-    }
-
-
+    const clearFilters = () => {
+        search.value = "";
+        status.value = "all";
+        folder.value = "all";
+        renderRows();
+    };
+    search.addEventListener("input", renderRows);
+    status.addEventListener("change", renderRows);
+    folder.addEventListener("change", renderRows);
+    clear.addEventListener("click", clearFilters);
+    renderRows();
 });
 
-//hoardcoded to see if outputs work
-document.getElementById("discardedBusinessRulesBtn").addEventListener("click", () => {
+document.getElementById("viewUnitTestsBtn").addEventListener("click", async () => {
+    showButtons("mainViewBtns");
+    const requestId = insightsPanelRequest;
+    const output = document.getElementById("viewDisplayOutputBox");
+    output.innerHTML = "";
 
     const codebaseName = getSelectedCodebaseName();
     if (!codebaseName) {
@@ -1796,22 +3519,54 @@ document.getElementById("discardedBusinessRulesBtn").addEventListener("click", (
         return;
     }
 
-    try{
-        runPreviewCommand(
-            "open_file",
-            {
-                path: `agent/BR_agent_output/${codebaseName}/discarded_rules.json`
-            }
-        );
-    } catch (error) {
-        runPreviewCommand(
-            "open_file",
-            {
-                path: `backend/agent/BR_agent_output/${codebaseName}/discarded_rules.json`
-            }
-        );
+    const loading = document.createElement("p");
+    loading.className = "unit-test-empty";
+    loading.textContent = "Loading saved unit-test results…";
+    output.appendChild(loading);
+
+    const rootPath = `agent/UT_agent_output/${codebaseName}`;
+    const listing = await window.electronAPI.previewCommand("files", { path: rootPath });
+    if (requestId !== insightsPanelRequest || codebaseName !== getSelectedCodebaseName()) return;
+    if (!listing?.success) {
+        renderUnitTestsPreview({ generated: [], validated: [], discarded: [], report: null });
+        return;
     }
 
+    const filesByName = new Map((listing.files || []).map(file => [file.name.toLowerCase(), file]));
+    const readSavedJson = async fileName => {
+        const file = filesByName.get(fileName.toLowerCase());
+        if (!file || file.isDirectory) return undefined;
+
+        const normalized = normalizePath(file.path);
+        unitTestPreviewPaths.add(normalized);
+        unitTestPreviewPendingPaths.add(normalized);
+        unitTestPreviewLoading = unitTestPreviewPendingPaths.size > 0;
+        try {
+            const response = await window.electronAPI.previewCommand("open_file", { path: file.path });
+            if (!response?.success || !response.preview) return undefined;
+            const content = response.preview.content;
+            return typeof content === "string" ? JSON.parse(content) : content;
+        } catch (error) {
+            console.warn(`Could not read saved ${fileName}:`, error);
+            return undefined;
+        } finally {
+            // preview-command also broadcasts the same open_file result to
+            // the generic Insights listener. Keep this path suppressed after
+            // the invoke resolves because that broadcast can arrive later.
+            unitTestPreviewPendingPaths.delete(normalized);
+            unitTestPreviewLoading = unitTestPreviewPendingPaths.size > 0;
+        }
+    };
+
+    const [generated, validated, discarded, report] = await Promise.all([
+        readSavedJson("unit_tests.json"),
+        readSavedJson("validated_tests.json"),
+        readSavedJson("discarded_tests.json"),
+        readSavedJson("test_report.json")
+    ]);
+
+    if (requestId !== insightsPanelRequest || codebaseName !== getSelectedCodebaseName()) return;
+    renderUnitTestsPreview({ generated, validated, discarded, report });
 });
 
 document.getElementById('mainViewBackBtn')
@@ -1824,36 +3579,34 @@ document.getElementById('mainViewBackBtn')
 
 // UML view should surface the generated PDFs for the selected codebase.
 document.getElementById('viewUMLBtn')
-    .addEventListener('click', () => {
+    .addEventListener('click', async () => {
 
         showButtons('viewFilesBtns');
         setActiveFileListView({ includePdfs: true, onlyPdfs: true, recursivePdfs: true });
 
+        const output = document.getElementById("viewDisplayOutputBox");
+        output.innerHTML = "";
         const codebaseName = getSelectedCodebaseName();
         if (!codebaseName) {
             renderTextPreview("Select a codebase first from the pipeline page.");
             return;
         }
 
-        try{
-            const rootPath = `agent/file_summary_agent_output/${codebaseName}`;
+        const requestId = insightsPanelRequest;
+        const rootPath = `agent/file_summary_agent_output/${codebaseName}`;
+        resetInsightFolderNavigation(rootPath);
+        const response = await runPreviewCommand('files', {
+            path: rootPath,
+            recursivePdfs: true
+        });
 
-            resetInsightFolderNavigation(rootPath);
-
-            runPreviewCommand('files', {
-                path: rootPath,
-                recursivePdfs: true
-            });
-        } catch (error) {
-            const rootPath = `backend/agent/file_summary_agent_output/${codebaseName}`;
-
-            resetInsightFolderNavigation(rootPath);
-
-            runPreviewCommand('files', {
-                path: rootPath,
-                recursivePdfs: true
-            });
+        if (requestId !== insightsPanelRequest) return;
+        if (!response?.success || !response.files?.some(file => file.name.toLowerCase().endsWith(".pdf"))) {
+            renderTextPreview("No UML diagram is available for this codebase yet. Generate UML from Run Operations to create one.");
+            return;
         }
+
+        renderTextPreview("Saved UML diagrams are available. Select a diagram from the file list to preview it.");
     });
 
 
@@ -1873,14 +3626,29 @@ document.getElementById('exitBtn').addEventListener('click', () => {
 //======================================================
 document.getElementById('codebaseAnalysisPipelineBtn')
     .addEventListener('click', () => {
+
+        // Focus stays on the button under the loading screen: no second run
+        // while one is pending (including the moment before it is sent), and
+        // no run over unsaved review notes (its Consistency Review stage
+        // replaces the whole-project result).
+        if (activeRequestId || pipelineStarting) return;
+        if (blockedByUnsavedReviews(selectedCodebasePath)) return;
+        pipelineStarting = true;
+        reviewTarget = { codebasePath: selectedCodebasePath, checkId: null };
+
         showLoading(
             "Running Full Pipeline",
             "Preparing..."
+        );
+        showLoadingWarning(
+            "This run ends with a Consistency Review stage that compares the code with what was just "
+            + "generated: one more AI request per source file, on your selected API key."
         );
 
 
         setTimeout(() => {
 
+            pipelineStarting = false;              // activeRequestId takes over from here
             runBackendCommand(
                 "full_pipeline",
                 {
@@ -2137,6 +3905,42 @@ document.getElementById('runUnitTestValidationOnlyBtn')
     });
 
 
+// Compares the code with the summaries, rules and tests already generated for
+// the selected codebase and saves the result (View Insights → Consistency
+// Review). Nothing is regenerated.
+document.getElementById('runConsistencyReviewOnlyBtn')
+    .addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+
+        // Focus stays on this button under the loading screen; a second Enter
+        // or click must not start another check while one is pending.
+        if (activeRequestId) return;
+
+        if (blockedByUnsavedReviews(selectedCodebasePath)) return;
+        reviewTarget = { codebasePath: selectedCodebasePath, checkId: null };
+
+        showLoading(
+            "Consistency Review",
+            "Preparing...",
+            { noPercent: true }
+        );
+        showLoadingWarning(
+            "This compares the code with the summaries, rules and tests already generated; nothing is "
+            + "regenerated. Each file checked is a request on your selected API key. Cancel stops the check "
+            + "at once: nothing from it is saved (the previous result stays), and requests already made still count."
+        );
+
+        runBackendCommand(
+            "check_consistency",
+            {
+                codebase:selectedCodebasePath,
+                scope:"full",
+            }
+        );
+    });
+
+
 document.getElementById('runIntegrationTestGenerationOnlyBtn')
     .addEventListener('click', (event) => {
         event.preventDefault();
@@ -2152,6 +3956,26 @@ document.getElementById('runIntegrationTestGenerationOnlyBtn')
                 codebase:selectedCodebasePath,
                 selected_rules: [],
                 rag_pipeline: selectedPipeline
+            }
+        );
+    });
+
+// Mutation testing: how many small code changes the passing unit tests
+// catch. Takes about a minute on ConsoleTables; the Open Report button shows
+// when it finishes, since the backend rebuilds the run report.
+document.getElementById('runMutationTestingOnlyBtn')
+    .addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        showLoading(
+            "Test Strength (Mutation Testing)",
+            "Preparing..."
+        );
+
+        runBackendCommand(
+            "run_mutation_tests",
+            {
+                codebase:selectedCodebasePath
             }
         );
     });
@@ -2199,6 +4023,17 @@ document.getElementById('analysisBackBtn')
 
         showPage('homePage');
     });
+
+document.getElementById("cancelProjectSelectionBtn")
+    .addEventListener("click", () => {
+        selectedCodebasePath = "";
+        selectedProjectSource = null;
+        pathSubmitted = false;
+        document.getElementById("codebasePath").value = "";
+        document.getElementById("submitPathBtn").disabled = true;
+        updateSelectedCodebaseSummary("");
+        showPage("homePage");
+    });
 //======================================================
 //API PAGE BUTTONS
 //======================================================
@@ -2217,10 +4052,7 @@ document.getElementById('apiBackBtn')
 //======================================================
 document.getElementById('codebaseBackBtn')
     .addEventListener('click', () => {
-
-        
-
-        showPage('homePage');
+        showPage(pathSubmitted ? "analysisPage" : "homePage");
     });
 
 document.getElementById('faqAndSupportBackBtn')
@@ -2265,35 +4097,761 @@ document.getElementById("faqBtn")
 
 document.getElementById('submitPathBtn')
 .addEventListener('click', () => {
-
-
-    
-
-
-    showPage('choosePipelinePage');
-
-
-    selectedCodebasePath =
-        document.getElementById(
-            'codebasePath'
-        ).value;
-
-
+    if (!selectedCodebasePath) {
+        document.getElementById("localFolderError").textContent = "Choose a project folder before continuing.";
+        return;
+    }
+    selectedProjectSource = null;
+    pathSubmitted = true;
+    updateSelectedCodebaseSummary(selectedCodebasePath);
+    showPage("choosePipelinePage");
 });
 
 document.getElementById("browseCodebaseBtn")
-.addEventListener("click", async () => {
+.addEventListener("click", openLocalFolderPicker);
 
-    const path =
-        await window.electronAPI.selectCodebase();
+document.getElementById("browseLocalAgainBtn")
+    .addEventListener("click", openLocalFolderPicker);
 
-    if (!path)
-        return;
+document.getElementById("backToProjectSourcesBtn")
+    .addEventListener("click", () => showProjectSourcePicker());
 
-    document.getElementById("codebasePath").value = path;
+document.getElementById("connectGithubBtn")
+    .addEventListener("click", () => {
+        document.getElementById("githubRepositoryError").textContent = "";
+        document.getElementById("projectSourceChoices").classList.add("hidden");
+        document.getElementById("githubConnectPanel").classList.remove("hidden");
+        document.getElementById("localFolderPanel").classList.add("hidden");
+        document.getElementById("githubRepositoryUrl").focus();
+    });
 
-    selectedCodebasePath = path;
+document.getElementById("backFromGithubBtn")
+    .addEventListener("click", () => {
+        if (githubImportInProgress) return;
+        showProjectSourcePicker();
+    });
+
+document.getElementById("githubRepositoryUrl")
+    .addEventListener("input", () => {
+        githubBranchRequest += 1;
+        githubRepositoryBranches = null;
+        githubRepositoryUrl = "";
+        document.getElementById("fetchGithubBranchesBtn").disabled = false;
+        document.getElementById("githubRepositoryError").textContent = "";
+        document.getElementById("githubRepositoryProgress").textContent = "";
+    });
+
+document.getElementById("githubRepositoryForm")
+    .addEventListener("submit", async event => {
+        event.preventDefault();
+        if (githubImportInProgress) return;
+
+        const repositoryUrl = document.getElementById("githubRepositoryUrl").value.trim();
+        const requestNumber = ++githubBranchRequest;
+        const fetchButton = document.getElementById("fetchGithubBranchesBtn");
+        const progress = document.getElementById("githubRepositoryProgress");
+        const error = document.getElementById("githubRepositoryError");
+        error.textContent = "";
+        progress.textContent = "Connecting to GitHub...";
+        fetchButton.disabled = true;
+
+        try {
+            const repository = await window.electronAPI.getGithubBranches(repositoryUrl);
+            if (requestNumber !== githubBranchRequest ||
+                repositoryUrl !== document.getElementById("githubRepositoryUrl").value.trim()) return;
+            githubRepositoryUrl = repositoryUrl;
+            githubRepositoryBranches = repository;
+            document.querySelector("#githubAnalysisModePage .project-source-header > p:last-child").textContent =
+                `${repository.owner}/${repository.repo} · Choose whether to analyze a branch or explore pull requests.`;
+            progress.textContent = "";
+            showPage("githubAnalysisModePage");
+        } catch (requestError) {
+            if (requestNumber === githubBranchRequest) {
+                error.textContent = requestError.message || "Could not fetch repository branches. Check the URL and retry.";
+                progress.textContent = "";
+            }
+        } finally {
+            if (requestNumber === githubBranchRequest) fetchButton.disabled = false;
+        }
+    });
+
+const removeGithubProgressListener = window.electronAPI.onGithubImportProgress(progress => {
+    if (progress?.requestId !== activeGithubImportRequest) return;
+    document.getElementById("githubImportProgressText").textContent = progress.message || "Importing repository...";
 });
+window.addEventListener("unload", removeGithubProgressListener, { once: true });
+
+document.getElementById("cancelGithubImportBtn")
+    .addEventListener("click", async () => {
+        if (!activeGithubImportRequest) return;
+        const cancelButton = document.getElementById("cancelGithubImportBtn");
+        cancelButton.disabled = true;
+        try {
+            await window.electronAPI.cancelGithubImport(activeGithubImportRequest);
+        } catch (error) {
+            document.getElementById("githubWorkflowBranchError").textContent =
+                error.message || "Could not cancel the repository import.";
+            cancelButton.disabled = false;
+        }
+    });
+
+function showProjectSourcePicker() {
+    document.getElementById("projectSourceChoices").classList.remove("hidden");
+    document.getElementById("localFolderPanel").classList.add("hidden");
+    document.getElementById("githubConnectPanel").classList.add("hidden");
+    document.getElementById("localFolderError").textContent = "";
+    showPage("codebasePipelinePage");
+}
+
+function showGithubBranchSelection(mode) {
+    if (!githubRepositoryBranches || !githubRepositoryUrl) return;
+    githubAnalysisMode = mode;
+    const select = document.getElementById("githubWorkflowBranchSelect");
+    select.replaceChildren();
+    githubRepositoryBranches.branches.forEach(branch => {
+        const option = document.createElement("option");
+        option.value = branch;
+        option.textContent = branch;
+        option.selected = branch === githubRepositoryBranches.defaultBranch;
+        select.appendChild(option);
+    });
+    document.getElementById("githubBranchHeading").textContent =
+        mode === "full" ? "Select a Branch" : "Select a Target Branch";
+    document.getElementById("githubBranchDescription").textContent =
+        mode === "full"
+            ? `Choose a branch in ${githubRepositoryBranches.owner}/${githubRepositoryBranches.repo} to analyze.`
+            : `Choose the target branch in ${githubRepositoryBranches.owner}/${githubRepositoryBranches.repo}.`;
+    document.getElementById("githubBranchContinueBtn").textContent =
+        mode === "full" ? "Import and Continue" : mode === "latest" ? "Find Latest Merged PR" : "Browse Pull Requests";
+    document.getElementById("githubWorkflowBranchError").textContent = "";
+    document.getElementById("githubWorkflowBranchProgress").textContent = "";
+    document.getElementById("githubImportProgressPanel").classList.add("hidden");
+    showPage("githubBranchSelectionPage");
+}
+
+document.getElementById("githubModeBackBtn")
+    .addEventListener("click", () => {
+        if (githubImportInProgress) return;
+        showPage("codebasePipelinePage");
+        document.getElementById("projectSourceChoices").classList.add("hidden");
+        document.getElementById("githubConnectPanel").classList.remove("hidden");
+    });
+
+document.getElementById("fullBranchModeBtn")
+    .addEventListener("click", () => showGithubBranchSelection("full"));
+
+document.getElementById("latestPullRequestModeBtn")
+    .addEventListener("click", () => showGithubBranchSelection("latest"));
+
+document.getElementById("browsePullRequestsModeBtn")
+    .addEventListener("click", () => showGithubBranchSelection("browse"));
+
+document.getElementById("githubBranchBackBtn")
+    .addEventListener("click", () => showPage("githubAnalysisModePage"));
+
+document.getElementById("githubBranchContinueBtn")
+    .addEventListener("click", async () => {
+        if (githubImportInProgress) return;
+        githubTargetBranch = document.getElementById("githubWorkflowBranchSelect").value;
+        if (!githubTargetBranch) {
+            document.getElementById("githubWorkflowBranchError").textContent = "Select a branch to continue.";
+            return;
+        }
+        if (githubAnalysisMode === "full") {
+            await importSelectedGithubBranch(githubTargetBranch);
+        } else if (githubAnalysisMode === "latest") {
+            await openLatestMergedPullRequest();
+        } else {
+            await openPullRequestExplorer(true);
+        }
+    });
+
+async function importSelectedGithubBranch(branch = document.getElementById("githubWorkflowBranchSelect").value) {
+    if (githubImportInProgress) return;
+    if (!githubRepositoryUrl || !branch) {
+        document.getElementById("githubWorkflowBranchError").textContent = "Select a branch to continue.";
+        return;
+    }
+
+    const requestId = crypto.randomUUID();
+    activeGithubImportRequest = requestId;
+    githubImportInProgress = true;
+    const importButton = document.getElementById("githubBranchContinueBtn");
+    const cancelButton = document.getElementById("cancelGithubImportBtn");
+    const progressPanel = document.getElementById("githubImportProgressPanel");
+    const progressText = document.getElementById("githubImportProgressText");
+    const error = document.getElementById("githubWorkflowBranchError");
+    importButton.disabled = true;
+    cancelButton.disabled = false;
+    progressPanel.classList.remove("hidden");
+    progressText.textContent = "Connecting to GitHub...";
+    error.textContent = "";
+
+    try {
+        const imported = await window.electronAPI.importGithubRepository({
+            url: githubRepositoryUrl,
+            branch,
+            requestId
+        });
+        selectedCodebasePath = imported.workspacePath;
+        selectedProjectSource = imported;
+        document.getElementById("codebasePath").value = imported.workspacePath;
+        pathSubmitted = true;
+        updateSelectedCodebaseSummary(selectedCodebasePath);
+        showPage("analysisPage");
+    } catch (importError) {
+        error.textContent = importError.message || "Could not import this repository. Retry or select another branch.";
+        progressText.textContent = "";
+    } finally {
+        githubImportInProgress = false;
+        activeGithubImportRequest = null;
+        importButton.disabled = false;
+        cancelButton.disabled = false;
+        progressPanel.classList.add("hidden");
+    }
+}
+
+function formatGithubDate(value) {
+    if (!value) return "Not available";
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? "Not available" : date.toLocaleString();
+}
+
+function currentPullRequestStateFilter(pullRequest) {
+    return document.getElementById("githubPrStatusFilter").value === "merged"
+        ? pullRequest.state === "merged"
+        : document.getElementById("githubPrStatusFilter").value === "closed"
+            ? pullRequest.state === "closed"
+            : document.getElementById("githubPrStatusFilter").value === "open"
+                ? pullRequest.state === "open"
+                : true;
+}
+
+function renderPullRequestList() {
+    const list = document.getElementById("githubPrList");
+    const query = document.getElementById("githubPrSearch").value.trim().toLocaleLowerCase();
+    const sortKey = document.getElementById("githubPrSort").value;
+    const filtered = githubPullRequests
+        .filter(pullRequest => currentPullRequestStateFilter(pullRequest))
+        .filter(pullRequest =>
+            !query ||
+            String(pullRequest.number).includes(query) ||
+            pullRequest.title.toLocaleLowerCase().includes(query)
+        )
+        .sort((left, right) => (Date.parse(right[sortKey] || "") || 0) - (Date.parse(left[sortKey] || "") || 0));
+    list.replaceChildren();
+    if (!filtered.length) {
+        const empty = document.createElement("p");
+        empty.className = "github-pr-empty";
+        empty.textContent = githubPullRequests.length
+            ? "No pull requests match these filters."
+            : "No pull requests were found for this target branch.";
+        list.appendChild(empty);
+    }
+    filtered.forEach(pullRequest => {
+        const card = document.createElement("article");
+        card.className = "github-pr-card";
+        const heading = document.createElement("h2");
+        heading.textContent = `#${pullRequest.number} · ${pullRequest.title}`;
+        const meta = document.createElement("p");
+        meta.textContent = `${pullRequest.state.toUpperCase()} · ${pullRequest.author} · ${pullRequest.baseBranch} ← ${pullRequest.headBranch}`;
+        const stats = document.createElement("p");
+        stats.textContent = `Updated ${formatGithubDate(pullRequest.updatedAt)} · ${pullRequest.changedFiles ?? "?"} files · +${pullRequest.additions ?? "?"} / -${pullRequest.deletions ?? "?"}`;
+        const button = document.createElement("button");
+        button.className = "btn-primary";
+        button.type = "button";
+        button.textContent = "View Overview";
+        button.addEventListener("click", () => openPullRequestOverview(pullRequest));
+        card.append(heading, meta, stats, button);
+        list.appendChild(card);
+    });
+    document.getElementById("githubPrLoadMoreBtn").classList.toggle("hidden", !githubPullRequestsHaveMore);
+    document.getElementById("githubPrListMessage").textContent =
+        `${filtered.length} shown · ${githubPullRequests.length} loaded${githubPullRequestsHaveMore ? " · more available" : ""}`;
+}
+
+async function loadPullRequestPage(reset = false) {
+    if (!githubRepositoryUrl || !githubTargetBranch) return;
+    const message = document.getElementById("githubPrListMessage");
+    const loadMore = document.getElementById("githubPrLoadMoreBtn");
+    loadMore.disabled = true;
+    message.textContent = reset ? "Loading pull requests..." : "Loading more pull requests...";
+    try {
+        const response = await window.electronAPI.listGithubPullRequests({
+            url: githubRepositoryUrl,
+            baseBranch: githubTargetBranch,
+            state: "all",
+            page: reset ? 1 : githubPullRequestPage + 1
+        });
+        githubPullRequests = reset ? response.pullRequests : githubPullRequests.concat(response.pullRequests);
+        githubPullRequestPage = reset ? 1 : githubPullRequestPage + 1;
+        githubPullRequestsHaveMore = response.hasMore;
+        renderPullRequestList();
+        if (!response.pullRequests.length && reset) {
+            message.textContent = `No pull requests target ${githubTargetBranch}.`;
+        }
+    } catch (error) {
+        message.textContent = error.message || "Could not load pull requests. Check your connection and retry.";
+    } finally {
+        loadMore.disabled = false;
+    }
+}
+
+async function openPullRequestExplorer(reset) {
+    if (reset) {
+        githubPullRequests = [];
+        githubPullRequestPage = 0;
+        githubPullRequestsHaveMore = false;
+        document.getElementById("githubPrSearch").value = "";
+        document.getElementById("githubPrStatusFilter").value = "all";
+        document.getElementById("githubPrSort").value = "updatedAt";
+    }
+    document.getElementById("githubExplorerHeading").textContent = `Pull Requests · ${githubTargetBranch}`;
+    document.getElementById("githubExplorerRepository").textContent =
+        `${githubRepositoryBranches.owner}/${githubRepositoryBranches.repo}`;
+    document.getElementById("githubPullRequestExplorerPage").classList.remove("hidden");
+    showPage("githubPullRequestExplorerPage");
+    if (reset) await loadPullRequestPage(true);
+}
+
+async function openLatestMergedPullRequest() {
+    const error = document.getElementById("githubWorkflowBranchError");
+    const progress = document.getElementById("githubWorkflowBranchProgress");
+    const continueButton = document.getElementById("githubBranchContinueBtn");
+    error.textContent = "";
+    progress.textContent = "Finding the latest merged pull request...";
+    continueButton.disabled = true;
+    try {
+        let page = 1;
+        let hasMore = true;
+        const allPullRequests = [];
+        while (hasMore && page <= 1000) {
+            const response = await window.electronAPI.listGithubPullRequests({
+                url: githubRepositoryUrl,
+                baseBranch: githubTargetBranch,
+                state: "closed",
+                page
+            });
+            allPullRequests.push(...response.pullRequests);
+            hasMore = response.hasMore;
+            page += 1;
+        }
+        if (hasMore) throw new Error("The pull request history is too large to search completely. Use Browse Pull Requests instead.");
+        const merged = allPullRequests
+            .filter(pullRequest => pullRequest.state === "merged")
+            .sort((left, right) => Date.parse(right.mergedAt || "") - Date.parse(left.mergedAt || ""));
+        if (!merged.length) {
+            error.textContent = `No merged pull requests target ${githubTargetBranch}. Browse other pull requests instead.`;
+            const browse = document.createElement("button");
+            browse.className = "btn-secondary";
+            browse.type = "button";
+            browse.textContent = "Browse Pull Requests";
+            browse.addEventListener("click", () => {
+                githubAnalysisMode = "browse";
+                openPullRequestExplorer(true);
+            });
+            error.appendChild(browse);
+            return;
+        }
+        githubPullRequests = merged;
+        githubPullRequestPage = 1;
+        githubPullRequestsHaveMore = false;
+        document.getElementById("githubPrSearch").value = "";
+        document.getElementById("githubPrStatusFilter").value = "all";
+        document.getElementById("githubPrSort").value = "mergedAt";
+        document.getElementById("githubExplorerHeading").textContent = `Merged Pull Requests · ${githubTargetBranch}`;
+        document.getElementById("githubExplorerRepository").textContent =
+            `${githubRepositoryBranches.owner}/${githubRepositoryBranches.repo}`;
+        renderPullRequestList();
+        await openPullRequestOverview(merged[0]);
+    } catch (requestError) {
+        error.textContent = requestError.message || "Could not find a merged pull request.";
+    } finally {
+        progress.textContent = "";
+        continueButton.disabled = false;
+    }
+}
+
+document.getElementById("githubPrStatusFilter").addEventListener("change", renderPullRequestList);
+document.getElementById("githubPrSort").addEventListener("change", renderPullRequestList);
+document.getElementById("githubPrSearch").addEventListener("input", renderPullRequestList);
+document.getElementById("githubPrLoadMoreBtn").addEventListener("click", () => loadPullRequestPage(false));
+document.getElementById("githubExplorerBackBtn").addEventListener("click", () => showPage("githubBranchSelectionPage"));
+document.getElementById("githubExplorerSourcesBtn").addEventListener("click", () => showPage("codebasePipelinePage"));
+
+function addOverviewStat(container, label, value) {
+    const wrapper = document.createElement("div");
+    const term = document.createElement("dt");
+    term.textContent = label;
+    const description = document.createElement("dd");
+    description.textContent = String(value);
+    wrapper.append(term, description);
+    container.appendChild(wrapper);
+}
+
+async function openPullRequestOverview(pullRequest) {
+    const requestNumber = ++githubOverviewRequest;
+    selectedGithubPullRequest = pullRequest;
+    selectedGithubPullRequestDetails = null;
+    document.getElementById("githubOverviewTitle").textContent = `PR #${pullRequest.number} — ${pullRequest.title}`;
+    document.getElementById("githubOverviewRepository").textContent =
+        `${githubRepositoryBranches.owner}/${githubRepositoryBranches.repo}`;
+    document.getElementById("githubOverviewMessage").textContent = "Loading pull request details...";
+    document.getElementById("githubOverviewContent").classList.add("hidden");
+    document.getElementById("githubViewComparisonBtn").disabled = true;
+    document.getElementById("githubAiAnalysisBtn").disabled = true;
+    showPage("githubPullRequestOverviewPage");
+    try {
+        const details = await window.electronAPI.getGithubPullRequest({
+            url: githubRepositoryUrl,
+            number: pullRequest.number
+        });
+        if (requestNumber !== githubOverviewRequest) return;
+        selectedGithubPullRequestDetails = details;
+        const badges = document.getElementById("githubOverviewBadges");
+        badges.replaceChildren();
+        [details.state.toUpperCase(), `@${details.author}`, `${details.baseBranch} ← ${details.headBranch}`].forEach(value => {
+            const badge = document.createElement("span");
+            badge.textContent = value;
+            badges.appendChild(badge);
+        });
+        document.getElementById("githubOverviewDescription").textContent = details.body || "No description provided.";
+        const stats = document.getElementById("githubOverviewStats");
+        stats.replaceChildren();
+        addOverviewStat(stats, "Created", formatGithubDate(details.createdAt));
+        addOverviewStat(stats, "Updated", formatGithubDate(details.updatedAt));
+        addOverviewStat(stats, "Merged", formatGithubDate(details.mergedAt));
+        addOverviewStat(stats, "Files Changed", details.changedFiles ?? details.files.length);
+        addOverviewStat(stats, "Additions", `+${details.additions ?? "?"}`);
+        addOverviewStat(stats, "Deletions", `-${details.deletions ?? "?"}`);
+        addOverviewStat(stats, "Commits", details.commitsCount ?? details.commits.length);
+        const commits = document.getElementById("githubOverviewCommits");
+        commits.replaceChildren();
+        details.commits.forEach(commit => {
+            const item = document.createElement("article");
+            item.className = "github-overview-item";
+            const title = document.createElement("strong");
+            title.textContent = `${commit.sha.slice(0, 7)} · ${commit.message.split("\n")[0] || "No commit message"}`;
+            const meta = document.createElement("p");
+            meta.textContent = `${commit.author} · ${formatGithubDate(commit.date)}`;
+            item.append(title, meta);
+            commits.appendChild(item);
+        });
+        const files = document.getElementById("githubOverviewFiles");
+        files.replaceChildren();
+        details.files.forEach(file => {
+            const item = document.createElement("article");
+            item.className = "github-overview-item";
+            const title = document.createElement("strong");
+            title.textContent = `${file.status.toUpperCase()} · ${file.previousFilename ? `${file.previousFilename} → ` : ""}${file.filename}`;
+            const meta = document.createElement("p");
+            meta.textContent = `+${file.additions} / -${file.deletions}`;
+            item.append(title, meta);
+            files.appendChild(item);
+        });
+        const warning = document.getElementById("githubOverviewWarning");
+        warning.classList.toggle("hidden", details.dataComplete);
+        warning.textContent = details.dataComplete
+            ? ""
+            : "GitHub did not provide all commit or changed-file pages. The overview may be incomplete.";
+        document.getElementById("githubOverviewMessage").textContent = "";
+        document.getElementById("githubOverviewContent").classList.remove("hidden");
+        document.getElementById("githubViewComparisonBtn").disabled = details.files.length === 0;
+        document.getElementById("githubAiAnalysisBtn").disabled = !details.files.some(file => file.patchAvailable);
+    } catch (error) {
+        if (requestNumber !== githubOverviewRequest) return;
+        document.getElementById("githubOverviewMessage").textContent =
+            error.message || "Could not load pull request details.";
+    }
+}
+
+document.getElementById("githubOverviewBackBtn").addEventListener("click", () => showPage("githubPullRequestExplorerPage"));
+document.getElementById("githubViewComparisonBtn").addEventListener("click", openGithubComparison);
+document.getElementById("githubAiAnalysisBtn").addEventListener("click", () => openPullRequestAnalysis(false));
+document.getElementById("githubAnalysisRetryBtn").addEventListener("click", () => openPullRequestAnalysis(true));
+document.getElementById("githubAnalysisBackBtn").addEventListener("click", () => showPage("githubPullRequestOverviewPage"));
+
+async function openPullRequestAnalysis(retry) {
+    const details = selectedGithubPullRequestDetails;
+    if (!details) return;
+
+    const key = `${githubRepositoryUrl}#${details.number}@${details.headSha}`;
+    showPage("githubPullRequestAnalysisPage");
+    if (!retry && key === githubAnalysisKey) return;
+
+    const requestNumber = ++githubAnalysisRequest;
+    githubAnalysisKey = key;
+    const message = document.getElementById("githubAnalysisMessage");
+    const retryButton = document.getElementById("githubAnalysisRetryBtn");
+    document.getElementById("githubAnalysisTitle").textContent = `AI Analysis — PR #${details.number} ${details.title}`;
+    document.getElementById("githubAnalysisRepository").textContent =
+        `${githubRepositoryBranches.owner}/${githubRepositoryBranches.repo} · ${details.baseBranch} ← ${details.headBranch}`;
+    document.getElementById("githubAnalysisContent").classList.add("hidden");
+    retryButton.classList.add("hidden");
+    message.textContent = "Asking the AI to analyze this pull request. This can take a minute...";
+
+    const response = await backendCall("analyze_pull_request", {
+        pull_request: {
+            number: details.number,
+            title: details.title,
+            body: details.body,
+            author: details.author,
+            state: details.state,
+            baseBranch: details.baseBranch,
+            headBranch: details.headBranch,
+            commits: details.commits
+        },
+        files: details.files.map(file => ({
+            filename: file.filename,
+            previousFilename: file.previousFilename,
+            status: file.status,
+            additions: file.additions,
+            deletions: file.deletions,
+            patch: file.patch
+        }))
+    }, {
+        onEvent: event => {
+            if (requestNumber === githubAnalysisRequest && event.type === "progress" && event.stage) {
+                message.textContent = event.stage;
+            }
+        }
+    });
+    if (requestNumber !== githubAnalysisRequest) return;
+
+    const analysis = response?.success ? response.result : null;
+    if (!analysis) {
+        githubAnalysisKey = null;
+        message.textContent = response?.error || "The AI analysis could not be completed.";
+        retryButton.classList.remove("hidden");
+        return;
+    }
+
+    document.getElementById("githubAnalysisSummary").textContent = analysis.summary;
+    document.getElementById("githubAnalysisBefore").textContent = analysis.before;
+    document.getElementById("githubAnalysisAfter").textContent = analysis.after;
+    renderAnalysisList("githubAnalysisAdded", analysis.added, "Nothing new was added.");
+    renderAnalysisList("githubAnalysisChanged", analysis.changed, "No existing behaviour changed.");
+    renderAnalysisList("githubAnalysisRemoved", analysis.removed, "Nothing was removed.");
+    renderAnalysisList("githubAnalysisRisks", analysis.risks, "The AI found nothing specific to check.");
+
+    const notes = [];
+    if (analysis.files_omitted?.length) {
+        notes.push(`Not analyzed: ${analysis.files_omitted.map(file => `${file.filename} (${file.reason})`).join(", ")}.`);
+    }
+    if (!details.dataComplete) {
+        notes.push("GitHub did not provide every changed file, so this analysis may be incomplete.");
+    }
+    const warning = document.getElementById("githubAnalysisWarning");
+    warning.textContent = notes.join(" ");
+    warning.classList.toggle("hidden", notes.length === 0);
+
+    message.textContent = `AI-generated from the diff of ${analysis.files_analyzed.length} file(s). Check it against the code before relying on it.`;
+    document.getElementById("githubAnalysisContent").classList.remove("hidden");
+}
+
+function renderAnalysisList(containerId, items, emptyText) {
+    const container = document.getElementById(containerId);
+    container.replaceChildren();
+    const hasItems = Array.isArray(items) && items.length > 0;
+    (hasItems ? items : [emptyText]).forEach(text => {
+        const item = document.createElement("article");
+        item.className = "github-overview-item";
+        const line = document.createElement(hasItems ? "strong" : "p");
+        line.textContent = String(text);
+        item.appendChild(line);
+        container.appendChild(item);
+    });
+}
+document.getElementById("githubComparisonOverviewBtn").addEventListener("click", () => showPage("githubPullRequestOverviewPage"));
+document.getElementById("githubComparisonViewToggle").addEventListener("click", () => {
+    githubComparisonUnified = !githubComparisonUnified;
+    document.getElementById("githubSideBySide").classList.toggle("hidden", githubComparisonUnified);
+    document.getElementById("githubUnifiedDiff").classList.toggle("hidden", !githubComparisonUnified);
+    document.getElementById("githubComparisonViewToggle").textContent =
+        githubComparisonUnified ? "View Side by Side" : "View Unified Diff";
+});
+document.getElementById("githubPreviousFileBtn").addEventListener("click", () => selectGithubComparisonFile(selectedGithubComparisonFileIndex - 1));
+document.getElementById("githubNextFileBtn").addEventListener("click", () => selectGithubComparisonFile(selectedGithubComparisonFileIndex + 1));
+
+async function openGithubComparison() {
+    if (!selectedGithubPullRequestDetails?.files.length) return;
+    const details = selectedGithubPullRequestDetails;
+    document.getElementById("githubComparisonTitle").textContent =
+        `PR #${details.number} — ${details.title}`;
+    document.getElementById("githubComparisonMeta").textContent =
+        `${details.repository || `${githubRepositoryBranches.owner}/${githubRepositoryBranches.repo}`} · ${details.baseBranch} (${details.baseSha.slice(0, 7)}) → ${details.headBranch} (${details.headSha.slice(0, 7)}) · Original PR changes`;
+    const fileList = document.getElementById("githubComparisonFileList");
+    fileList.replaceChildren();
+    details.files.forEach((file, index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "github-file-item";
+        const status = document.createElement("span");
+        status.className = `github-file-status status-${file.status}`;
+        status.textContent = ({ added: "A", modified: "M", removed: "D", renamed: "R" })[file.status] || "M";
+        const label = document.createElement("span");
+        label.textContent = file.filename;
+        button.append(status, label);
+        button.addEventListener("click", () => selectGithubComparisonFile(index));
+        fileList.appendChild(button);
+    });
+    githubComparisonUnified = false;
+    document.getElementById("githubComparisonViewToggle").textContent = "View Unified Diff";
+    document.getElementById("githubSideBySide").classList.remove("hidden");
+    document.getElementById("githubUnifiedDiff").classList.add("hidden");
+    showPage("githubCodeComparisonPage");
+    await selectGithubComparisonFile(0);
+}
+
+function renderComparisonLines(target, text, lineClass) {
+    target.replaceChildren();
+    if (text === null) return;
+    const lines = text.split("\n");
+    lines.forEach((line, index) => {
+        const span = document.createElement("span");
+        span.className = `github-code-line ${lineClass || ""}`;
+        span.textContent = `${String(index + 1).padStart(4, " ")}  ${line}`;
+        target.appendChild(span);
+    });
+}
+
+function createUnifiedDiff(before, after) {
+    const beforeLines = (before || "").split("\n");
+    const afterLines = (after || "").split("\n");
+    const maxCells = 750000;
+    if (beforeLines.length * afterLines.length > maxCells) {
+        return { diff: null, warning: "This file is too large for safe in-app diff alignment. Full before and after contents are available in Side by Side mode." };
+    }
+    const matrix = Array.from({ length: beforeLines.length + 1 }, () => new Uint32Array(afterLines.length + 1));
+    for (let i = beforeLines.length - 1; i >= 0; i--) {
+        for (let j = afterLines.length - 1; j >= 0; j--) {
+            matrix[i][j] = beforeLines[i] === afterLines[j]
+                ? matrix[i + 1][j + 1] + 1
+                : Math.max(matrix[i + 1][j], matrix[i][j + 1]);
+        }
+    }
+    const rows = [];
+    let i = 0;
+    let j = 0;
+    while (i < beforeLines.length || j < afterLines.length) {
+        if (i < beforeLines.length && j < afterLines.length && beforeLines[i] === afterLines[j]) {
+            rows.push(`  ${beforeLines[i]}`);
+            i += 1;
+            j += 1;
+        } else if (j < afterLines.length && (i === beforeLines.length || matrix[i][j + 1] >= matrix[i + 1][j])) {
+            rows.push(`+ ${afterLines[j++]}`);
+        } else {
+            rows.push(`- ${beforeLines[i++]}`);
+        }
+    }
+    return { diff: rows.join("\n"), warning: "" };
+}
+
+async function selectGithubComparisonFile(index) {
+    const details = selectedGithubPullRequestDetails;
+    if (!details || index < 0 || index >= details.files.length) return;
+    const requestNumber = ++githubComparisonFileRequest;
+    selectedGithubComparisonFileIndex = index;
+    const file = details.files[index];
+    document.getElementById("githubComparisonFileIndex").textContent = `${index + 1} of ${details.files.length}`;
+    document.getElementById("githubComparisonFileTitle").textContent =
+        file.previousFilename ? `${file.previousFilename} → ${file.filename}` : file.filename;
+    document.getElementById("githubPreviousFileBtn").disabled = index === 0;
+    document.getElementById("githubNextFileBtn").disabled = index === details.files.length - 1;
+    const loading = document.getElementById("githubComparisonLoading");
+    const beforePanel = document.getElementById("githubBeforeCode");
+    const afterPanel = document.getElementById("githubAfterCode");
+    beforePanel.replaceChildren();
+    afterPanel.replaceChildren();
+    loading.textContent = "Loading exact file contents from the pull request commits...";
+    document.getElementById("githubComparisonWarning").classList.add("hidden");
+    try {
+        const comparison = await window.electronAPI.getGithubPullRequestFile({
+            url: githubRepositoryUrl,
+            number: details.number,
+            filePath: file.filename
+        });
+        if (requestNumber !== githubComparisonFileRequest) return;
+        const warningParts = [];
+        if (comparison.before.binary || comparison.after.binary) warningParts.push("Binary file contents cannot be rendered as text.");
+        if (comparison.before.unsupported || comparison.after.unsupported) warningParts.push("GitHub does not expose the complete contents of this file through the public contents API.");
+        if (comparison.before.text === null && comparison.before.exists && !comparison.before.binary && !comparison.before.unsupported) warningParts.push("The before version is unavailable.");
+        if (comparison.after.text === null && comparison.after.exists && !comparison.after.binary && !comparison.after.unsupported) warningParts.push("The after version is unavailable.");
+
+        const beforeText = comparison.before.text;
+        const afterText = comparison.after.text;
+        if (!comparison.before.exists) {
+            beforePanel.textContent = "This file did not exist before the pull request.";
+        } else if (beforeText !== null) {
+            renderComparisonLines(beforePanel, beforeText);
+        }
+        if (!comparison.after.exists) {
+            afterPanel.textContent = "This file was deleted by the pull request.";
+        } else if (afterText !== null) {
+            renderComparisonLines(afterPanel, afterText);
+        }
+        if (beforeText !== null && afterText !== null) {
+            const diff = createUnifiedDiff(beforeText, afterText);
+            document.getElementById("githubUnifiedDiff").textContent =
+                diff.diff === null ? "Unified diff unavailable for this unusually large file." : diff.diff;
+            if (diff.warning) warningParts.push(diff.warning);
+        } else {
+            document.getElementById("githubUnifiedDiff").textContent =
+                "A text diff is unavailable for this file. Review its before/after status above.";
+        }
+        const warning = document.getElementById("githubComparisonWarning");
+        warning.textContent = warningParts.join(" ");
+        warning.classList.toggle("hidden", warningParts.length === 0);
+        loading.textContent = "";
+    } catch (error) {
+        if (requestNumber !== githubComparisonFileRequest) return;
+        loading.textContent = error.message || "Could not load the exact file contents.";
+    }
+}
+
+async function openLocalFolderPicker() {
+    const selectedPath = await window.electronAPI.selectCodebase();
+    if (!selectedPath) return;
+
+    selectedCodebasePath = selectedPath;
+    selectedProjectSource = null;
+    document.getElementById("codebasePath").value = selectedPath;
+    document.getElementById("submitPathBtn").disabled = false;
+    document.getElementById("localFolderError").textContent = "";
+    document.getElementById("projectSourceChoices").classList.add("hidden");
+    document.getElementById("githubConnectPanel").classList.add("hidden");
+    document.getElementById("localFolderPanel").classList.remove("hidden");
+}
+
+function updateSelectedCodebaseSummary(codebasePath) {
+    const cleaned = String(codebasePath || "").replace(/[\\/]+$/, "");
+    const codebaseName = selectedProjectSource?.repository
+        || (cleaned ? cleaned.split(/[\\/]/).pop() : "No codebase selected");
+    const operationsName = document.getElementById("operationsProjectName");
+    const operationsPath = document.getElementById("operationsCodebasePath");
+    const operationsSourceInfo = document.getElementById("operationsProjectSourceInfo");
+
+    if (operationsName) {
+        operationsName.textContent = codebaseName;
+        operationsName.title = selectedProjectSource?.repositoryUrl || cleaned || "";
+    }
+    if (operationsPath) {
+        operationsPath.textContent = selectedProjectSource
+            ? selectedProjectSource.repositoryUrl
+            : cleaned || "No path selected";
+        operationsPath.title = selectedProjectSource ? selectedProjectSource.repositoryUrl : cleaned || "";
+    }
+    if (operationsSourceInfo) {
+        operationsSourceInfo.textContent = selectedProjectSource
+            ? `Source: GitHub · ${selectedProjectSource.owner}/${selectedProjectSource.repository} · Branch: ${selectedProjectSource.branch} · Commit: ${selectedProjectSource.commitSha}`
+            : "Source: Local folder";
+        operationsSourceInfo.title = selectedProjectSource
+            ? `Imported ${selectedProjectSource.importedAt} · ${selectedProjectSource.workspacePath}`
+            : cleaned;
+    }
+}
+
+updateSelectedCodebaseSummary(selectedCodebasePath);
 
 
 
@@ -2304,14 +4862,58 @@ document.getElementById("browseCodebaseBtn")
 // Backend Response Handler
 // ============================================
 
-window.electronAPI.onBackendResponse(async (response) => {
+async function handleBackendResponse(response) {
 
-    console.log("ACTIVE:", activeCommand);
+    console.log("ACTIVE REQUEST:", activeRequestId);
     console.log("RESPONSE:", response);
 
 
     if (!response) {
         return;
+    }
+
+    if (response.type === "file-preview" && unitTestPreviewPaths.has(normalizePath(response.path))) {
+        // Consume just this duplicate IPC broadcast. A later user-selected
+        // preview of the same JSON file should still use the generic renderer.
+        unitTestPreviewPaths.delete(normalizePath(response.path));
+        return;
+    }
+
+    if (unitTestPreviewLoading && !response.type && !response.request_id) {
+        return;
+    }
+
+    let activeCommand = null;
+    if (response.type !== "file-preview" && response.type !== "files") {
+        let correlated;
+
+        if (typeof response.request_id !== "string" || !response.request_id) {
+            const failures = commandRequests.failAll("Malformed backend response: missing request ID.");
+            failures.forEach(settleDirectRequest);
+            correlated = failures.find(item => item.request.requestId === activeRequestId);
+        } else {
+            correlated = commandRequests.handle(response);
+        }
+
+        if (correlated?.matched && settleDirectRequest(correlated)) return;
+        if (!correlated?.matched) return;
+        if (correlated.terminal) {
+            response = correlated.response;
+            const isActive = correlated.request.requestId === activeRequestId;
+            if (correlated.request.command === "verify_api_key") {
+                if (isActive) activeRequestId = null;
+                activeCommand = correlated.request.command;
+            } else if (!isActive) {
+                return;
+            } else {
+                activeCommand = correlated.request.command;
+                activeRequestId = null;
+            }
+        } else if (response.accepted === true) {
+            return;
+        } else if (correlated.request.requestId !== activeRequestId) {
+            return;
+        }
     }
 
 
@@ -2323,21 +4925,33 @@ window.electronAPI.onBackendResponse(async (response) => {
     // rejected key stays on the API page with an explanation instead of
     // being dumped into the error popup.
     if (response.command === "verify_api_key") {
+        const outcome = ApiKeyVerify.consumeVerificationResponse(
+            {
+                pendingRequestId: pendingVerifyRequestId,
+                pendingKey,
+                buttonPending: true
+            },
+            response
+        );
 
-        setApiKeyPending(false);
-        activeCommand = null;
-
-        if (!response.success) {
-            showApiKeyError(response.error || "Could not verify the API key.");
-            pendingKey = null;
+        if (!outcome.matches) {
             return;
         }
 
-        const check = response.result || {};
+        pendingVerifyRequestId = outcome.next.pendingRequestId;
+        setApiKeyPending(false);
+        activeCommand = null;
 
-        if (check.status === "rejected") {
-            showApiKeyError(check.message);
+        if (!outcome.save) {
             pendingKey = null;
+            if (!response.success) {
+                showApiKeyError(response.error || "Could not verify the API key.");
+                return;
+            }
+            const check = response.result || {};
+            showApiKeyError(
+                check.message || "Could not verify the API key."
+            );
             return;
         }
 
@@ -2352,13 +4966,7 @@ window.electronAPI.onBackendResponse(async (response) => {
         document.getElementById('apiKeyInput').value = "";
         document.getElementById('apiKeyLabel').value = "";
         await refreshApiKeyList();
-
-        if (check.status === "unverified") {
-            showApiKeyError(check.message);
-        } else {
-            showApiKeySuccess(check.message);
-        }
-
+        showApiKeySuccess((response.result || {}).message);
         return;
     }
 
@@ -2447,6 +5055,10 @@ window.electronAPI.onBackendResponse(async (response) => {
 
         console.log(response);
 
+        if (activeCommand === "generate_gui_test_cases") {
+            document.getElementById("guiGenerationStatus").textContent = response.stage;
+        }
+
         updateStepLoading(response.stage);
 
         if (response.progress !== undefined) {
@@ -2477,6 +5089,12 @@ window.electronAPI.onBackendResponse(async (response) => {
 
         updatePipelineLoading(response.stage);
 
+        // A stage without a percentage of its own (Consistency Review) hides
+        // the step bar instead of leaving the previous stage's value there.
+        const noStepPercent = response.step_percent === false;
+        document.getElementById("loadingStepProgressContainer").classList.toggle("hidden", noStepPercent);
+        document.getElementById("loadingStepProgressText").classList.toggle("hidden", noStepPercent);
+
         if (response.progress !== undefined) {
             console.log("Progress:", response.progress);
             updatePipleineProgressBar(response.progress);
@@ -2485,11 +5103,181 @@ window.electronAPI.onBackendResponse(async (response) => {
         return;
     }
 
+    if (response.command === "repair_gui_test_case") {
+        activeCommand = null;
+        const status = document.getElementById("guiGenerationStatus");
+        const details = document.getElementById("guiGenerationDetails");
+        if (!response.success) {
+            status.textContent = "Automatic selector repair failed.";
+            details.textContent = response.error || "The repair backend failed without a diagnostic.";
+            appendGuiLog(details.textContent);
+            guiRunActive = false;
+            guiRunCompleted = true;
+            updateGuiRunControls();
+            await stopLocalGuiApp();
+            return;
+        }
 
+        const repair = response.result || {};
+        if (!repair.repairable || !repair.generated_file) {
+            status.textContent = "Automatic selector repair was not safe to apply.";
+            details.textContent = repair.reason || "The failure could not be confirmed as an incorrect selector.";
+            appendGuiLog(details.textContent);
+            guiRunActive = false;
+            guiRunCompleted = true;
+            updateGuiRunControls();
+            await stopLocalGuiApp();
+            return;
+        }
+
+        status.textContent = "Selector correction validated; rerunning the affected test...";
+        details.textContent = `${repair.reason}\nRepaired spec: ${repair.generated_file}`;
+        appendGuiLog("The corrected spec passed syntax validation. Rerunning only the affected spec.");
+        guiGeneratedTestFiles = [repair.generated_file];
+        guiRunFailures = [];
+        resetGuiDashboard();
+        guiRunActive = true;
+        updateGuiRunControls();
+        try {
+            const allowedHosts = document.getElementById("guiAllowedHosts").value
+                .split(/[,\s]+/).map(host => host.trim()).filter(Boolean);
+            const run = await window.electronAPI.startGeneratedGuiTests({
+                testFiles: guiGeneratedTestFiles,
+                appPort: guiGenerationAppPort,
+                allowedHosts,
+                afterRunComplete: true,
+                demoMode: document.getElementById("guiDemoMode").checked
+            });
+            if (!run?.success) throw new Error(run?.error || "The repaired test run could not start.");
+            status.textContent = "Rerunning the repaired test in the isolated Playwright browser...";
+            connectGuiRun(run);
+        } catch (error) {
+            status.textContent = "The repaired test could not be rerun.";
+            details.textContent = error.message || "The Playwright runner failed to start.";
+            appendGuiLog(details.textContent);
+            guiRunActive = false;
+            guiRunCompleted = true;
+            updateGuiRunControls();
+            await stopLocalGuiApp();
+        }
+        return;
+    }
 
     // ----------------------------------------
     // Errors
     // ----------------------------------------
+    if (response.cancelled) {
+        if (response.command === "generate_gui_test_cases") {
+            guiGenerationInProgress = false;
+            activeCommand = null;
+            updateGuiRunControls();
+            await stopLocalGuiApp();
+            document.getElementById("guiGenerationStatus").textContent = "GUI test generation cancelled.";
+            document.getElementById("guiGenerationDetails").textContent = response.message || "The generation request was cancelled.";
+        }
+        finishLoading(response.message || "Operation cancelled.");
+        document.getElementById("loadingTitle").textContent = "Cancelled";
+        activeCommand = null;
+        return;
+    }
+
+    if (response.command === "generate_gui_test_cases") {
+        guiGenerationInProgress = false;
+        activeCommand = null;
+        updateGuiRunControls();
+        const status = document.getElementById("guiGenerationStatus");
+        const details = document.getElementById("guiGenerationDetails");
+        const filesList = document.getElementById("guiGeneratedFiles");
+        filesList.replaceChildren();
+
+        if (!response.success) {
+            await stopLocalGuiApp();
+            status.textContent = "GUI test generation failed.";
+            details.textContent = response.error || "The AI could not generate GUI test cases.";
+            return;
+        }
+
+        const result = response.result || {};
+        status.textContent = result.message || "GUI test cases generated.";
+        details.textContent = [
+            `Saved to: ${result.output_directory || "output directory unavailable"}`,
+            `Source files analyzed: ${(result.source_files_analyzed || []).length}`,
+            result.source_context_truncated
+                ? "Note: source context was capped; some files or file contents were not included."
+                : ""
+        ].filter(Boolean).join("\n");
+        const generatedFiles = result.generated_files || [];
+        guiGeneratedTestFiles = generatedFiles.slice();
+        guiRunFailures = [];
+        generatedFiles.forEach(filePath => {
+            const item = document.createElement("li");
+            item.textContent = filePath;
+            filesList.appendChild(item);
+        });
+        if (!filesList.childElementCount) {
+            await stopLocalGuiApp();
+            const item = document.createElement("li");
+            item.textContent = "The backend did not return generated file paths.";
+            filesList.appendChild(item);
+            return;
+        }
+
+        if (!guiGenerationSourceDirectory || !guiGenerationAppPort) {
+            status.textContent = "Tests generated, but app startup details are unavailable.";
+            details.textContent += "\nSelect the app folder and generate again to run them automatically.";
+            return;
+        }
+
+        guiRunActive = true;
+        guiRunCompleted = false;
+        updateGuiRunControls();
+        status.textContent = "Starting Playwright tests against the local app...";
+        appendGuiLog("Generated tests. Preparing the isolated Playwright runner.");
+        const allowedHosts = document.getElementById("guiAllowedHosts").value
+            .split(/[,\s]+/)
+            .map(host => host.trim())
+            .filter(Boolean);
+        try {
+            const run = await window.electronAPI.startGeneratedGuiTests({
+                testFiles: generatedFiles,
+                appPort: guiGenerationAppPort,
+                allowedHosts,
+                demoMode: document.getElementById("guiDemoMode").checked
+            });
+            if (!run?.success) {
+                await stopLocalGuiApp();
+                guiRunActive = false;
+                updateGuiRunControls();
+                status.textContent = "Tests were generated, but the Playwright run could not start.";
+                details.textContent = run?.error || "The app or GUI test runner failed to start.";
+                appendGuiLog(details.textContent);
+                return;
+            }
+
+            const previousSelections = new Map(guiUploadedTests.map(file => [file.id, file.selected]));
+            guiUploadedTests = (run.tests || []).map(file => ({
+                ...file,
+                selected: previousSelections.has(file.id) ? previousSelections.get(file.id) : true
+            }));
+            renderGuiTestFiles();
+            status.textContent = "Local app and generated GUI tests are running.";
+            details.textContent = [
+                `App URL from Docker: http://host.docker.internal:${guiGenerationAppPort}`,
+                `App source: ${guiGenerationSourceDirectory}`,
+                `Generated test files: ${generatedFiles.length}`
+            ].join("\n");
+            connectGuiRun(run);
+        } catch (error) {
+            await stopLocalGuiApp();
+            guiRunActive = false;
+            updateGuiRunControls();
+            status.textContent = "Tests were generated, but the Playwright run could not start.";
+            details.textContent = error.message || "The app or GUI test runner failed to start.";
+            appendGuiLog(details.textContent);
+        }
+        return;
+    }
+
     if (!response.success) {
 
         errorsMade = true;
@@ -2512,7 +5300,6 @@ window.electronAPI.onBackendResponse(async (response) => {
         if (activeCommand) {
 
             hideLoading();
-            showPage('homePage');
             activeCommand = null;
 
         }
@@ -2593,6 +5380,53 @@ window.electronAPI.onBackendResponse(async (response) => {
 
 
     // ----------------------------------------
+    // Full pipeline completion
+    // ----------------------------------------
+    // Generation finished (a failed step never gets here). The Consistency
+    // Review stage is reported on its own line: a mismatch, an incomplete or a
+    // failed review is not a pipeline failure.
+    if (activeCommand === "full_pipeline" && response.success && response.result) {
+
+        const review = window.ConsistencyReviewModel.pipelineReview(response.result.consistency_review);
+
+        finishLoading(`${response.result.message || "Full pipeline completed"}. ${review.text}`);
+        showLoadingWarning(response.result.warning);
+        offerReview(reviewTarget ? reviewTarget.codebasePath : selectedCodebasePath, review.checkId);
+        showReportButton(response.result.run_report);
+
+        activeCommand = null;
+
+        return;
+    }
+
+
+    // ----------------------------------------
+    // Consistency check completion
+    // ----------------------------------------
+    // Completed, incomplete and failed checks all return success (the result
+    // was saved); the title tells them apart, and the warning carries why.
+    if (activeCommand === "check_consistency" && response.success && response.result) {
+
+        const check = response.result;
+
+        finishLoading(`${check.message} Open View Insights → Consistency Review to see the result.`);
+        offerReview(reviewTarget ? reviewTarget.codebasePath : selectedCodebasePath, check.check_id);
+
+        document.getElementById("loadingTitle").textContent = {
+            completed: "Complete",
+            partial: "Check incomplete",
+            failed: "Check failed",
+        }[check.status] || "Complete";
+
+        showLoadingWarning(check.warning);
+
+        activeCommand = null;
+
+        return;
+    }
+
+
+    // ----------------------------------------
     // Command completion
     // ----------------------------------------
     if (response.success) {
@@ -2610,12 +5444,15 @@ window.electronAPI.onBackendResponse(async (response) => {
             );
 
             showLoadingWarning(response.result?.warning);
+            showReportButton(response.result?.run_report);
 
             activeCommand = null;
         }
     }
 
-});
+}
+
+window.electronAPI.onBackendResponse(handleBackendResponse);
 // ============================================
 // Collection List Rendering
 // ============================================
@@ -2751,16 +5588,89 @@ function renderCollectionPreview(
 // ==========================================
 
 
-function toggleTheme() {
-  const newTheme =
-    document.body.dataset.theme === "dark"
-      ? "light"
-      : "dark";
+function setTheme(theme, persist = true) {
+    if (theme !== "light" && theme !== "dark") return;
 
-  document.body.dataset.theme = newTheme;
+    document.body.dataset.theme = theme;
+    notifyEmbeddedRunReportTheme(theme);
+    document.querySelectorAll("[data-theme-choice]").forEach(option => {
+        option.setAttribute("aria-checked", String(option.dataset.themeChoice === theme));
+    });
 
-  localStorage.setItem("theme", newTheme);
+    if (persist) {
+        try {
+            localStorage.setItem("theme", theme);
+        } catch (error) {
+            console.warn("Could not save the selected theme locally:", error);
+        }
+    }
 }
+
+function notifyEmbeddedRunReportTheme(theme) {
+    const frame = document.querySelector("#viewDisplayOutputBox .run-report-frame");
+    frame?.contentWindow?.postMessage({ type: "checkpoint:set-report-theme", theme }, "*");
+}
+
+function initializeThemeMenu() {
+    const button = document.getElementById("themeMenuButton");
+    const menu = document.getElementById("themeMenu");
+    const options = [...menu.querySelectorAll("[data-theme-choice]")];
+
+    const closeMenu = (returnFocus = false) => {
+        menu.classList.add("hidden");
+        button.setAttribute("aria-expanded", "false");
+        if (returnFocus) button.focus();
+    };
+
+    let savedTheme = "dark";
+    try {
+        const stored = localStorage.getItem("theme");
+        if (stored === "light" || stored === "dark") savedTheme = stored;
+    } catch (error) {
+        console.warn("Could not read the saved theme:", error);
+    }
+    setTheme(savedTheme, false);
+
+    button.addEventListener("click", () => {
+        const opening = menu.classList.contains("hidden");
+        menu.classList.toggle("hidden", !opening);
+        button.setAttribute("aria-expanded", String(opening));
+        if (opening) options.find(option => option.getAttribute("aria-checked") === "true")?.focus();
+    });
+
+    options.forEach(option => option.addEventListener("click", () => {
+        setTheme(option.dataset.themeChoice);
+        closeMenu(true);
+    }));
+
+    document.addEventListener("pointerdown", event => {
+        if (!menu.contains(event.target) && !button.contains(event.target) && !menu.classList.contains("hidden")) {
+            closeMenu();
+        }
+    });
+
+    document.addEventListener("keydown", event => {
+        if (menu.classList.contains("hidden")) return;
+        if (event.key === "Escape") {
+            event.preventDefault();
+            closeMenu(true);
+            return;
+        }
+
+        const activeIndex = options.indexOf(document.activeElement);
+        let nextIndex = activeIndex;
+        if (event.key === "ArrowDown") nextIndex = (activeIndex + 1 + options.length) % options.length;
+        else if (event.key === "ArrowUp") nextIndex = (activeIndex - 1 + options.length) % options.length;
+        else if (event.key === "Home") nextIndex = 0;
+        else if (event.key === "End") nextIndex = options.length - 1;
+        else return;
+
+        event.preventDefault();
+        options[nextIndex].focus();
+    });
+}
+
+initializeThemeMenu();
 
 function setApiKeyPending(pending) {
 
@@ -2817,12 +5727,10 @@ function showApiKeyPresent() {
 
     if (!apiBtnEl) return;
 
-    // Deliberately NOT .unusable-btn. That class is cosmetic -- it only
-    // fades the button and shows a not-allowed cursor -- but this button
-    // is the only route to the Replace / Keep page, so looking disabled
-    // made a stale key appear unchangeable. Relabel instead of greying.
+    // Keep the landing action label stable; this route also manages/replaces
+    // an existing key, so it remains available when a key is already saved.
     apiBtnEl.classList.remove("unusable-btn");
-    apiBtnEl.textContent = "Manage API Keys";
+    apiBtnEl.textContent = "↑ Upload API Key";
 
 }
 

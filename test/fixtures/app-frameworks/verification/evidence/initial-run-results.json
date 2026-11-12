@@ -1,0 +1,284 @@
+{
+  "results": [
+    {
+      "name": "vite",
+      "tests": [
+        {
+          "title": "application loads and browser interactions are visible",
+          "status": "passed",
+          "duration": 11252,
+          "screenshot": false
+        },
+        {
+          "title": "controlled failure still produces screenshot evidence",
+          "status": "failed",
+          "duration": 5792,
+          "screenshot": true
+        }
+      ],
+      "frames": [
+        {
+          "color": "green",
+          "green": 108723,
+          "height": 800,
+          "pink": 0,
+          "width": 1280
+        },
+        {
+          "color": "pink",
+          "green": 0,
+          "height": 800,
+          "pink": 108716,
+          "width": 1280
+        }
+      ],
+      "errors": [],
+      "startup": {
+        "port": 5173,
+        "script": "dev",
+        "framework": "vite",
+        "label": "vite",
+        "protocol": "http:",
+        "basePath": "/",
+        "command": "npm --ignore-scripts run dev -- --host 0.0.0.0 --port 5173 --strictPort",
+        "appDirectory": "C:\\Users\\Aryan\\OneDrive\\Documents\\CMPTProject\\Fall2026_CMPT496\\test\\fixtures\\app-frameworks\\vite",
+        "dockerUrl": "http://host.docker.internal:5173/"
+      },
+      "running": false,
+      "completion": {
+        "type": "run_complete",
+        "status": "failed",
+        "total": 2,
+        "passed": 1,
+        "failed": 1,
+        "skipped": 0
+      },
+      "preflightVerified": true,
+      "cleanedUp": true,
+      "ok": true
+    },
+    {
+      "name": "next",
+      "tests": [
+        {
+          "title": "application loads and browser interactions are visible",
+          "status": "failed",
+          "duration": 6818,
+          "screenshot": true
+        },
+        {
+          "title": "controlled failure still produces screenshot evidence",
+          "status": "failed",
+          "duration": 6155,
+          "screenshot": true
+        }
+      ],
+      "frames": [
+        {
+          "color": "green",
+          "green": 108668,
+          "height": 800,
+          "pink": 0,
+          "width": 1280
+        }
+      ],
+      "errors": [],
+      "startup": {
+        "port": 3001,
+        "script": "dev",
+        "framework": "next",
+        "label": "next",
+        "protocol": "http:",
+        "basePath": "/",
+        "command": "npm --ignore-scripts run dev -- --hostname 0.0.0.0 --port 3001",
+        "appDirectory": "C:\\Users\\Aryan\\OneDrive\\Documents\\CMPTProject\\Fall2026_CMPT496\\test\\fixtures\\app-frameworks\\next",
+        "dockerUrl": "http://host.docker.internal:3001/"
+      },
+      "running": false,
+      "completion": {
+        "type": "run_complete",
+        "status": "failed",
+        "total": 2,
+        "passed": 0,
+        "failed": 2,
+        "skipped": 0
+      },
+      "preflightVerified": true,
+      "cleanedUp": true,
+      "ok": false,
+      "error": "Missing preflight, visible color transitions, result or failure screenshot"
+    },
+    {
+      "name": "express",
+      "tests": [
+        {
+          "title": "application loads and browser interactions are visible",
+          "status": "passed",
+          "duration": 11117,
+          "screenshot": false
+        },
+        {
+          "title": "controlled failure still produces screenshot evidence",
+          "status": "failed",
+          "duration": 5745,
+          "screenshot": true
+        }
+      ],
+      "frames": [
+        {
+          "color": "green",
+          "green": 108534,
+          "height": 800,
+          "pink": 0,
+          "width": 1280
+        },
+        {
+          "color": "pink",
+          "green": 0,
+          "height": 800,
+          "pink": 108540,
+          "width": 1280
+        }
+      ],
+      "errors": [],
+      "startup": {
+        "port": 3001,
+        "script": "dev",
+        "framework": "express",
+        "label": "express",
+        "protocol": "http:",
+        "basePath": "/",
+        "command": "npm --ignore-scripts run dev",
+        "appDirectory": "C:\\Users\\Aryan\\OneDrive\\Documents\\CMPTProject\\Fall2026_CMPT496\\test\\fixtures\\app-frameworks\\express",
+        "dockerUrl": "http://host.docker.internal:3001/"
+      },
+      "running": false,
+      "completion": {
+        "type": "run_complete",
+        "status": "failed",
+        "total": 2,
+        "passed": 1,
+        "failed": 1,
+        "skipped": 0
+      },
+      "preflightVerified": true,
+      "cleanedUp": true,
+      "ok": true
+    },
+    {
+      "name": "python",
+      "tests": [
+        {
+          "title": "application loads and browser interactions are visible",
+          "status": "passed",
+          "duration": 11194,
+          "screenshot": false
+        },
+        {
+          "title": "controlled failure still produces screenshot evidence",
+          "status": "failed",
+          "duration": 5777,
+          "screenshot": true
+        }
+      ],
+      "frames": [
+        {
+          "color": "green",
+          "green": 108631,
+          "height": 800,
+          "pink": 0,
+          "width": 1280
+        },
+        {
+          "color": "pink",
+          "green": 0,
+          "height": 800,
+          "pink": 108633,
+          "width": 1280
+        }
+      ],
+      "errors": [],
+      "startup": {
+        "port": 5000,
+        "script": "flask app.py",
+        "framework": "flask",
+        "label": "flask (app.py)",
+        "protocol": "http:",
+        "basePath": "/",
+        "command": "C:\\Users\\Aryan\\OneDrive\\Documents\\CMPTProject\\Fall2026_CMPT496\\test\\fixtures\\app-frameworks\\python\\.venv\\Scripts\\python.exe -m flask --app app:app run --host 0.0.0.0 --port 5000 --no-reload",
+        "appDirectory": "C:\\Users\\Aryan\\OneDrive\\Documents\\CMPTProject\\Fall2026_CMPT496\\test\\fixtures\\app-frameworks\\python",
+        "dockerUrl": "http://host.docker.internal:5000/"
+      },
+      "running": false,
+      "completion": {
+        "type": "run_complete",
+        "status": "failed",
+        "total": 2,
+        "passed": 1,
+        "failed": 1,
+        "skipped": 0
+      },
+      "preflightVerified": true,
+      "cleanedUp": true,
+      "ok": true
+    },
+    {
+      "name": "static",
+      "tests": [
+        {
+          "title": "application loads and browser interactions are visible",
+          "status": "passed",
+          "duration": 11202,
+          "screenshot": false
+        },
+        {
+          "title": "controlled failure still produces screenshot evidence",
+          "status": "failed",
+          "duration": 5761,
+          "screenshot": true
+        }
+      ],
+      "frames": [
+        {
+          "color": "green",
+          "green": 108649,
+          "height": 800,
+          "pink": 0,
+          "width": 1280
+        },
+        {
+          "color": "pink",
+          "green": 0,
+          "height": 800,
+          "pink": 108643,
+          "width": 1280
+        }
+      ],
+      "errors": [],
+      "startup": {
+        "port": 8080,
+        "script": "static server",
+        "framework": "static",
+        "label": "Static HTML",
+        "protocol": "http:",
+        "basePath": "/",
+        "command": "C:\\Users\\Aryan\\OneDrive\\Documents\\CMPTProject\\Fall2026_CMPT496\\node_modules\\electron\\dist\\electron.exe C:\\Users\\Aryan\\OneDrive\\Documents\\CMPTProject\\Fall2026_CMPT496\\guiStaticServer.cjs C:\\Users\\Aryan\\OneDrive\\Documents\\CMPTProject\\Fall2026_CMPT496\\test\\fixtures\\app-frameworks\\static 8080",
+        "appDirectory": "C:\\Users\\Aryan\\OneDrive\\Documents\\CMPTProject\\Fall2026_CMPT496\\test\\fixtures\\app-frameworks\\static",
+        "dockerUrl": "http://host.docker.internal:8080/"
+      },
+      "running": false,
+      "completion": {
+        "type": "run_complete",
+        "status": "failed",
+        "total": 2,
+        "passed": 1,
+        "failed": 1,
+        "skipped": 0
+      },
+      "preflightVerified": true,
+      "cleanedUp": true,
+      "ok": true
+    }
+  ],
+  "error": "Error: One or more framework checks did not pass\n    at C:\\Users\\Aryan\\OneDrive\\Documents\\CMPTProject\\Fall2026_CMPT496\\test\\fixtures\\app-frameworks\\verification\\electron.cjs:84:62\n    at process.processTicksAndRejections (node:internal/process/task_queues:104:5)"
+}

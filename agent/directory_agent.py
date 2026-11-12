@@ -4,6 +4,7 @@ from agent.states.directory_agent_state import DirectoryGraphState
 from agent.structured_output.directory_output import DirectoryOutput, ContextAnalysisOutput, JudgementOutput, BusinessRulesOutput
 from langgraph.graph import StateGraph, START, END
 from agent.llm import make_llm
+from agent.file_summary_grounding import filter_directory_business_rules_against_source
 from agent.crawl_config import prune
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 import os
@@ -15,6 +16,26 @@ from collections import deque
 import json
 from backend.progress_logging import progress
 from utils.chroma_utils import collection_name
+
+# A summary the judge rejects is rewritten at most this many times.
+MAX_REFINEMENTS = 2
+
+
+def after_judgement(state):
+    if state["summary_acceptable"] or state["refinement_attempts"] >= MAX_REFINEMENTS:
+        return "business_rules_extractor"
+    return "refinement"
+
+
+def after_refinement(state):
+    """
+    After the last allowed rewrite, move on without judging it again: that
+    verdict would be ignored, so the call only cost tokens.
+    """
+    if state["refinement_attempts"] >= MAX_REFINEMENTS:
+        return "business_rules_extractor"
+    return "judgement"
+
 
 class DirectoryAgent:
     def __init__(self, model = None):
@@ -59,11 +80,8 @@ class DirectoryAgent:
         )
         builder.add_edge("summarizer", "judgement")
         builder.add_edge("root_summarizer", "judgement")
-        builder.add_conditional_edges(
-            "judgement",
-            lambda state: "business_rules_extractor" if state["summary_acceptable"] or state["refinement_attempts"] >= 2 else "refinement"
-        )
-        builder.add_edge("refinement", "judgement")
+        builder.add_conditional_edges("judgement", after_judgement)
+        builder.add_conditional_edges("refinement", after_refinement)
         builder.add_edge("business_rules_extractor", "writer")
         builder.add_conditional_edges(
             "writer",
@@ -762,6 +780,17 @@ Show how the parts connect and the overall shape of the system, not just what ea
             # Manually set directory_name and directory_path for consistency
             output.directory_name = Path(current_dir).name
             output.directory_path = rel_dir
+            try:
+                output = filter_directory_business_rules_against_source(
+                    output,
+                    current_dir,
+                    root_directory,
+                )
+            except Exception as grounding_error:
+                progress(
+                    f"Skipped G2 business-rule grounding for {Path(current_dir).name}: "
+                    f"{grounding_error}"
+                )
 
             progress(f"Extracted business rules for directory {current_dir}", 90)
             return {

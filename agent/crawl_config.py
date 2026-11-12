@@ -35,6 +35,10 @@ IGNORED_DIRS = {
     "NuSpecs",
     "NuSpec",
     "Debug",
+    # ASP.NET: downloaded web libraries (jQuery, Bootstrap) and the database
+    # migrations Entity Framework generates.
+    "wwwroot",
+    "Migrations",
 }
 
 

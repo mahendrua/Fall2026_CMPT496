@@ -5,6 +5,25 @@ contextBridge.exposeInMainWorld(
     "electronAPI",
     {
 
+        getFirebaseConfig: () => ipcRenderer.invoke("auth:get-config"),
+        readAuthSession: () => ipcRenderer.invoke("auth:read-session"),
+        writeAuthSession: session => ipcRenderer.invoke("auth:write-session", session),
+        clearAuthSession: () => ipcRenderer.invoke("auth:clear-session"),
+        establishAuthSession: idToken => ipcRenderer.invoke("auth:establish", idToken),
+        signOutAuthSession: () => ipcRenderer.invoke("auth:sign-out"),
+        getUserProfile: () => ipcRenderer.invoke("auth:get-profile"),
+        saveUserProfile: role => ipcRenderer.invoke("auth:save-profile", role),
+        getGithubBranches: repositoryUrl => ipcRenderer.invoke("github:get-branches", repositoryUrl),
+        listGithubPullRequests: request => ipcRenderer.invoke("github:list-pull-requests", request),
+        getGithubPullRequest: request => ipcRenderer.invoke("github:get-pull-request", request),
+        getGithubPullRequestFile: request => ipcRenderer.invoke("github:get-pull-request-file", request),
+        importGithubRepository: request => ipcRenderer.invoke("github:import", request),
+        cancelGithubImport: requestId => ipcRenderer.invoke("github:cancel-import", requestId),
+        onGithubImportProgress: callback => {
+            const listener = (_event, progress) => callback(progress);
+            ipcRenderer.on("github:import-progress", listener);
+            return () => ipcRenderer.removeListener("github:import-progress", listener);
+        },
 
         // ==================================
         // Backend Commands
@@ -12,20 +31,22 @@ contextBridge.exposeInMainWorld(
 
         executeCommand: (
             command,
-            args = {}
+            args = {},
+            requestId
         ) => {
 
             return ipcRenderer.invoke(
                 "execute-command",
                 {
                     command,
-                    args
+                    args,
+                    request_id: requestId
                 }
             );
 
         },
 
-    cancelCommand: () => ipcRenderer.invoke("cancel-command"),
+    cancelCommand: (requestId) => ipcRenderer.invoke("cancel-command", requestId),
 
         getErrorLog: () => ipcRenderer.invoke("get-error-log"),
 
@@ -83,6 +104,11 @@ contextBridge.exposeInMainWorld(
             );
         },
 
+        getBusinessRules: (codebasePath) => ipcRenderer.invoke(
+            "get-business-rules",
+            { codebasePath }
+        ),
+
         setAPIKey: (
             key
         ) => {
@@ -104,6 +130,13 @@ contextBridge.exposeInMainWorld(
         exitApp: () => {
             return ipcRenderer.invoke("exit-app");
         },
+
+        // Run report (US-049): opens run_reports/<codebase>/run_report.html in its own window.
+        openReport: (reportPath) => ipcRenderer.invoke("open-report", reportPath),
+        // The selected codebase's report, or the newest one when none is selected.
+        openLatestReport: (codebaseName) => ipcRenderer.invoke("open-latest-report", codebaseName),
+        // Saved report HTML for the selected codebase, rendered by the UI in a sandboxed iframe.
+        getRunReportHtml: (codebaseName) => ipcRenderer.invoke("get-run-report-html", codebaseName),
 
 
         // ==================================
@@ -143,6 +176,31 @@ contextBridge.exposeInMainWorld(
         
         selectCodebase: () =>
         ipcRenderer.invoke("select-codebase"),
+
+        selectGuiTestFiles: () => ipcRenderer.invoke("select-gui-test-files"),
+        startGuiTests: (testIds, allowedHosts, options = {}) =>
+            ipcRenderer.invoke("start-gui-tests", { testIds, allowedHosts, demoMode: options.demoMode === true }),
+        startLocalGuiApp: request =>
+            ipcRenderer.invoke("start-local-gui-app", request),
+        stopLocalGuiApp: () => ipcRenderer.invoke("stop-local-gui-app"),
+        startGeneratedGuiTests: request =>
+            ipcRenderer.invoke("start-generated-gui-tests", request),
+        repairGeneratedGuiTest: request =>
+            ipcRenderer.invoke("repair-generated-gui-test", request),
+        stopGuiTests: () => ipcRenderer.invoke("stop-gui-tests"),
+        clearGuiTests: () => ipcRenderer.invoke("clear-gui-tests"),
+        diagnoseGuiEventStream: eventsUrl =>
+            ipcRenderer.invoke("diagnose-gui-event-stream", eventsUrl),
+        listGuiTestingReports: () => ipcRenderer.invoke("list-gui-testing-reports"),
+        getGuiTestingReport: reportId => ipcRenderer.invoke("get-gui-testing-report", reportId),
+        exportGuiTestingReportPdf: reportId => ipcRenderer.invoke("export-gui-testing-report-pdf", reportId),
+        reportGuiTestEvent: payload => ipcRenderer.send("gui-test-report-event", payload),
+        onGuiTestEvent: (callback) => {
+            ipcRenderer.on("gui-test-event", (event, payload) => callback(payload));
+        },
+        removeGuiTestListener: () => {
+            ipcRenderer.removeAllListeners("gui-test-event");
+        },
 
         }
 );

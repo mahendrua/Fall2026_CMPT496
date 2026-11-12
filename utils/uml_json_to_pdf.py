@@ -171,6 +171,10 @@ def get_plantuml_runner(args: argparse.Namespace) -> list[str]:
     )
 
 
+# A diagram that takes longer than this is skipped, so it cannot hang the step.
+RENDER_TIMEOUT_SECONDS = 120
+
+
 def render_plantuml(
     snippet: str,
     stem: str,
@@ -194,6 +198,11 @@ def render_plantuml(
         [*base_cmd, "-Playout=smetana", "-tpng", str(puml_path)],
     ]
 
+    # The diagram text comes from the AI, so PlantUML runs in its SANDBOX mode,
+    # where !include cannot copy a local file (or a URL) into the picture. As an
+    # environment variable it reaches both a `plantuml` command and java -jar.
+    env = {**os.environ, "PLANTUML_SECURITY_PROFILE": "SANDBOX"}
+
     last_error: Optional[subprocess.CalledProcessError] = None
     for cmd in cmd_candidates:
         try:
@@ -202,8 +211,17 @@ def render_plantuml(
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=env,
+                timeout=RENDER_TIMEOUT_SECONDS,
             )
             break
+        except subprocess.TimeoutExpired as exc:
+            # Skipped like a diagram with a syntax error, so one slow diagram
+            # does not stop the whole UML step.
+            raise DiagramSyntaxError(
+                f"PlantUML took longer than {RENDER_TIMEOUT_SECONDS} seconds "
+                f"for {puml_path.name}."
+            ) from exc
         except subprocess.CalledProcessError as exc:
             last_error = exc
             stderr = exc.stderr.decode("utf-8", errors="replace") if exc.stderr else ""

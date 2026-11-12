@@ -51,8 +51,16 @@ class CommandDispatcher:
             # Business rules / tests
             "validate_business_rules": self.commands.validate_business_rules,
             "generate_unit_tests": self.commands.generate_unit_tests,
+            "generate_gui_test_cases": self.commands.generate_gui_test_cases,
+            "repair_gui_test_case": self.commands.repair_gui_test_case,
             "validate_unit_tests": self.commands.validate_unit_tests,
             "generate_integration_tests": self.commands.generate_integration_tests,
+
+            # Mutation testing (not part of the full pipeline: it takes minutes)
+            "run_mutation_tests": self.commands.run_mutation_tests,
+
+            # GitHub pull requests
+            "analyze_pull_request": self.commands.analyze_pull_request,
 
             # UML
             "generate_uml": self.commands.generate_uml,
@@ -70,6 +78,14 @@ class CommandDispatcher:
 
             # Usage
             "get_run_usage": self.commands.get_run_usage,
+
+            # Consistency Review (read results, save review decisions)
+            "get_consistency_result": self.commands.get_consistency_result,
+            "save_consistency_review": self.commands.save_consistency_review,
+            "get_consistency_artifact": self.commands.get_consistency_artifact,
+            "get_consistency_targets": self.commands.get_consistency_targets,
+            "get_consistency_methods": self.commands.get_consistency_methods,
+            "check_consistency": self.commands.check_consistency,
 
             # Error log
             "get_errors": self.get_errors,
@@ -127,7 +143,7 @@ class CommandDispatcher:
         })
         self._save_errors()
 
-    def dispatch(self, command: str, **kwargs):
+    def dispatch(self, command: str, request_id=None, **kwargs):
         """
         Execute a backend command.
 
@@ -146,7 +162,8 @@ class CommandDispatcher:
             return {
                 "success": False,
                 "error": error,
-                "command": command
+                "command": command,
+                **({"request_id": request_id} if request_id is not None else {})
             }
 
         # Tell Commands which codebase measured usage belongs to.
@@ -173,6 +190,8 @@ class CommandDispatcher:
                     result.get("error_code"),
                 )
 
+            if isinstance(result, dict) and request_id is not None:
+                result["request_id"] = request_id
             return result
 
         except Exception as e:
@@ -184,5 +203,6 @@ class CommandDispatcher:
             return {
                 "success": False,
                 "error": error,
-                "command": command
+                "command": command,
+                **({"request_id": request_id} if request_id is not None else {})
             }
