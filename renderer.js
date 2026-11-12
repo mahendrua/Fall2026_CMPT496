@@ -3689,6 +3689,21 @@ document.getElementById('tokenCalibrationBtn')
         });
     });
 
+document.getElementById('createLSPContextBtn')
+    .addEventListener('click', () => {
+
+        showLoading(
+            "LSP Context Creation",
+            "Preparing..."
+        );
+
+        runBackendCommand(
+            "generate_lsp_context",
+        {
+            codebase:selectedCodebasePath
+        });
+    });
+
 document.getElementById('createCodeDatabaseOnlyBtn')
     .addEventListener('click', () => {
 

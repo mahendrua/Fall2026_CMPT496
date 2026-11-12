@@ -8,7 +8,89 @@ from pathlib import Path
 
 from agent.crawl_config import prune
 
-_LANGUAGE_SUFFIXES = {".py": "python", ".cs": "csharp"}
+LANGUAGE_CONFIG = {
+    "python": {
+        "suffixes": {".py"},
+        "framework": "pytest",
+        "body_patterns": (
+            re.compile(r"\b(?:async\s+)?def\s+test_\w+"),
+            re.compile(r"\b(?:import\s+pytest\b|from\s+pytest\b)"),
+        ),
+    },
+    "csharp": {
+        "suffixes": {".cs"},
+        "framework": "xunit",
+        "body_patterns": (
+            re.compile(r"\[\s*(?:Fact|Theory)\s*\]"),
+            re.compile(r"\busing\s+[\w.]+"),
+        ),
+    },
+    "javascript": {
+        "suffixes": {".js", ".jsx", ".mjs", ".cjs"},
+        "framework": "vitest",
+        "body_patterns": (
+            re.compile(r"\b(?:describe|it|test|expect)\s*(?:\.\w+)?\s*\("),
+            re.compile(r"\b(?:vi|vitest)\."),
+        ),
+    },
+    "java": {
+        "suffixes": {".java"},
+        "framework": "junit5",
+        "body_patterns": (
+            re.compile(r"@\s*Test\b"),
+            re.compile(r"\bimport\s+org\.junit\.jupiter\b"),
+        ),
+    },
+    "c": {
+        "suffixes": {".c"},
+        "framework": "unity",
+        "body_patterns": (
+            re.compile(r"\bvoid\s+test_\w+\s*\(\s*void\s*\)"),
+            re.compile(r"\bTEST_ASSERT_[A-Z0-9_]+\s*\("),
+            re.compile(r'#\s*include\s*[<"]unity\.h[>"]'),
+        ),
+    },
+    "cpp": {
+        "suffixes": {
+            ".C", ".cpp", ".cc", ".cxx", ".cp", ".c++",
+            ".hpp", ".hh", ".hxx", ".h++", ".H",
+        },
+        "framework": "googletest",
+        "body_patterns": (
+            re.compile(r"\b(?:TEST|TEST_F|TEST_P)\s*\("),
+            re.compile(r"#\s*include\s*[<\"]gtest/gtest\.h[>\"]"),
+        ),
+    },
+
+    "kotlin": {
+        "suffixes": {".kt"},
+        "framework": "junit5",
+        "body_patterns": (
+            re.compile(r"@\s*Test\b"),
+            re.compile(r"\bfun\s+\w+\s*\("),
+            re.compile(r"\bimport\s+kotlin(?:\.test)?\."),
+        ),
+    },
+}
+
+# Keep suffix matching case-sensitive for .C, which commonly identifies C++.
+_LANGUAGE_SUFFIXES = {
+    suffix: language
+    for language, config in LANGUAGE_CONFIG.items()
+    for suffix in config["suffixes"]
+}
+
+_AMBIGUOUS_SUFFIXES = {".h"}
+
+
+def _source_suffix(path: str | Path) -> str:
+    """Return a source suffix while preserving the significant .C distinction."""
+    suffix = Path(path).suffix
+
+    if suffix == ".C":
+        return ".C"
+
+    return suffix.lower()
 # Bounded suffix inspection only. Academic labs are small; exceeding this
 # without a unique language is treated as undecidable rather than guessed.
 PROJECT_LANGUAGE_SCAN_LIMIT = 2000
@@ -23,29 +105,53 @@ def detect_test_language(
     Determine the single supported language represented by selected rules.
 
     Each item in source_file_groups is one rule's source_file_paths list.
-    When those paths carry no language evidence, codebase_path may supply a
-    trusted project-level .py/.cs scan. Rule-path evidence always wins.
+    Explicit source-file extensions take priority. Ambiguous C/C++ headers
+    are resolved using selected translation units or project include
+    relationships. A project-level scan is used only when selected paths
+    provide no language evidence.
     """
     suffixes = {
-        Path(source_path).suffix.lower()
+        _source_suffix(source_path)
         for source_files in source_file_groups
         for source_path in source_files
-        # Only code files say which language the tests need; a rule can
-        # also cite documentation such as README.md.
-        if Path(source_path).suffix.lower() in _LANGUAGE_SUFFIXES
+        if (
+            _source_suffix(source_path) in _LANGUAGE_SUFFIXES
+            or _source_suffix(source_path) in _AMBIGUOUS_SUFFIXES
+        )
     }
 
-    if suffixes == {".py"}:
-        return "python"
+    languages = {
+        _LANGUAGE_SUFFIXES[suffix]
+        for suffix in suffixes
+        if suffix in _LANGUAGE_SUFFIXES
+    }
 
-    if suffixes == {".cs"}:
-        return "csharp"
-
-    if suffixes:
+    if len(languages) > 1:
         raise ValueError(
             "Unit-test generation currently supports one language at a time. "
             f"Found source types: {', '.join(sorted(suffixes))}."
         )
+
+    # A translation unit provides stronger evidence than an ambiguous header.
+    if languages:
+        return next(iter(languages))
+
+    ambiguous_headers = [
+        source_path
+        for source_files in source_file_groups
+        for source_path in source_files
+        if _source_suffix(source_path) in _AMBIGUOUS_SUFFIXES
+    ]
+
+    if ambiguous_headers:
+        if not codebase_path:
+            raise ValueError(
+                "Cannot determine whether the selected .h files belong to "
+                "C or C++. Provide the project directory or select an "
+                "unambiguous source file."
+            )
+
+        return _resolve_header_language(ambiguous_headers, codebase_path)
 
     if codebase_path:
         return _project_source_language(codebase_path)
@@ -56,6 +162,7 @@ def detect_test_language(
     )
 
 
+
 def _is_inside_project(path: Path, project_root: Path) -> bool:
     try:
         path.resolve().relative_to(project_root)
@@ -64,16 +171,183 @@ def _is_inside_project(path: Path, project_root: Path) -> bool:
     return True
 
 
-def _project_source_language(codebase_path: str) -> str:
+def _resolve_header_language(
+    headers: list[str],
+    codebase_path: str,
+) -> str:
     """
-    Infer python or csharp from .py/.cs filenames under a trusted lab.
+    Resolve .h headers using their relationships with C/C++ translation units.
 
-    Does not read file contents. Uses crawl_config.prune so ignored and
-    Checkpoint-generated folders are skipped. os.walk does not follow
-    directory symlinks. Source-file symlinks that resolve outside the
-    project are ignored.
+    A header included by only C translation units is treated as C. A header
+    included by only C++ translation units is treated as C++. Conflicting
+    or missing evidence is rejected rather than guessed.
     """
     root = Path(codebase_path)
+
+    if not root.exists() or not root.is_dir():
+        raise ValueError(
+            "Cannot resolve ambiguous headers because the project directory "
+            f"is missing or invalid: {codebase_path}"
+        )
+
+    project_root = root.resolve()
+    selected_headers = []
+
+    for header in headers:
+        candidate = Path(header)
+
+        if not candidate.is_absolute():
+            candidate = project_root / candidate
+
+        try:
+            resolved = candidate.resolve()
+            resolved.relative_to(project_root)
+        except (ValueError, OSError):
+            continue
+
+        selected_headers.append(resolved)
+
+    if not selected_headers:
+        raise ValueError(
+            "Cannot resolve the selected .h files because none could be "
+            "resolved inside the project directory."
+        )
+
+    header_names = {
+        header.name
+        for header in selected_headers
+    }
+
+    include_pattern = re.compile(
+        r'^\s*#\s*include\s*["<]([^">]+)[">]',
+        re.MULTILINE,
+    )
+
+    found_languages = set()
+    visited = 0
+
+    for dirpath, dirs, filenames in os.walk(
+        project_root,
+        followlinks=False,
+    ):
+        prune(dirpath, dirs)
+
+        dirs[:] = [
+            name
+            for name in dirs
+            if name not in _EXTRA_IGNORED_DIRS
+            and not (Path(dirpath) / name).is_symlink()
+        ]
+
+        visited += 1
+
+        if visited > PROJECT_LANGUAGE_SCAN_LIMIT:
+            raise ValueError(
+                "Cannot resolve ambiguous headers because the project scan "
+                "exceeded its file budget."
+            )
+
+        for filename in filenames:
+            source_path = Path(dirpath) / filename
+            suffix = _source_suffix(filename)
+            language = _LANGUAGE_SUFFIXES.get(suffix)
+
+            if language not in {"c", "cpp"}:
+                continue
+
+            visited += 1
+
+            if visited > PROJECT_LANGUAGE_SCAN_LIMIT:
+                raise ValueError(
+                    "Cannot resolve ambiguous headers because the project "
+                    "scan exceeded its file budget."
+                )
+
+            if source_path.is_symlink() and not _is_inside_project(
+                source_path,
+                project_root,
+            ):
+                continue
+
+            try:
+                source_text = source_path.read_text(
+                    encoding="utf-8",
+                    errors="ignore",
+                )
+            except OSError:
+                continue
+
+            for include in include_pattern.findall(source_text):
+                include_path = Path(include)
+
+                possible_paths = [
+                    (source_path.parent / include_path).resolve(),
+                    (project_root / include_path).resolve(),
+                ]
+
+                matches_selected_header = any(
+                    possible_path in selected_headers
+                    for possible_path in possible_paths
+                )
+
+                # A basename match is useful when include directories are
+                # supplied by the build system rather than relative to the
+                # translation unit. Only use it when the name is unique
+                # among the selected headers.
+                if (
+                    not matches_selected_header
+                    and include_path.name in header_names
+                ):
+                    matching_headers = [
+                        header
+                        for header in selected_headers
+                        if header.name == include_path.name
+                    ]
+
+                    matches_selected_header = len(matching_headers) == 1
+
+                if matches_selected_header:
+                    found_languages.add(language)
+
+    if len(found_languages) == 1:
+        return next(iter(found_languages))
+
+    if len(found_languages) > 1:
+        raise ValueError(
+            "Cannot determine the language of the selected .h files because "
+            "they are included by both C and C++ source files."
+        )
+
+    # If no include relationship was found, a project containing only one
+    # C-family language provides weaker fallback evidence.
+    project_languages = _project_source_languages(codebase_path)
+    c_family_languages = project_languages.intersection({"c", "cpp"})
+
+    if len(c_family_languages) == 1:
+        return next(iter(c_family_languages))
+
+    if len(c_family_languages) > 1:
+        raise ValueError(
+            "Cannot determine whether the selected .h files belong to C or "
+            "C++ because the project contains both languages and no "
+            "unambiguous include relationship was found."
+        )
+
+    raise ValueError(
+        "Cannot determine whether the selected .h files belong to C or C++. "
+        "No matching C or C++ translation units were found."
+    )
+
+def _project_source_languages(codebase_path: str) -> set[str]:
+    """
+    Collect supported source languages present in a project.
+
+    Does not read file contents. Uses crawl_config.prune so ignored and
+    Checkpoint-generated folders are skipped. Directory symlinks are not
+    followed, and source-file symlinks outside the project are ignored.
+    """
+    root = Path(codebase_path)
+
     if not root.exists() or not root.is_dir():
         raise ValueError(
             "Cannot determine a test language because the project directory "
@@ -81,18 +355,24 @@ def _project_source_language(codebase_path: str) -> str:
         )
 
     project_root = root.resolve()
-    found: set[str] = set()
+    found = set()
     visited = 0
 
-    for dirpath, dirs, filenames in os.walk(project_root, followlinks=False):
+    for dirpath, dirs, filenames in os.walk(
+        project_root,
+        followlinks=False,
+    ):
         prune(dirpath, dirs)
+
         dirs[:] = [
             name
             for name in dirs
             if name not in _EXTRA_IGNORED_DIRS
             and not (Path(dirpath) / name).is_symlink()
         ]
+
         visited += 1
+
         if visited > PROJECT_LANGUAGE_SCAN_LIMIT:
             raise ValueError(
                 "Cannot determine a test language because the project scan "
@@ -101,34 +381,58 @@ def _project_source_language(codebase_path: str) -> str:
 
         for name in filenames:
             visited += 1
+
             if visited > PROJECT_LANGUAGE_SCAN_LIMIT:
                 raise ValueError(
-                    "Cannot determine a test language because the project scan "
-                    "exceeded its file budget before a unique language was proven."
+                    "Cannot determine a test language because the project "
+                    "scan exceeded its file budget before a unique language "
+                    "was proven."
                 )
-            suffix = Path(name).suffix.lower()
+
+            suffix = _source_suffix(name)
             language = _LANGUAGE_SUFFIXES.get(suffix)
+
             if language is None:
                 continue
-            candidate = Path(dirpath) / name
-            if candidate.is_symlink() and not _is_inside_project(candidate, project_root):
-                continue
-            found.add(language)
-            if len(found) > 1:
-                raise ValueError(
-                    "Cannot determine a test language because the project "
-                    "contains both Python and C# source files."
-                )
 
-    if found == {"python"}:
-        return "python"
-    if found == {"csharp"}:
-        return "csharp"
+            candidate = Path(dirpath) / name
+
+            if (
+                candidate.is_symlink()
+                and not _is_inside_project(candidate, project_root)
+            ):
+                continue
+
+            found.add(language)
+
+    return found
+
+
+def _project_source_language(codebase_path: str) -> str:
+    """
+    Infer the single supported language present in a project.
+
+    Mixed-language projects are rejected when selected source paths do not
+    provide enough evidence to identify the intended language.
+    """
+    found = _project_source_languages(codebase_path)
+
+    if len(found) == 1:
+        return next(iter(found))
+
+    if len(found) > 1:
+        detected = ", ".join(sorted(found))
+        raise ValueError(
+            "Cannot determine a test language because the project contains "
+            f"multiple source languages: {detected}"
+        )
+
+    supported = ", ".join(sorted(LANGUAGE_CONFIG))
+
     raise ValueError(
         "Cannot determine a test language because the project contains no "
-        "Python or C# source files."
+        f"supported source files. Supported languages: {supported}"
     )
-
 
 _PYTHON_TEST_DEF = re.compile(r"\b(?:async\s+)?def\s+test_\w*")
 _PYTHON_PYTEST_IMPORT = re.compile(r"\b(?:import\s+pytest\b|from\s+pytest\b)")
@@ -175,49 +479,72 @@ def _path_language_from_tests(tests) -> str | None:
         raise
 
 
-def _body_signals(text: str) -> tuple[bool, bool]:
+def _body_signals(text: str) -> set[str]:
     visible = _without_comments_and_strings(text)
-    python = bool(
-        _PYTHON_TEST_DEF.search(visible) or _PYTHON_PYTEST_IMPORT.search(visible)
-    )
-    csharp = bool(
-        _CSHARP_XUNIT_ATTR.search(visible) or _CSHARP_USING.search(visible)
-    )
-    return python, csharp
+    detected = set()
 
+    for language, config in LANGUAGE_CONFIG.items():
+        if any(
+            pattern.search(visible)
+            for pattern in config["body_patterns"]
+        ):
+            detected.add(language)
+
+    # Kotlin and Java both use the JUnit 5 @Test annotation.
+    # Kotlin-specific syntax provides stronger language evidence.
+    kotlin_specific = (
+        re.search(r"\bfun\s+\w+\s*\(", visible)
+        or re.search(r"\bimport\s+kotlin(?:\.test)?\.", text)
+    )
+
+    if kotlin_specific:
+        detected.add("kotlin")
+        detected.discard("java")
+
+    # The Vitest import contains a string literal, so inspect the original
+    # text separately rather than the comment/string-stripped text.
+    if re.search(
+        r"\bfrom\s*['\"]vitest['\"]"
+        r"|\brequire\s*\(\s*['\"]vitest['\"]\s*\)",
+        text,
+    ):
+        detected.add("javascript")
+
+    return detected
 
 def _body_language_from_tests(tests) -> str | None:
-    saw_python = False
-    saw_csharp = False
+    detected_languages = set()
 
     for test in tests:
-        python, csharp = _body_signals(_test_source_text(test))
-        if python and csharp:
+        signals = _body_signals(_test_source_text(test))
+
+        if len(signals) > 1:
+            detected = ", ".join(sorted(signals))
             raise ValueError(
                 "Cannot determine a test language because a generated test "
-                "mixes Python and C# syntax."
+                f"contains conflicting language markers: {detected}."
             )
-        saw_python = saw_python or python
-        saw_csharp = saw_csharp or csharp
 
-    if saw_python and saw_csharp:
+        detected_languages.update(signals)
+
+    if len(detected_languages) > 1:
+        detected = ", ".join(sorted(detected_languages))
         raise ValueError(
             "Cannot determine a test language because the generated tests "
-            "mix Python and C# syntax."
+            f"mix multiple languages: {detected}."
         )
-    if saw_python:
-        return "python"
-    if saw_csharp:
-        return "csharp"
-    return None
 
+    if detected_languages:
+        return next(iter(detected_languages))
+
+    return None
 
 def detect_unit_test_language(tests) -> str:
     """
     Determine the harness language for already generated unit tests.
 
-    Combines source-file suffixes with pytest/xUnit body evidence.
-    Contradictory or missing evidence is rejected; C# is never a default.
+    Combines source-file suffixes with language-specific test-framework
+    evidence. Contradictory or missing evidence is rejected.
     """
     if not tests:
         raise ValueError(
@@ -238,9 +565,11 @@ def detect_unit_test_language(tests) -> str:
     if body_language:
         return body_language
 
+    supported = ", ".join(sorted(LANGUAGE_CONFIG))
+
     raise ValueError(
         "Cannot determine a test language because the generated tests "
-        "do not identify Python or C#."
+        f"do not identify a supported language: {supported}."
     )
 
 
@@ -295,4 +624,282 @@ C# / XUNIT REQUIREMENTS:
 - Do not use Moq, FluentAssertions, or other test packages.
 """
 
+    if target_language == "javascript":
+        return """
+JAVASCRIPT / VITEST REQUIREMENTS:
+- Generate exactly one complete Vitest test block in `unit_test`.
+- Use `it(...)` or `test(...)` to define the test.
+- Use `expect(...)` for assertions.
+- Put every required JavaScript import statement in the `imports` array,
+  one complete import statement per entry.
+- Import Vitest functions explicitly:
+  `import { describe, it, expect } from "vitest";`
+- Import only real functions, classes, and modules shown in the supplied
+  source context. Do not invent exports, paths, or APIs.
+- Source files are located relative to the codebase root.
+- Generated test files will be placed in a temporary directory directly
+  inside the codebase root.
+- When importing a source file, use a relative path beginning with `../`
+  followed by its codebase-relative path.
+  For example, if the source file is `src/calculator.js`, use
+  `import { add } from "../src/calculator.js";`.
+- Do not use machine-specific absolute paths.
+- Use valid JavaScript syntax. Do not use TypeScript-only syntax.
+- Use asynchronous tests only when the source behavior requires them.
+- Do not use Jest-specific APIs or assume Jest is installed.
+- Do not modify package configuration or install dependencies.
+- Do not use C# syntax, xUnit attributes, Python syntax, or pytest.
+"""
+
+    if target_language == "java":
+        return """
+JAVA / JUNIT 5 REQUIREMENTS:
+
+- Generate exactly one complete JUnit 5 test method.
+- Return the test method only in the unit_test field.
+- Do not generate a surrounding class declaration.
+- Use the @Test annotation.
+- Use JUnit 5 assertions such as assertEquals, assertTrue,
+  assertFalse, assertNull, and assertThrows.
+- Put every required Java import statement in the imports array.
+- Each imports entry must be a complete Java import statement,
+  including its semicolon.
+- Import only real classes, methods, and packages supported by
+  the supplied source context.
+- Preserve the source code's actual package and class names.
+- Use package-private access when the generated test belongs
+  to the same package as the source class.
+- Do not invent constructors, methods, classes, or APIs.
+- Do not use JUnit 4, TestNG, Mockito, or additional test dependencies.
+- Do not generate a main method or standalone Java application.
+- Do not use Python, C#, or JavaScript test syntax.
+"""
+
+    if target_language == "cpp":
+        return """\
+C++ / GOOGLE TEST REQUIREMENTS:
+
+- Generate exactly one complete GoogleTest test case in the unit_test field.
+- Use TEST(SuiteName, TestName) to define the test.
+- Do not generate a main function or a surrounding test executable.
+- Use GoogleTest assertions such as EXPECT_EQ, ASSERT_EQ, EXPECT_TRUE,
+  ASSERT_TRUE, EXPECT_FALSE, ASSERT_FALSE, EXPECT_THROW, and ASSERT_THROW.
+- Put every required C++ include directive in the imports array.
+- Each imports entry must be a complete #include directive.
+- Include <gtest/gtest.h> when required by the generated test.
+- Import only real project headers and use only public APIs supported
+  by the supplied source context.
+- Preserve the actual namespaces, class names, constructors, and method names.
+- Do not invent functions, classes, constructors, or APIs.
+- Do not modify the project's CMake configuration or introduce dependencies.
+- Do not use Catch2, doctest, CUnit, or other testing frameworks.
+- Do not generate a standalone application or a main function.
+- Use valid C++ syntax and the project's supported C++ standard.
+- Do not use Python, C#, Java, JavaScript, pytest, or xUnit syntax.
+"""
+    if target_language == "c":
+        return """\
+C / UNITY REQUIREMENTS:
+
+- Generate exactly one complete C test function in the unit_test field.
+- Use the signature: void test_<descriptive_name>(void).
+- Do not generate a main function.
+- Do not generate UNITY_BEGIN(), UNITY_END(), or RUN_TEST() calls.
+  The test harness provides the test runner.
+- Use Unity assertions such as TEST_ASSERT_EQUAL_INT,
+  TEST_ASSERT_EQUAL_STRING, TEST_ASSERT_TRUE, TEST_ASSERT_FALSE,
+  TEST_ASSERT_NULL, TEST_ASSERT_NOT_NULL, and TEST_ASSERT_EQUAL.
+- Put every required C include directive in the imports array.
+- Each imports entry must be a complete #include directive.
+- Include <unity.h> when required by the generated test.
+- Include only real project headers and use only functions,
+  structures, enums, and public APIs supported by the supplied source.
+- Preserve the actual function names, structure names, and field names.
+- Do not invent functions, structures, fields, or APIs.
+- Do not modify the project's build configuration or introduce
+  additional testing frameworks.
+- Use valid C syntax and the project's supported C standard.
+- Do not use C++, GoogleTest, Catch2, doctest, C#, Java,
+  JavaScript, Python, pytest, or xUnit syntax.
+"""
+
+    if target_language == "kotlin":
+        return """\
+KOTLIN / JUNIT 5 REQUIREMENTS:
+
+- Generate exactly one complete Kotlin JUnit 5 test function.
+- Return the test function only in the unit_test field.
+- Do not generate a surrounding class declaration.
+- Annotate the function with @Test.
+- Use Kotlin function syntax: fun testName() { ... }.
+- Use JUnit 5 assertions such as assertEquals, assertTrue,
+  assertFalse, assertNull, assertNotNull, and assertThrows.
+- Put every required Kotlin import statement in the imports array.
+- Each imports entry must be a complete Kotlin import statement.
+- Import the JUnit 5 Test annotation and assertion methods when required.
+- Import only real classes, methods, and packages supported by
+  the supplied source context.
+- Preserve the source code's actual package, class, and function names.
+- Use Kotlin syntax, including val and var where appropriate.
+- Do not invent constructors, functions, classes, or APIs.
+- Do not use Java test syntax, JUnit 4, TestNG, Mockito,
+  or additional test frameworks.
+- Do not generate a main function or standalone Kotlin application.
+"""
+
+
     raise ValueError(f"Unsupported unit-test language: {target_language}")
+
+
+
+
+
+def integration_test_generation_instructions(target_language: str) -> str:
+    """Return language-specific instructions for integration-test generation."""
+
+    if target_language == "python":
+        return """
+PYTHON / PYTEST INTEGRATION TEST REQUIREMENTS:
+
+- Generate exactly one complete, top-level pytest test function.
+- Name the function using the test_* naming convention.
+- Return the complete test function in the integration_test field.
+- Use ordinary Python assert statements.
+- Put every required Python import in the imports array.
+- Each imports entry must be a complete Python import statement.
+- Import only real modules, functions, and classes supported by the
+  supplied source context.
+- Test interactions between multiple application components where possible.
+- Exercise the actual workflow rather than testing an isolated function.
+- Use temporary data or isolated test data where appropriate.
+- Do not invent APIs, classes, methods, or module paths.
+- Do not use unittest unless the existing project architecture requires it.
+- Do not use C# syntax, xUnit, JavaScript syntax, or Vitest.
+"""
+
+    if target_language == "csharp":
+        return """
+C# / XUNIT INTEGRATION TEST REQUIREMENTS:
+
+- Generate exactly one complete xUnit integration test method.
+- Include the appropriate [Fact] or [Theory] attribute.
+- Return the complete test method in the integration_test field.
+- Put every required C# using directive in the imports array.
+- Each imports entry must be a complete using directive, including its
+  semicolon.
+- Use only xUnit assertions and public APIs supported by the supplied
+  source context.
+- Test interactions between multiple application components where possible.
+- Exercise the actual workflow rather than testing an isolated method.
+- Use the application's existing dependency injection and service
+  architecture when supported by the retrieved context.
+- Do not invent classes, constructors, methods, or namespaces.
+- Do not use Moq, FluentAssertions, or other additional test packages.
+"""
+
+    if target_language == "javascript":
+        return """
+JAVASCRIPT / VITEST INTEGRATION TEST REQUIREMENTS:
+
+- Generate exactly one complete Vitest test block.
+- Use it(...) or test(...) to define the integration test.
+- Use expect(...) for assertions.
+- Return the complete test block in the integration_test field.
+- Put every required JavaScript import statement in the imports array.
+- Each imports entry must be a complete JavaScript import statement.
+- Import Vitest functions explicitly when required:
+  import { describe, it, expect } from "vitest";
+- Import only real modules, functions, and classes supported by the
+  supplied source context.
+- Use valid JavaScript syntax, not TypeScript-only syntax.
+- Test interactions between multiple application components where possible.
+- Exercise the actual workflow rather than testing an isolated function.
+- Do not invent exports, module paths, or APIs.
+- Do not use Jest-specific APIs or assume Jest is installed.
+- Do not modify package configuration or install dependencies.
+- Do not use C# syntax, xUnit, Python syntax, or pytest.
+"""
+
+
+    if target_language == "java":
+        return """
+JAVA / JUNIT 5 INTEGRATION TEST REQUIREMENTS:
+
+- Generate exactly one complete JUnit 5 integration test method.
+- Return the test method only in the integration_test field.
+- Do not generate a surrounding class declaration.
+- Include the appropriate @Test annotation.
+- Use JUnit 5 assertions.
+- Put every required Java import statement in the imports array.
+- Each imports entry must be a complete Java import statement,
+  including its semicolon.
+- Import only real classes, methods, and packages supported by
+  the supplied source context.
+- Test interactions between multiple application components.
+- Exercise an actual application workflow rather than an isolated method.
+- Preserve the source code's actual package and class names.
+- Use existing constructors, dependencies, and application
+  architecture supported by the retrieved context.
+- Do not invent APIs, classes, constructors, or methods.
+- Do not use JUnit 4, TestNG, Mockito, or additional test dependencies.
+- Do not use Python, C#, or JavaScript test syntax.
+"""
+
+
+    if target_language == "c":
+        return """\
+C / UNITY INTEGRATION TEST REQUIREMENTS:
+
+- Generate exactly one complete C integration-test function.
+- Use the signature: void test_<descriptive_name>(void).
+- Return only the function implementation in integration_test.
+- Do not generate a main function.
+- Do not generate UNITY_BEGIN(), UNITY_END(), or RUN_TEST() calls.
+  The test harness provides the test runner.
+- Use Unity assertions for all test verification, such as
+  TEST_ASSERT_EQUAL_INT, TEST_ASSERT_EQUAL_STRING,
+  TEST_ASSERT_TRUE, TEST_ASSERT_FALSE, TEST_ASSERT_NULL,
+  TEST_ASSERT_NOT_NULL, and TEST_ASSERT_EQUAL.
+- Put every required C include directive in the imports array.
+- Each imports entry must be a complete #include directive.
+- Include <unity.h> when required.
+- Import only real project headers and use only functions,
+  structures, enums, and APIs supported by the supplied source context.
+- Test interactions between multiple application components where possible.
+- Exercise an actual application workflow rather than an isolated function.
+- Use existing initialization and cleanup functions when supported
+  by the retrieved source context.
+- Do not invent functions, structures, fields, or APIs.
+- Do not introduce additional testing frameworks or dependencies.
+- Use valid C syntax and the project's supported C standard.
+- Do not use C++, GoogleTest, Catch2, doctest, C#, Java,
+  JavaScript, Python, pytest, or xUnit syntax.
+"""
+
+    if target_language == "kotlin":
+        return """\
+KOTLIN / JUNIT 5 INTEGRATION TEST REQUIREMENTS:
+
+- Generate exactly one complete Kotlin JUnit 5 integration-test function.
+- Return the test function only in the integration_test field.
+- Do not generate a surrounding class declaration.
+- Annotate the function with @Test.
+- Use Kotlin function syntax: fun testName() { ... }.
+- Use JUnit 5 assertions for all test verification.
+- Put every required Kotlin import statement in the imports array.
+- Each imports entry must be a complete Kotlin import statement.
+- Import only real classes, methods, and packages supported by
+  the supplied source context.
+- Test interactions between multiple application components.
+- Exercise an actual application workflow rather than an isolated method.
+- Preserve the source code's actual package, class, and function names.
+- Use existing constructors, dependencies, and application architecture
+  supported by the retrieved context.
+- Use Kotlin syntax and the project's actual APIs.
+- Do not invent APIs, classes, constructors, or functions.
+- Do not use JUnit 4, TestNG, Mockito, or additional test frameworks.
+- Do not generate a main function or standalone Kotlin application.
+"""
+    raise ValueError(
+        f"Unsupported integration-test language: {target_language}"
+    )

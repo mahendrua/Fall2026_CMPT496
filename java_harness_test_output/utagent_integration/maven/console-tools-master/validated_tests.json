@@ -1,0 +1,16 @@
+[
+  {
+    "id": 920,
+    "rule": "Verify the behavior of Size.java.",
+    "imports": [
+      "import org.junit.jupiter.api.Test;",
+      "import static org.junit.jupiter.api.Assertions.*;"
+    ],
+    "source_directory": "",
+    "source_file_paths": [
+      "src/com/acidmanic/consoletools/drawing/Size.java"
+    ],
+    "unit_test": "@Test\nvoid testSizeOperations() {\n    Size size = new Size(4, 3);\n\n    assertEquals(4, size.getColumns());\n    assertEquals(3, size.getLines());\n\n    size.setColumns(6);\n    size.setLines(8);\n\n    assertEquals(6, size.getColumns());\n    assertEquals(8, size.getLines());\n\n    Size result = size.add(new Size(2, 5));\n\n    assertEquals(8, result.getColumns());\n    assertEquals(13, result.getLines());\n}",
+    "test_mode": "function"
+  }
+]

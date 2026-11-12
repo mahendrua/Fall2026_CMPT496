@@ -9,6 +9,7 @@ from typing import TypedDict, Annotated, Any
 from agent.structured_output.BR_output import CondensedRule, ValidatedRule, DiscardedRule, RuleCandidate
 from agent.structured_output.UT_output import UnitTest
 from operator import add
+from lsp.context import CodebaseContext
 
 
 class BRGraphState(TypedDict):
@@ -37,7 +38,7 @@ class BRGraphState(TypedDict):
 
     @var rule_contexts
         Per-rule retrieval context keyed by rule ID. Each value is a dict with
-        "code_context" (list[str]) and "summary_context" (list[str]).
+        "code_context" (list[str]), "summary_context" (list[str]), and "lsp_context" (list[str]).
         Populated by the retriever node and consumed by the validator.
         Accumulates across retrieval iterations for the same rule.
 
@@ -77,5 +78,7 @@ class BRGraphState(TypedDict):
     file_summary_k: int
     code_collection: Any
     summary_collection: Any
+    lsp_context: CodebaseContext | None
     codebase_name: str
     output_directory: str
+    

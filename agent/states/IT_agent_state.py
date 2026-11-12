@@ -8,6 +8,7 @@ structured state passed between nodes in the LangGraph execution graph.
 from typing import TypedDict, Annotated, Any
 from agent.structured_output.IT_output import ValidatedRule, IntegrationTest, WorkflowGroup, WorkflowGroups
 from operator import add
+from lsp.context import CodebaseContext
 
 
 class ITGraphState(TypedDict):
@@ -60,9 +61,10 @@ class ITGraphState(TypedDict):
         TestRun from agent/test_harness.py: which integration tests were kept, repaired,
         dropped, passed and failed. Set by the runner node.
     """
+    target_language: str
     validated_rules: list[ValidatedRule]
     integration_tests: list[IntegrationTest]
-    workflow_contexts: dict[int, dict]
+    workflow_contexts: dict[str, dict]
     workflow_groups: list[WorkflowGroup]
     test_imports: set
     test_path: str
@@ -74,3 +76,4 @@ class ITGraphState(TypedDict):
     codebase_path: str
     output_directory: str
     test_run: Any
+    lsp_context: CodebaseContext | None

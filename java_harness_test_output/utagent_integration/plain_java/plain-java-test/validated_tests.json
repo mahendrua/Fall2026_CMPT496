@@ -1,0 +1,16 @@
+[
+  {
+    "id": 910,
+    "rule": "Verify the behavior of Calculator.java.",
+    "imports": [
+      "import org.junit.jupiter.api.Test;",
+      "import static org.junit.jupiter.api.Assertions.*;"
+    ],
+    "source_directory": "",
+    "source_file_paths": [
+      "Calculator.java"
+    ],
+    "unit_test": "@Test\nvoid testCalculatorAddition() {\n    Calculator calculator = new Calculator();\n\n    assertEquals(5, calculator.add(2, 3));\n    assertEquals(0, calculator.add(-2, 2));\n    assertEquals(-5, calculator.add(-2, -3));\n}",
+    "test_mode": "function"
+  }
+]
