@@ -707,7 +707,7 @@ def make_fixer(llm, context_for=None):
 #### COMPILER ERRORS FOR THIS FILE
 {chr(10).join(case.errors)}
 
-#### CODE FROM THE CODEBASE UNDER TEST
+#### CODE FROM THE CODEBASE UNDER TEST AND LSP CONTEXT IF PROVIDED
 {context or "NO CONTEXT PROVIDED"}
 
 #### TASK
@@ -730,6 +730,12 @@ Return a corrected version of the test method(s) that compiles.
   make it compile.
 - If the test cannot be fixed with the public API, return an empty
   `test_method`.
+- If it is provided, use LSP context to understand symbol names, definitions, references,
+  and relationships between source files.
+- Treat LSP information as supplementary structural information.
+- Do not assume a symbol is publicly accessible merely because LSP
+  identifies it. Verify accessibility using source code.
+- Prefer concrete source-code evidence over LSP metadata.
 """
 
         messages = [("system", system_message), ("user", prompt)]

@@ -33,7 +33,8 @@ class CommandDispatcher:
 
         self.routes = {
 
-
+            # LSP 
+            "generate_lsp_context": self.commands.generate_lsp_context,
             # Database
             "build_database": self.commands.build_database,
             "build_summary_database": self.commands.build_summary_database,

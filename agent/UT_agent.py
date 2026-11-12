@@ -19,6 +19,9 @@ from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunct
 from langgraph.graph import END, START, StateGraph
 from utils.chroma_utils import collection_name
 
+from lsp.context import CodebaseContext
+from lsp.retriever import retrieve_lsp_context
+
 from agent.llm import make_llm
 from agent.states.UT_agent_state import UTGraphState
 from agent.structured_output.UT_output import UnitTest, ValidatedRule
@@ -38,9 +41,45 @@ from agent.python_test_harness import (
     make_cases as make_python_cases,
     write_results as write_python_results,
 )
+
+from agent.javascript_test_harness import (
+    check_tests as check_javascript_tests,
+    make_cases as make_javascript_cases,
+    write_results as write_javascript_results,
+)
+
+
+from agent.java_test_harness import (
+    check_tests as check_java_tests,
+    make_cases as make_java_cases,
+    make_fixer as make_java_fixer,
+    write_results as write_java_results,
+)
+
+from agent.cpp_test_harness import (
+    check_tests as check_cpp_tests,
+    make_cases as make_cpp_cases,
+    make_fixer as make_cpp_fixer,
+    write_results as write_cpp_results,
+)
+
+from agent.c_test_harness import (
+    check_tests as check_c_tests,
+    make_cases as make_c_cases,
+    make_fixer as make_c_fixer,
+    write_results as write_c_results,
+)
+
 from agent.testing_language import (
     detect_test_language,
     unit_test_generation_instructions
+)
+
+from agent.kotlin_test_harness import (
+    check_tests as check_kotlin_tests,
+    make_cases as make_kotlin_cases,
+    make_fixer as make_kotlin_fixer,
+    write_results as write_kotlin_results,
 )
 
 MAX_CONCURRENCY = 10
@@ -106,7 +145,7 @@ class UTAgent:
 
         return builder.compile()
 
-    def run(self, validated_rules: list[ValidatedRule], codebase_name: str, codebase_path: str):
+    def run(self, validated_rules: list[ValidatedRule], codebase_name: str, codebase_path: str, lsp_context: CodebaseContext | None = None):
         """
         @brief Executes the UTAgent workflow.
         @param input_rules Dictionary of validated business rules from BR_agent output. Keys are file or directory paths,
@@ -163,6 +202,7 @@ class UTAgent:
             "codebase_name": codebase_name,
             "codebase_path": codebase_path,
             "output_directory": "./agent/UT_agent_output",
+            "lsp_context": lsp_context
         }
 
         self._loop = asyncio.new_event_loop()
@@ -227,9 +267,10 @@ class UTAgent:
 
             # Get existing per-rule context for deduplication (str key for JSON serialization safety)
             rule_key = str(rule.id)
-            rule_ctx = updated_contexts.get(rule_key, {"code_context": [], "summary_context": []})
+            rule_ctx = updated_contexts.get(rule_key, {"code_context": [], "summary_context": [], "lsp_context": []})
             existing_code = set(rule_ctx["code_context"])
             existing_summary = set(rule_ctx["summary_context"])
+            existing_lsp = set(rule_ctx["lsp_context"])
 
             # Process code results with three-tier prioritization
             code_docs = code_results.get("documents", [[]])[0]
@@ -272,7 +313,16 @@ class UTAgent:
                 if item not in existing_summary:
                     new_summary.append(item)
 
-            updated_contexts[rule_key] = {"code_context": new_code, "summary_context": new_summary}
+            lsp_results = retrieve_lsp_context(state.get("lsp_context"), source_file_paths)
+
+            new_lsp = list(rule_ctx["lsp_context"])
+
+            for item in lsp_results:
+                if item not in existing_lsp:
+                    new_lsp.append(item)
+                    existing_lsp.add(item)
+
+            updated_contexts[rule_key] = {"code_context": new_code, "summary_context": new_summary, "lsp_context": new_lsp}
 
         progress(
             "Business rule context retrieval complete.",
@@ -308,7 +358,7 @@ class UTAgent:
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
             async def guarded(rule: ValidatedRule):
                 async with sem:
-                    ctx = rule_contexts.get(str(rule.id), {"code_context": [], "summary_context": []})
+                    ctx = rule_contexts.get(str(rule.id), {"code_context": [], "summary_context": [], "lsp_context": []})
                     test_mode = "function"
                     if target_language == "python":
                         test_mode = trusted_python_test_mode(
@@ -323,6 +373,7 @@ class UTAgent:
                         target_language,
                         test_mode,
                         state.get("codebase_path"),
+                        ctx["lsp_context"]
                     )
             return await asyncio.gather(*(guarded(r) for r in validated_rules))
 
@@ -475,6 +526,175 @@ class UTAgent:
                 ),
             )
 
+        elif state["target_language"] == "javascript":
+            cases, rejected = make_javascript_cases(
+                "UT",
+                test_items,
+                body_of=lambda test: test.unit_test,
+                imports_of=lambda test: test.imports,
+            )
+
+            test_run = check_javascript_tests(
+                "Unit",
+                "UT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_dir,
+            )
+
+            write_javascript_results(
+                test_run,
+                codebase_dir,
+                lambda case: dict(
+                    case.source.model_dump(),
+                    imports=case.imports,
+                    unit_test=case.body,
+                ),
+            )
+
+        elif state["target_language"] == "java":
+            cases, rejected = make_java_cases(
+                "UT",
+                test_items,
+                body_of=lambda test: test.unit_test,
+                imports_of=lambda test: test.imports,
+                codebase_path=codebase_path,
+            )
+
+            def context_for(case):
+                ctx = rule_contexts.get(str(case.source.id), {})
+                return "\n\n".join(ctx.get("code_context", []))
+
+            test_run = check_java_tests(
+                "Unit",
+                "UT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_dir,
+                fix=make_java_fixer(self.llm, context_for),
+                loop=self._loop,
+            )
+
+            write_java_results(
+                test_run,
+                codebase_dir,
+                lambda case: dict(
+                    case.source.model_dump(),
+                    imports=case.imports,
+                    unit_test=case.body,
+                ),
+            )
+
+        elif state["target_language"] == "c":
+            cases, rejected = make_c_cases(
+                "UT",
+                test_items,
+                body_of=lambda test: test.unit_test,
+                imports_of=lambda test: test.imports,
+                codebase_path=codebase_path,
+            )
+
+            def context_for(case):
+                ctx = rule_contexts.get(str(case.source.id), {})
+                return "\n\n".join(ctx.get("code_context", []))
+
+            test_run = check_c_tests(
+                "Unit",
+                "UT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_dir,
+                fix=make_c_fixer(self.llm, context_for),
+                loop=self._loop,
+            )
+
+            write_c_results(
+                test_run,
+                codebase_dir,
+                lambda case: dict(
+                    case.source.model_dump(),
+                    imports=case.imports,
+                    unit_test=case.body,
+                ),
+            )
+
+        elif state["target_language"] == "cpp":
+            cases, rejected = make_cpp_cases(
+                "UT",
+                test_items,
+                body_of=lambda test: test.unit_test,
+                imports_of=lambda test: test.imports,
+                codebase_path=codebase_path,
+            )
+
+            def context_for(case):
+                ctx = rule_contexts.get(str(case.source.id), {})
+                return "\n\n".join(ctx.get("code_context", []))
+
+            test_run = check_cpp_tests(
+                "Unit",
+                "UT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_dir,
+                fix=make_cpp_fixer(self.llm, context_for),
+                loop=self._loop,
+            )
+
+            write_cpp_results(
+                test_run,
+                codebase_dir,
+                lambda case: dict(
+                    case.source.model_dump(),
+                    imports=case.imports,
+                    unit_test=case.body,
+                ),
+            )
+
+        elif state["target_language"] == "kotlin":
+            cases, rejected = make_kotlin_cases(
+                "UT",
+                test_items,
+                body_of=lambda test: test.unit_test,
+                imports_of=lambda test: test.imports,
+                codebase_path=codebase_path,
+            )
+
+            def context_for(case):
+                ctx = rule_contexts.get(str(case.source.id), {})
+                return "\n\n".join(ctx.get("code_context", []))
+
+            test_run = check_kotlin_tests(
+                "Unit",
+                "UT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_dir,
+                fix=make_kotlin_fixer(self.llm, context_for),
+                loop=self._loop,
+            )
+
+            write_kotlin_results(
+                test_run,
+                codebase_dir,
+                lambda case: dict(
+                    case.source.model_dump(),
+                    imports=case.imports,
+                    unit_test=case.body,
+                ),
+            )
+
+
         else:
             cases, rejected = make_csharp_cases(
                 "UT",
@@ -607,6 +827,7 @@ async def _generate_single_test(
     target_language: str,
     test_mode: str = "function",
     codebase_path: str | None = None,
+    lsp_context: list[str] | None = None
 ) -> tuple:
     try:
         code_text, summary_text = generation_context_texts(
@@ -614,6 +835,7 @@ async def _generate_single_test(
             code_context,
             summary_context,
         )
+        lsp_text = "\n\n".join(lsp_context or [])
 
         framework_instructions = unit_test_generation_instructions(
             target_language,
@@ -658,9 +880,12 @@ async def _generate_single_test(
             #### RETRIEVED FILE SUMMARY CONTEXT:
             {summary_text}
 
+            #### RETRIEVED LSP CONTEXT:
+            {lsp_text if lsp_text else "(No LSP context available.)"}
+
 ### [REQUIRED TASK]
 ---
-1. Analyze the provided Source Code and File Summaries to locate how the business rule is systematically enforced.
+1. Analyze the provided Source Code, File Summaries, and LSP Context to locate how the business rule is systematically enforced.
 2. Generate exactly one realistic, structurally sound, executable unit test.
 3. Generate the full import code statements required for the unit test to function. 
 4. Match the exact programming language, naming conventions, and recommended testing framework for that language (Example: Xunit for C#, pytest for Python).
@@ -673,6 +898,9 @@ async def _generate_single_test(
 - **NO INVENTIONS:** Do not hallucinate or invent helper classes, mock interfaces, or functions that are absent from the provided context. Use the exact signatures present.
 - **NO TEXT EXTRACTION:** The test must contain functioning assertions that exercise the rule logic—do not just repeat the text of the rule in a comment or string.
 - **FORMATTING:** Use standard Unix line breaks (\\n) and canonical indentation to format the generated method code perfectly. Do not use (\\\\n)
+- **LSP CONTEXT:** Use LSP symbols, definitions, and references to understand code structure, locate related implementations, and identify relationships between files.
+- **LSP LIMITATIONS:** LSP context is supplementary navigation information. It does not independently prove that a business rule is implemented. Base test assertions on concrete source code evidence.
+- **SOURCE PRIORITY:** Prefer concrete source code and exact signatures over assumptions derived from summaries or LSP metadata.
 
             *Note: If context is scarce, construct the most precise, narrow unit test possible based purely on the available evidence without making external assumptions or inventing anything.*
         """

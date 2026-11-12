@@ -23,6 +23,10 @@ import requests
 from pathlib import Path
 from backend.progress_logging import progress, pipeline_progress
 
+from lsp.collector import collect_codebase_context_sync
+from lsp.context_storage import save_codebase_context, load_codebase_context, ContextStorageError
+
+
 # ---------------------------------------------------------
 # Logging Configuration 
 # ---------------------------------------------------------
@@ -499,7 +503,14 @@ class Commands:
 
         def task():
             progress("Generating file summaries...")
-            result = FileSummaryAgent().run(codebase)
+
+            try:
+                lsp_context = load_codebase_context(codebase)
+            except ContextStorageError as exc:
+                progress(f"Warning: Could not load LSP context: {exc}")
+                lsp_context = None
+
+            result = FileSummaryAgent().run(codebase,lsp_context=lsp_context)
             failed = result.get("failed_files") or []
             if failed:
                 result["warning"] = failed_summaries_message(failed, result.get("total_number_of_files"))
@@ -515,6 +526,30 @@ class Commands:
     # Summary / Agent Commands
     # -----------------------------------------------------
 
+    def generate_lsp_context(self, codebase: str, individualStep=True):
+        def task():
+            progress("Generating LSP context...")
+
+            # Collect LSP information from the codebase.
+            context = collect_codebase_context_sync(codebase)
+
+            # Save the collected context for use by other agents.
+            context_file = save_codebase_context(context)
+
+            return {
+                "success": True,
+                "files_collected": len(context.files),
+                "languages": sorted(context.languages),
+                "warnings": context.warnings,
+                "context_file": str(context_file)
+            }
+
+        return self._run_command(
+            "generate_lsp_context",
+            task,
+            individualStep=individualStep
+        )
+    
     def generate_directory_summaries(self, codebase: str, individualStep = True):
         """
         Generate directory-level summaries.
@@ -524,8 +559,15 @@ class Commands:
         """
 
         def task():
+
+            try:
+                lsp_context = load_codebase_context(codebase)
+            except ContextStorageError as exc:
+                progress(f"Warning: Could not load LSP context: {exc}")
+                lsp_context = None
+
             progress("Generating directory summaries...")
-            return DirectoryAgent().run(codebase)
+            return DirectoryAgent().run(codebase, lsp_context=lsp_context)
 
         return self._run_command(
             "generate_directory_summaries",
@@ -582,9 +624,17 @@ class Commands:
                 f"({len(candidates)} after merging exact duplicates)."
             )
 
+
+            try: 
+                lsp_context = load_codebase_context(codebase)
+            except ContextStorageError as exc:
+                progress(f"Warning: Could not load LSP context: {exc}")
+                lsp_context = None
+
             BRAgent().run(
                 candidates,
-                codebase_name
+                codebase_name,
+                lsp_context=lsp_context
             )
 
             result = {
@@ -675,10 +725,18 @@ class Commands:
             if not input_rules:
                 return no_rules_result("unit")
 
+
+            try: 
+                lsp_context = load_codebase_context(codebase)
+            except ContextStorageError as exc:
+                progress(f"Warning: Could not load LSP context: {exc}")
+                lsp_context = None
+
             final_state = UTAgent().run(
                 input_rules,
                 codebase_name,
-                str(codebase_path)
+                str(codebase_path),
+                lsp_context=lsp_context
             )
 
             return test_run_result(final_state["test_run"])
@@ -778,10 +836,17 @@ class Commands:
             for test in raw_tests:
                 input_tests.append(UnitTest.model_validate(test))
 
+            try: 
+                lsp_context = load_codebase_context(codebase)
+            except ContextStorageError as exc:
+                progress(f"Warning: Could not load LSP context: {exc}")
+                lsp_context = None
+
             final_state = UTVAgent().run(
                 input_tests,
                 codebase_name,
-                str(codebase_path)
+                str(codebase_path),
+                lsp_context=lsp_context
             )
 
             return test_run_result(final_state["test_run"])
@@ -867,11 +932,18 @@ class Commands:
 
             if not input_rules:
                 return no_rules_result("integration")
+            
+            try: 
+                lsp_context = load_codebase_context(codebase)
+            except ContextStorageError as exc:
+                progress(f"Warning: Could not load LSP context: {exc}")
+                lsp_context = None
 
             result = ITAgent().run(
                 input_rules,
                 codebase_name,
-                str(codebase_path)
+                str(codebase_path),
+                lsp_context=lsp_context
             )
 
 
@@ -1293,6 +1365,9 @@ class Commands:
 
             pipeline_progress("Building database...", 5)
             steps.append( self._require_success(self.build_database(str(codebase_path), False)))
+
+            pipeline_progress("Generating LSP context...", 15)
+            steps.append(self._require_success(self.generate_lsp_context(str(codebase_path), False)) )
 
             pipeline_progress("Generating file summaries...", 26)
             steps.append( self._require_success(self.generate_file_summaries(str(codebase_path), False)))

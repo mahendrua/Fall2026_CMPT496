@@ -8,6 +8,7 @@ structured state passed between nodes in the LangGraph execution graph.
 from typing import TypedDict, Annotated, Any
 from agent.structured_output.UT_output import ValidatedRule, UnitTest
 from operator import add
+from lsp.context import CodebaseContext
 
 
 class UTGraphState(TypedDict):
@@ -30,7 +31,7 @@ class UTGraphState(TypedDict):
 
     @var rule_contexts
         Per-rule retrieval context keyed by rule ID. Each value is a dict with
-        "code_context" (list[str]) and "summary_context" (list[str]).
+        "code_context" (list[str]), "summary_context" (list[str]), and "lsp_context" (list[str]).
         Populated by the retriever node.
         Accumulates across retrieval iterations for the same rule.
 
@@ -78,3 +79,4 @@ class UTGraphState(TypedDict):
     codebase_path: str
     output_directory: str
     test_run: Any
+    lsp_context: CodebaseContext | None

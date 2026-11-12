@@ -23,6 +23,8 @@ from pathlib import Path
 from collections import deque
 from backend.progress_logging import progress
 from agent.crawl_config import ACCEPTABLE_EXTENSIONS, prune
+from lsp.context import CodebaseContext, FileContext
+from lsp.formatter import format_file_context, format_lsp_symbol
 
 BATCH_SIZE = 4
 MAX_CONCURRENCY = 3
@@ -103,7 +105,7 @@ class FileSummaryAgent:
         
         return builder.compile()
     
-    def run(self, directory_path):
+    def run(self, directory_path, lsp_context: CodebaseContext | None = None):
         """
         @brief Executes the FileSummaryAgent workflow on a given directory.
 
@@ -124,7 +126,8 @@ class FileSummaryAgent:
             "file_summaries": [],
             "current_files": [],
             "business_rules_by_file": {},
-            "failed_files": []
+            "failed_files": [],
+            "lsp_context": lsp_context,
         }
 
         self._loop = asyncio.new_event_loop()
@@ -198,8 +201,19 @@ class FileSummaryAgent:
         async def run_batch():
             sem = asyncio.Semaphore(MAX_CONCURRENCY)
             async def guarded(fp):
+                
                 async with sem:
-                    return await _summarize_one(self.structured_llm, fp)
+
+                    lsp_context = state.get("lsp_context")
+                    file_context = (lsp_context.get_file_context(fp) if lsp_context else None)
+
+                    logger.info(
+                        "LSP context for %s: %s",
+                        fp,
+                        "available" if file_context else "unavailable"
+                    )
+
+                    return await _summarize_one(self.structured_llm, fp, file_context=file_context)
             return await asyncio.gather(*(guarded(fp) for fp in batch))
 
         results = self._loop.run_until_complete(run_batch())
@@ -318,10 +332,11 @@ def _empty_file_summary(file_path: str) -> FileSummaryOutput:
     )
 
 
-async def _summarize_one(structured_llm, file_path: str):
+async def _summarize_one(structured_llm, file_path: str, file_context: FileContext | None = None):
     progress(f'Summarizing: {file_path}')
     try:
         contents = Path(file_path).read_text(encoding="utf-8", errors="replace")
+        lsp_context_str = format_file_context(file_context)
         if _source_text_is_blank(contents):
             return file_path, _empty_file_summary(file_path), None
         messages = [
@@ -331,25 +346,62 @@ async def _summarize_one(structured_llm, file_path: str):
             ),
             (
                 "user",
-                f"""### Tasks
+                f"""### LSP Context
+
+The following information was retrieved from the language server
+for this file. Use it as additional structural evidence when analyzing
+the source code.
+
+{lsp_context_str if lsp_context_str else "No LSP context is available for this file. Analyze the source code directly."}
+### Tasks
 Analyze the file and produce:
 1. A concise summary, dependencies, top-level functions, and all type definitions
 2. UML-ready structured data and PlantUML diagrams
 3. Business rules evidenced by the code
-
 ### Type extraction
-Types may be: class, enum, interface, or struct.
+
+Identify all type definitions and declarations supported by the source language. Use the most accurate `kind` value from the schema:
+
+- `class`: Class declarations.
+- `enum`: Enumerations and equivalent enumerated types.
+- `interface`: Interfaces and interface-like declarations.
+- `struct`: Struct declarations and value-type structures.
+- `trait`: Rust traits and equivalent language constructs.
+- `union`: Union declarations.
+- `type_alias`: Explicit type aliases, such as TypeScript type aliases and Rust type aliases.
+- `named_type`: Named types that do not fit another category, such as Go named types when their underlying declaration does not establish a more specific category.
+- `record`: Record declarations and record-like types.
+- `other`: Named type constructs that cannot accurately be classified using the other categories.
+
+Do not force language-specific constructs into an inaccurate category.
 
 For each type:
-- provide a short description
-- list properties/fields with visibility (public, private, protected) and whether static
-- list methods/constructors with visibility, static flag, parameters (with direction: in, out, inout), and return type
-- list base classes in inherits_from
-- list enum values if applicable
-- generate a standalone PlantUML snippet describing the type
+- Provide a concise description of its purpose.
+- Identify its properties, fields, and other relevant data members.
+- Preserve the source language's visibility or access modifier where one exists. Use None when no meaningful visibility classification exists.
+- Identify methods and constructors where the language actually supports those concepts.
+- Record whether a member is static only when the language's semantics support that classification.
+- Include all parameters and their types when available.
+- Use `in` as the default parameter direction. Use `out` or `inout` only when the language explicitly supports those semantics and the source demonstrates them.
+- Include the return type when available.
+- List base classes, implemented interfaces, or equivalent inheritance relationships in `inherits_from`.
+- Include enum values where applicable.
+- Generate a standalone PlantUML snippet describing the type.
+
+Language-specific considerations:
+- Python functions and methods should not be assigned visibility modifiers unless the source provides a meaningful classification. Underscore naming conventions may be described but should not be treated as enforced access modifiers.
+- Go exported and unexported identifiers should retain their language-specific visibility distinctions.
+- Rust visibility modifiers, including `pub`, `pub(crate)`, and `pub(super)`, should be preserved.
+- C declarations should distinguish structs, unions, typedefs, and functions where supported by the source.
+- JavaScript: Identify classes, functions, and other declarations supported by JavaScript.
+- TypeScript: Identify classes, interfaces, enums, type aliases, and other supported declarations.
+- TSX: Apply TypeScript declaration rules while also accounting for JSX components and their props.
+- Java and C# records should use `record`.
+- Do not invent constructors. For example, a Go function named `NewExample` is not automatically a constructor, and a Rust associated function named `new` is not automatically a constructor.
+- Do not treat C's `static` linkage as a static class member.
+- Go named types should be classified according to their underlying declaration. A named struct should be classified as struct, a named interface as interface, and other named types as named_type when no more specific category applies.
 
 Constructor parameters must appear in the structured method entry exactly as in the PlantUML signature. Every method and constructor must include its full parameter list in the `parameters` field.
-
 ### Relationship extraction
 Five relationship types are supported, from the UML class diagram standard. The source is the type that has, holds or uses; the target is the other type.
 - inheritance: the source extends a base class or implements an interface (the target).
@@ -373,15 +425,38 @@ Relationship filtering:
 - Do not create relationships (other than inheritance) to generic containers, primitives, framework or library utilities, exceptions, or enum types.
 
 ### PlantUML rules
+
 For each type, the PlantUML must match the structured fields exactly.
-- `+` public, `-` private, `#` protected
-- Fields: `+name : Type`
-- Methods: `+method(in x : Type) : ReturnType`
-- Constructors: no return type
-- Static members: place `{{static}}` before the visibility symbol
-  Correct: `{{static}} +Name : Type`
-  Incorrect: `+{{static}} Name : Type`
-- Relationships, written source first: inheritance `Child --|> Parent` (`Class ..|> Interface` for an interface), composition `Whole *-- Part`, aggregation `Whole o-- Part`, association `Source --> Target`, dependency `Source ..> Target`
+
+Visibility mapping:
+- `public` and equivalent unrestricted public access: `+`
+- `private`: `-`
+- `protected`: `#`
+- Language-specific visibility that does not directly map to UML should be preserved in the structured output. Use the closest appropriate UML visibility symbol in the diagram without misrepresenting the original access semantics.
+- When visibility is None or cannot be meaningfully classified, do not invent a visibility modifier.
+- If a language-specific visibility modifier cannot be represented accurately using UML visibility symbols, omit the UML visibility symbol rather than inventing an equivalent.
+
+Fields:
+- `+name : Type`
+
+Methods:
+- `+method(in x : Type) : ReturnType`
+
+Constructors:
+- Do not include a return type.
+
+Static members:
+- Place `{{static}}` before the visibility symbol.
+- Correct: `{{static}} +Name : Type`
+- Incorrect: `+{{static}} Name : Type`
+
+Relationships, written source first:
+- Inheritance: `Child --|> Parent`
+- Interface implementation: `Class ..|> Interface`
+- Composition: `Whole *-- Part`
+- Aggregation: `Whole o-- Part`
+- Association: `Source --> Target`
+- Dependency: `Source ..> Target`
 
 ### File-level relationship diagram
 Generate `relationship_plantuml` as a standalone diagram with `@startuml`/`@enduml`.
@@ -394,6 +469,14 @@ Extract business rules that are **directly evidenced** by code in this file.
 
 A business rule is a constraint, policy, threshold, validation, access control check, or behavioral requirement **that governs how the software product behaves for its users or within its problem domain**.
 
+Do not treat every condition, error check, default, constant, or transformation
+as a business rule. Include a candidate only when it expresses a meaningful,
+independently testable domain policy or requirement about the product's data,
+users, or workflow. It must affect what the product accepts, rejects,
+calculates, permits, or does in a domain-relevant situation. A technical
+implementation detail is not a business rule merely because it is enforced by
+code.
+
 **Do NOT extract** operational, infrastructure, or DevOps rules such as:
 - CI/CD pipeline configuration (branch triggers, build matrix, deployment gates)
 - Build system settings (SDK versions, build configurations, restore steps)
@@ -403,10 +486,18 @@ A business rule is a constraint, policy, threshold, validation, access control c
 
 These are development-process rules, not product business rules. If a file contains only infrastructure or DevOps configuration (e.g., CI/CD YAML, build scripts, deployment manifests), return an empty business rules list.
 
+Also exclude technical behavior that does not express a domain policy, including
+logging, retries, timeouts, file formats, parsing details, internal data
+structures, cache behavior, generic error handling, and framework or API
+conventions. Describe a constraint only when the code shows it governs domain
+behavior; do not promote a programmer-chosen limit or default into a product
+requirement without domain evidence.
+
 Rules:
-- Treat domain-specific constants, conversion formulas, format-selection conditions,
-  ranges, thresholds, and input/output constraints as business rules when they
-  determine how the program behaves.
+- Treat a constant, formula, condition, range, threshold, or input/output
+    constraint as a business rule only when it defines a domain policy or
+    domain-specific outcome. Do not emit a separate rule for every branch or
+    implementation constant.
 - Describe requirements as behaviors observed in the current
   implementation, not as universal requirements for all
   possible implementations.
@@ -414,12 +505,11 @@ Rules:
   names, or design choices are instructor-defined requirements.
 - When the original specification is unavailable, do not claim
   that an extracted rule is required by the assignment.
-- Do not return an empty business-rule list merely because the code is made of
-  small pure functions or does not raise exceptions.
-- If the file defines domain behaviour through numeric constants or conditional
-  transformations, extract a separate concise rule for each distinct behaviour.
-- Return an empty list only when the file truly contains no domain constraint,
-  policy, calculation rule, validation rule, or behavioural requirement.
+- Return an empty list when the file contains only technical behavior or when
+    no meaningful domain policy or requirement is directly evidenced. Empty is
+    preferable to classifying implementation details as business rules.
+- Combine conditions that express one domain policy; split them only when they
+    represent independently testable domain requirements.
 - Only extract rules supported by code you can see. Do not speculate about cross-file behavior.
 - For each rule, provide a concise statement of the business rule
 - If no business rules are evident, return an empty list.
@@ -436,6 +526,17 @@ if (order.Items.Count == 0)
 Return:
 - rule: "Order total must be non-negative"
 - rule: "An order must contain at least one item to be processed"
+
+Negative example — do NOT extract technical implementation behavior:
+Given this code:
+```python
+if len(items) > 100:
+    items = items[:100]
+logger.info("processed")
+```
+Do not call the list-size limit a business rule unless the source establishes
+that 100 is a domain policy. Logging is not a business rule. Return an empty
+list for these behaviors alone.
 
 Negative example — do NOT extract rules like these:
 Given this CI/CD configuration:
