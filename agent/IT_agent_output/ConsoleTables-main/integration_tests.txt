@@ -1,131 +1,217 @@
-// Workflow: Table Ingestion and Data Sourcing
-// Description: Processes and validates data from diverse sources such as POCOs, dictionaries, and lists to establish a structured table format.
-// Covered Business Rules: [2, 3, 5, 9]
+// Workflow: Data Ingestion and Normalization
+// Description: Handles the ingestion and validation of data from diverse .NET sources, ensuring uniform processing regardless of the origin.
+// Covered Business Rules: [2, 5, 10, 17, 18, 24, 25, 32]
 
 using System;
 using System.Collections.Generic;
 using System.Data;
+using System.IO;
 using System.Linq;
 using Xunit;
 using ConsoleTables;
+using ConsoleTables.Sample;
 
 [Fact]
-public void TableIngestionWorkflow_ShouldSupportMultipleSourcesAndValidateInput()
+public void DataIngestionAndNormalization_ShouldProcessDisparateSourcesUniformly()
 {
-    // 1. POCO Source (Rule 2, Rule 9)
-    // Uses the User class found in the provided source context
-    var users = new List<User>
+    // Step 1: POCO Ingestion (Rule 2, 32)
+    var pocoData = new List<Something> 
     {
-        new User { Name = "Alice", Age = 30 },
-        new User { Name = "Bob", Age = 25 }
+        new Something { Id = "P1", Name = "PocoItem" }
     };
-    var pocoTable = ConsoleTable.From(users);
-    var pocoOutput = pocoTable.ToString();
-    Assert.Contains("Alice", pocoOutput);
-    Assert.Contains("Bob", pocoOutput);
-    Assert.Contains("30", pocoOutput);
+    var tableFromPoco = ConsoleTable.From(pocoData);
+    Assert.Equal("Id", tableFromPoco.Columns[0]);
 
-    // 2. Dictionary Source (Rule 5, Rule 9)
-    // Rule 5: Keys serve as row labels (leftmost column)
+    // Step 2: Dictionary Ingestion (Rule 25, 32)
     var dictData = new Dictionary<string, Dictionary<string, object>>
     {
-        { "Row_1", new Dictionary<string, object> { { "Status", "Active" }, { "Code", 200 } } },
-        { "Row_2", new Dictionary<string, object> { { "Status", "Pending" }, { "Code", 404 } } }
+        { "Key1", new Dictionary<string, object> { { "Val", 100 } } }
     };
-    var dictTable = ConsoleTable.FromDictionary(dictData);
-    var dictOutput = dictTable.ToString();
-    Assert.Contains("Row_1", dictOutput);
-    Assert.Contains("Row_2", dictOutput);
-    Assert.Contains("Active", dictOutput);
+    var tableFromDict = ConsoleTable.FromDictionary(dictData);
+    Assert.Equal("Key1", tableFromDict.Rows[0][0]); // Keys become row labels
 
-    // 3. DataTable Source (Rule 9)
+    // Step 3: DataTable Ingestion with Binary Conversion (Rule 24, 32)
     var dataTable = new DataTable();
-    dataTable.Columns.Add("HeaderA");
-    dataTable.Columns.Add("HeaderB");
-    dataTable.Rows.Add("Value1", "Value2");
-    var dtTable = ConsoleTable.From(dataTable);
-    Assert.Contains("HeaderA", dtTable.ToString());
-    Assert.Contains("Value1", dtTable.ToString());
+    dataTable.Columns.Add("BinaryCol", typeof(byte[]));
+    byte[] rawData = { 72, 101, 108, 108, 111 }; // "Hello"
+    dataTable.Rows.Add(rawData);
+    var tableFromDt = ConsoleTable.From(dataTable);
+    string expectedBase64 = Convert.ToBase64String(rawData);
+    Assert.Equal(expectedBase64, tableFromDt.Rows[0][0]);
 
-    // 4. Object Array Source (Rule 9)
-    var arrayData = new object[][]
-    {
-        new object[] { "Column1", "Column2" },
-        new object[] { "A1", "A2" },
-        new object[] { "B1", "B2" }
-    };
-    var arrayTable = ConsoleTable.From(arrayData);
-    Assert.Contains("Column1", arrayTable.ToString());
-    Assert.Contains("A1", arrayTable.ToString());
+    // Step 4: Validation - Columns must be defined first (Rule 18)
+    var optionsNoCols = new ConsoleTableOptions { Columns = new List<string>() };
+    var emptyTable = new ConsoleTable(optionsNoCols);
+    var ex1 = Assert.Throws<Exception>(() => emptyTable.AddRow(1, 2, 3));
+    Assert.Equal("Please set the columns first", ex1.Message);
 
-    // 5. Validation Logic (Rule 3)
-    // Rule 3: Columns must be defined first (done via constructor)
+    // Step 5: Validation - Row size must match Column size (Rule 17)
     var manualTable = new ConsoleTable("Col1", "Col2");
-    
-    // Rule 3: Row item count must exactly match the defined column count
-    // Expecting exception when adding 3 items to a 2-column table
-    var exceptionCount = Assert.Throws<Exception>(() => manualTable.AddRow(1, 2, 3));
-    Assert.Contains("does not match", exceptionCount.Message);
+    var ex2 = Assert.Throws<Exception>(() => manualTable.AddRow("OnlyOneValue"));
+    Assert.Contains("does not match the values", ex2.Message);
 
-    // Rule 3: Exception when adding rows before columns (tested via empty instance)
-    var emptyTable = new ConsoleTable(new ConsoleTableOptions { Columns = new List<string>() });
-    var exceptionNoColumns = Assert.Throws<Exception>(() => emptyTable.AddRow(1, 2));
-    Assert.Equal("Please set the columns first", exceptionNoColumns.Message);
+    // Step 6: Uniform Styling & Normalization (Rule 5, 10)
+    // Verify that regardless of origin, internal storage is consistent (IList<object[]>) 
+    // and styling can be applied globally.
+    using var sw = new StringWriter();
+    tableFromPoco.Configure(o => 
+    {
+        o.NumberAlignment = Alignment.Right;
+        o.OutputTo = sw;
+        o.EnableCount = false;
+    });
+
+    // The system treats all data as equivalent internal lists of objects/arrays
+    Assert.IsAssignableFrom<IList<object>>(tableFromPoco.Columns);
+    Assert.IsAssignableFrom<IList<object[]>>(tableFromPoco.Rows);
+    Assert.IsAssignableFrom<IList<object[]>>(tableFromDt.Rows);
+
+    tableFromPoco.Write(Format.Minimal);
+    var output = sw.ToString();
+
+    // Verify output quality and structure is consistent
+    Assert.Contains("P1", output);
+    Assert.Contains("PocoItem", output);
+    Assert.DoesNotContain("Count:", output); // Config applied successfully
 }
 
-// Workflow: Dynamic Layout and Alignment Logic
-// Description: Computes optimal column widths and handles text alignment by evaluating data types, Unicode character widths, and word-wrap constraints.
-// Covered Business Rules: [4, 7, 8]
+// Workflow: System Configuration and Output Management
+// Description: Manages global configuration profiles and controls the routing of table output to various system channels or custom writers.
+// Covered Business Rules: [4, 13, 15, 30, 33]
 
-using ConsoleTables;
 using System;
-using System.Linq;
+using System.Collections.Generic;
+using System.IO;
 using Xunit;
+using ConsoleTables;
+using ConsoleTables.Tests;
 
 [Fact]
-public void DynamicLayoutAndAlignment_ShouldApplyWrappingAndNumericRightAlignment()
+public void SystemConfigurationAndOutputManagement_Workflow_VerifiesGlobalSettingsAndOutputRedirection()
 {
-    // Arrange: Create a table with mixed data and alignment settings
-    var table = new ConsoleTable("Product", "Qty");
-    
-    // Rule 4: Table rendering manages layout via MaxWidth and WordBreakDelimiter
-    table.MaxWidth = 10;
-    table.SetWordBreakDelimiter(' ');
-    
-    // Rule 7: Configure right-alignment for numeric types
-    table.Configure(o => o.NumberAlignment = Alignment.Right);
+    // Rule 33: The default output target for table rendering is the system standard output (Console.Out).
+    var initialData = new List<User> { new User { Name = "Default", Age = 0 } };
+    var defaultTable = ConsoleTable.From(initialData);
+    Assert.Equal(Console.Out, defaultTable.Options.OutputTo);
 
-    // Act:
-    // Row 1: Content exceeding MaxWidth (11 chars) to trigger wrapping at WordBreakDelimiter (Rule 4)
-    table.AddRow("Fresh Apples", 100);
-    
-    // Row 2: Unicode characters to verify visual width calculation (Rule 8)
-    // "汉字" has 2 characters but visual width of 4
-    table.AddRow("汉字", 50);
+    // Rule 13: Redirect report output from standard console to custom storage (StringWriter).
+    using (var customWriter = new StringWriter())
+    {
+        // Rule 15: Configuration applied to reporting instance regardless of data source.
+        // Scenario: Setup with Imported Data (IEnumerable<T>).
+        var users = new List<User>
+        {
+            new User { Name = "Alexandre", Age = 36 }
+        };
+        var table = ConsoleTable.From(users);
 
-    var result = table.ToString();
+        // Scenario: Mix with Manually Entered Data to verify consistency (Rule 15).
+        table.AddRow("Manual entry", 100);
 
-    // Assert:
-    // 1. Verify Word Wrapping (Rule 4)
-    // "Fresh Apples" should wrap at the space into "Fresh" and "Apples"
-    Assert.Contains("| Fresh      |", result);
-    Assert.Contains("| Apples     |", result);
+        // Rule 4 & 30: Configure global profile settings.
+        // Dictates right alignment for numbers and suppression of the row count footer.
+        table.Configure(options =>
+        {
+            options.NumberAlignment = Alignment.Right;
+            options.EnableCount = false;
+            options.OutputTo = customWriter;
+        });
 
-    // 2. Verify Right Alignment (Rule 7)
-    // Column "Qty" width is 7 (header length). "100" (3 digits) should be right-aligned with leading spaces.
-    // Composite format " | {1, 7} |" results in " |     100 |"
-    Assert.Contains("|     100 |", result);
-    Assert.Contains("|      50 |", result);
+        // Rule 4: Verify configuration propagates universally to the Default output channel.
+        table.Write(Format.Default);
+        var defaultOutput = customWriter.ToString();
 
-    // 3. Verify Unicode Visual Width (Rule 8)
-    // The table structure should remain aligned despite the multi-byte characters.
-    // "汉字" (width 4) + padding should match the total column width established by "Fresh Apples"
-    Assert.Contains("| 汉字       |", result);
+        // Validation: Verify Numeric Alignment (Rule 30) and Suppression of Count (Rule 4).
+        // "Alexandre" (9 chars) and "Age" (3 chars). Age header is shorter than data, 100 is 3 chars.
+        // Right alignment for numeric columns (Age) results in padding on the left.
+        Assert.Contains("| Alexandre    |  36 |", defaultOutput);
+        Assert.Contains("| Manual entry | 100 |", defaultOutput);
+        Assert.DoesNotContain("Count:", defaultOutput);
+
+        // Reset custom writer for the next output channel test.
+        customWriter.GetStringBuilder().Clear();
+
+        // Rule 4: Verify the same configuration profile applies to the Markdown output channel.
+        table.Write(Format.MarkDown);
+        var markdownOutput = customWriter.ToString();
+
+        // Validation: Settings persist across Markdown documentation channel (Rule 4).
+        Assert.Contains("| Alexandre    |  36 |", markdownOutput);
+        Assert.Contains("| Manual entry | 100 |", markdownOutput);
+        Assert.Contains("|--------------|-----|", markdownOutput);
+        Assert.DoesNotContain("Count:", markdownOutput);
+    }
 }
 
-// Workflow: Multi-Format Output Presentation
-// Description: Orchestrates the final rendering of the table into various visual styles and formats, managing summary footers and directing the results to the appropriate system output stream.
-// Covered Business Rules: [1, 6, 10, 11]
+// Workflow: Structural Alignment and Text Layout
+// Description: Maintains visual consistency and structural alignment by calculating display widths for complex characters and managing word-wrapping.
+// Covered Business Rules: [6, 8, 19, 23, 29, 14, 20]
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Xunit;
+using ConsoleTables;
+
+[Fact]
+public void Verify_Structural_Alignment_And_Text_Layout_Workflow()
+{
+    // Arrange: Setup table with specific options to test visual structure and alignment priority (Rule 8, 14)
+    var options = new ConsoleTableOptions
+    {
+        Columns = new List<string> { "Description", "Value" },
+        EnableCount = false
+    };
+    var table = new ConsoleTable(options);
+    
+    // Set MaxWidth for wrapping (Rule 19) and configure Right Alignment for numbers (Rule 8, 14)
+    table.MaxWidth = 12;
+    table.Configure(o => o.NumberAlignment = Alignment.Right);
+
+    // Act: Add rows that exercise Unicode width calculation and word-wrapping logic
+    
+    // Row 1: Triggers wrapping at the last WordBreakDelimiter (Rule 19, 20)
+    // "Wrap Here Please" (16 chars) > MaxWidth (12). Split should occur at index 9 (space before 'Please').
+    table.AddRow("Wrap Here Please", 100);
+
+    // Row 2: Triggers Unicode visual width calculation (Rule 6, 23, 29)
+    // "Unicode 哈哈" -> 8 standard chars + 2 CJK characters (width 2 each) = 12 visual width.
+    // Note: String.Length is 10, but GetTextWidth is 12.
+    table.AddRow("Unicode 哈哈", 200);
+
+    var output = table.ToString();
+
+    // Assert: Verify visual consistency and correct structural layout
+
+    // Verify wrapping logic (Rule 19, 20): "Wrap Here" on first line, "Please" on the second inserted row.
+    // Since the longest original value was 16, column width is established at 16 (Rule 8 preference for spacing).
+    Assert.Contains("| Wrap Here       | 100 |", output);
+    Assert.Contains("| Please          |     |", output);
+
+    // Verify Unicode width calculation (Rule 23, 29): The alignment adjustment ensures the pipe symbol '|' 
+    // stays aligned even though "哈哈" occupies more visual space than char count suggests (Rule 14).
+    // Calculation: columnLengths[i] - (GetTextWidth(value) - value.Length) = 16 - (12 - 10) = 14.
+    // Format string will result in 14 chars of padding for the string of length 10.
+    Assert.Contains("| Unicode 哈哈    | 200 |", output);
+
+    // Verify numeric right alignment (Rule 14): "100" should be padded on the left within its column cell.
+    Assert.Contains("|  100 |", output);
+
+    // Final check for structural integrity (Rule 6): All lines with delimiters should have the same character length.
+    var lines = output.Split(new[] { Environment.NewLine }, StringSplitOptions.RemoveEmptyEntries);
+    int headerWidth = lines[1].Length;
+    foreach (var line in lines)
+    {
+        if (line.Contains("|"))
+        {
+            Assert.Equal(headerWidth, line.Length);
+        }
+    }
+}
+
+// Workflow: Visual Representation and Formatting
+// Description: Supports the transformation of table data into different presentation styles, including Markdown and minimal formats, while preserving data integrity.
+// Covered Business Rules: [1, 11, 16, 31]
 
 using System;
 using System.IO;
@@ -133,60 +219,124 @@ using Xunit;
 using ConsoleTables;
 
 [Fact]
-public void MultiFormatOutputPresentation_ShouldApplyStylesAndManageFootersToOutputStream()
+public void VerifyVisualRepresentationAndFormattingWorkflow()
+{
+    // Arrange - Create table data (Rule 16: Separation of data from presentation)
+    var table = new ConsoleTable("ID", "Service", "Status");
+    table.AddRow(1, "Authentication", "Active")
+         .AddRow(2, "Payment Gateway", "Pending")
+         .Configure(o => o.EnableCount = false);
+
+    // Act & Assert - Rule 1 & Rule 31: Verify multiple layout formats are supported
+
+    // 1. Test Default/Boxed Format
+    var defaultOutput = table.ToString();
+    Assert.Contains("| ID | Service         | Status  |", defaultOutput);
+    Assert.Contains("----------------------------------", defaultOutput);
+
+    // 2. Test MarkDown Format
+    var markdownOutput = table.ToMarkDownString();
+    Assert.Contains("| ID | Service         | Status  |", markdownOutput);
+    Assert.Contains("|----|-----------------|---------|", markdownOutput);
+
+    // 3. Test Minimal Format
+    var minimalOutput = table.ToMinimalString();
+    Assert.Contains("ID  Service          Status ", minimalOutput);
+    Assert.Contains("----------------------------", minimalOutput);
+
+    // 4. Test Alternative Format (Plus-sign corners)
+    var alternativeOutput = table.ToStringAlternative();
+    Assert.Contains("+----+-----------------+---------+", alternativeOutput);
+    Assert.Contains("| ID | Service         | Status  |", alternativeOutput);
+
+    // Act & Assert - Rule 11: User choice of style via the Write method for the same data
+    using (var sw = new StringWriter())
+    {
+        table.Configure(o => o.OutputTo = sw);
+        
+        // Write same data as Markdown
+        table.Write(Format.MarkDown);
+        var writeMarkdown = sw.ToString();
+        Assert.Equal(markdownOutput + Environment.NewLine, writeMarkdown);
+        
+        // Reset writer and write same data as Minimal
+        sw.GetStringBuilder().Clear();
+        table.Write(Format.Minimal);
+        var writeMinimal = sw.ToString();
+        Assert.Equal(minimalOutput + Environment.NewLine, writeMinimal);
+    }
+
+    // Final check for Rule 16: Verify data integrity (original rows and types are preserved)
+    Assert.Equal(2, table.Rows.Count);
+    Assert.Equal(1, (int)table.Rows[0][0]);
+    Assert.Equal("Authentication", (string)table.Rows[0][1]);
+    Assert.Equal(2, (int)table.Rows[1][0]);
+    Assert.Equal("Payment Gateway", (string)table.Rows[1][1]);
+}
+
+// Workflow: Content Summarization and Column Alignment
+// Description: Governs the inclusion of summary metadata and applies specific legibility standards to numeric data columns within the report.
+// Covered Business Rules: [3, 7, 12, 21, 22, 26, 27]
+
+using System;
+using System.Collections.Generic;
+using Xunit;
+using ConsoleTables;
+using ConsoleTables.Tests;
+
+[Fact]
+public void VerifyContentSummarizationAndColumnAlignmentWorkflow()
 {
     // Arrange
-    var testWriter = new StringWriter();
-    var table = new ConsoleTable("Name", "Age");
-    table.AddRow("Alice", 25);
-    table.AddRow("Bob", 30);
+    // Using the User model identified in the source context (ConsoleTableTest.cs)
+    var users = new List<User>
+    {
+        new User { Name = "Alice", Age = 30 },
+        new User { Name = "Bob", Age = 25 }
+    };
 
-    // Act & Assert - Step 1: Verify Default Format with Summary Count (Rule 1, 10, 11)
-    table.Configure(o => {
-        o.OutputTo = testWriter;
-        o.EnableCount = true;
-        o.NumberAlignment = Alignment.Right;
-    });
+    // Act - Part 1: Configure for Numeric Right-Alignment and Row Count Enabled (Default behavior)
+    var tableWithCount = ConsoleTable
+        .From(users)
+        .Configure(options =>
+        {
+            options.NumberAlignment = Alignment.Right;
+            options.EnableCount = true;
+        });
     
-    table.Write(Format.Default);
-    var defaultOutput = testWriter.ToString();
-    
-    Assert.Contains("Alice", defaultOutput);
-    Assert.Contains("Count: 2", defaultOutput);
-    Assert.Contains("|", defaultOutput);
+    var outputWithCount = tableWithCount.ToString();
 
-    // Act & Assert - Step 2: Verify Exclusion of Count Row (Rule 6)
-    testWriter.GetStringBuilder().Clear();
-    table.Configure(o => o.EnableCount = false);
-    table.Write(Format.Default);
-    var noCountOutput = testWriter.ToString();
-    
-    Assert.DoesNotContain("Count:", noCountOutput);
+    // Assert - Part 1: Verify Numeric Alignment and Count Presence
+    // Rule 7, 21, 26: Age is numeric, should be right-aligned according to legibility standards.
+    // Given the data, 'Alice' results in a Name column width of 5. '30' results in an Age column width of 3.
+    // String format logic in ConsoleTable.cs uses positive padding for right alignment.
+    Assert.Contains("| Alice |  30 |", outputWithCount);
+    Assert.Contains("| Bob   |  25 |", outputWithCount);
 
-    // Act & Assert - Step 3: Verify Alternative Format (Rule 1)
-    testWriter.GetStringBuilder().Clear();
-    table.Write(Format.Alternative);
-    var altOutput = testWriter.ToString();
-    
-    // Alternative format uses '+' and '-' for dividers
-    Assert.Contains("+", altOutput);
-    Assert.Contains("Alice", altOutput);
+    // Rule 3, 22: Verify row count is appended as summary metadata.
+    Assert.Contains("Count: 2", outputWithCount);
 
-    // Act & Assert - Step 4: Verify Minimal Format (Rule 1, 10)
-    testWriter.GetStringBuilder().Clear();
-    table.Write(Format.Minimal);
-    var minimalOutput = testWriter.ToString();
-    
-    // Minimal style typically has headers and content but fewer borders
-    Assert.Contains("Alice", minimalOutput);
-    Assert.DoesNotContain("|", minimalOutput);
+    // Act - Part 2: Selectively exclude summary information
+    // Rule 12, 27: The system provides ability to exclude summary count.
+    tableWithCount.Configure(options => options.EnableCount = false);
+    var outputWithoutCount = tableWithCount.ToString();
 
-    // Act & Assert - Step 5: Verify MarkDown Format (Rule 10)
-    testWriter.GetStringBuilder().Clear();
-    table.Write(Format.MarkDown);
-    var markdownOutput = testWriter.ToString();
-    
-    Assert.Contains("|---", markdownOutput);
-    Assert.Contains("Bob", markdownOutput);
+    // Assert - Part 2: Verify Count Exclusion
+    Assert.DoesNotContain("Count: 2", outputWithoutCount);
+    // Ensure data remains correctly formatted even after summary change
+    Assert.Contains("| Alice |  30 |", outputWithoutCount);
 }
+
+// Workflow: Domain Identity Management
+// Description: Manages the automatic generation of unique identification metadata for business entities.
+// Covered Business Rules: [28]
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Xunit;
+using ConsoleTables;
+using ConsoleTables.Sample;
+
+[Fact] public void DomainIdentityManagement_Workflow_AssignsUniqueIdentifiersToEntities() { var entities = new List<Something> { new Something(), new Something(), new Something() }; var ids = entities.Select(e => e.Id).ToList(); Assert.Equal(3, ids.Distinct().Count()); Assert.All(ids, id => { Assert.False(string.IsNullOrWhiteSpace(id)); Assert.Equal(32, id.Length); }); var table = ConsoleTable.From(entities); var output = table.ToString(); foreach (var id in ids) { Assert.Contains(id, output); } Assert.Contains("Id", output); Assert.Contains("Name", output); Assert.Contains("Date", output); }
 

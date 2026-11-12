@@ -421,7 +421,7 @@ Prompt: {temp_prompt}
             key = str(rule.id)
             if err is not None or grade is None:
                 logger.info(f"Grading failed for rule {rule.id}: {err}; treating as ambiguous")
-                decisions[key] = CorrectorOutput("ambiguous", "Error: No reasoning")      # safe fallback: keep context and add web results
+                decisions[key] = CorrectorOutput(decision="ambiguous", reasoning="Error: No reasoning")      # safe fallback: keep context and add web results
             else:
                 decisions[key] = grade
                 logger.info(f"Rule {rule.id}: {grade.decision} - {grade.reasoning}")
@@ -525,7 +525,7 @@ Prompt: {temp_prompt}
                         rule,
                         ctx["code_context"],
                         ctx["summary_context"],
-                        ctx["web_context"],
+                        ctx.get("web_context"),
                         target_language,
                         test_mode,
                         state.get("codebase_path"),
