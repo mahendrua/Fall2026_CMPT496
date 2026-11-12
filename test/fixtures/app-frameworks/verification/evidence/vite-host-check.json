@@ -1,0 +1,11 @@
+{
+  "withoutScopedAllowlist": {
+    "status": 403,
+    "category": "host_blocked"
+  },
+  "withScopedAllowlist": {
+    "status": 200,
+    "host": "host.docker.internal"
+  },
+  "sourceFilesModified": false
+}

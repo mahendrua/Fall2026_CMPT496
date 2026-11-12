@@ -149,8 +149,24 @@ let suppressAutoEnterOnce = false;
 let guiUploadedTests = [];
 let guiTestResults = new Map();
 let guiEventSocket = null;
+let guiEventConnection = null;
+let guiCspViolationListener = null;
 let guiRunActive = false;
 let guiRunCompleted = false;
+let guiInfrastructureError = false;
+let guiPreviewConnected = false;
+let guiPreviewTimer = null;
+window.addEventListener("message", event => {
+    const frame = document.getElementById("guiPreview");
+    if (!frame?.src || event.source !== frame.contentWindow) return;
+    if (event.origin !== new URL(frame.src).origin || event.data?.type !== "checkpoint-preview-status") return;
+    const message = String(event.data.message || "").slice(0, 500);
+    if (/Connected to browser preview|successfully reconnected/.test(message)) guiPreviewConnected = true;
+    if (guiPreviewTimer !== null) clearTimeout(guiPreviewTimer);
+    guiPreviewTimer = null;
+    document.getElementById("guiPreviewStatus").textContent = message;
+    appendGuiLog(`Preview: ${message}`);
+});
 let guiGenerationInProgress = false;
 let guiGenerationSourceDirectory = null;
 let guiGenerationAppPort = null;
@@ -2247,10 +2263,13 @@ function updateGuiRunControls() {
     const hasSelection = document.querySelector("#guiTestList input:checked");
     document.getElementById("runGuiTestsBtn").disabled = guiRunActive || !hasSelection;
     document.getElementById("uploadGuiTestsBtn").disabled = guiRunActive;
+    document.getElementById("startGuiLocalAppBtn").disabled = guiRunActive || guiGenerationInProgress;
+    document.getElementById("guiDemoMode").disabled = guiRunActive;
     document.getElementById("generateGuiTestsBtn").disabled = guiRunActive || guiGenerationInProgress;
     document.getElementById("guiTestBackBtn").disabled = guiGenerationInProgress;
     document.getElementById("stopGuiTestsBtn").classList.toggle("hidden", !guiRunActive);
     document.getElementById("stopGuiTestsBtn").disabled = !guiRunActive;
+    document.getElementById("clearGuiTestsBtn").disabled = guiRunActive || guiGenerationInProgress;
 }
 
 function renderGuiTestFiles() {
@@ -2363,17 +2382,34 @@ function handleGuiTestEvent(event) {
         appendGuiLog(`App ${String(event.stream || "output").toUpperCase()}: ${event.message || ""}`);
         return;
     }
+    if (event.type === 'local_app_status' || event.type === 'app_preflight') {
+        document.getElementById('guiAppStatus').textContent = event.message;
+        appendGuiLog(event.message);
+        return;
+    }
     if (event.type === "local_app_exit") {
+        guiGenerationAppPort = null;
+        document.getElementById('stopGuiLocalAppBtn').classList.add('hidden');
+        if (!guiInfrastructureError) document.getElementById('guiAppStatus').textContent = event.message?.includes('stopped')
+            ? (guiRunCompleted ? 'GUI testing completed. Local application stopped.' : 'Local application stopped.')
+            : 'Local application exited. See technical diagnostics.';
         appendGuiLog(event.message || "The local app process exited.");
         return;
     }
     if (event.type === "local_app_started") {
+        document.getElementById('guiAppStatus').textContent = event.message;
         appendGuiLog(event.message);
         return;
     }
     if (event.type === "runner_status") {
         appendGuiLog(event.message);
         if (event.status === "stopped") {
+            if (guiPreviewTimer !== null) clearTimeout(guiPreviewTimer);
+            guiPreviewTimer = null;
+            guiRunCompleted = true;
+            document.getElementById("guiPreview").contentWindow?.postMessage({
+                type: "checkpoint-preview-ended", message: "Preview session stopped by user."
+            }, "*");
             guiRunActive = false;
             updateGuiRunControls();
         }
@@ -2383,7 +2419,24 @@ function handleGuiTestEvent(event) {
         appendGuiLog(event.message);
         return;
     }
+    if (event.type === "preview_diagnostic") {
+        appendGuiLog(event.message);
+        document.getElementById("guiPreviewStatus").textContent = event.message;
+        return;
+    }
+    if (event.type === "runner_container_exit") {
+        document.getElementById("guiPreview").contentWindow?.postMessage({
+            type: "checkpoint-preview-ended", message: event.message || "Docker container exited"
+        }, "*");
+        if (!guiRunCompleted) {
+            guiEventConnection?.notifyRunnerExit(event.message);
+        } else if (event.exitCode !== 0) {
+            appendGuiLog(event.message || `Playwright container exited with code ${event.exitCode}.`);
+        }
+        return;
+    }
     if (event.type === "run_started") {
+        document.getElementById('guiAppStatus').textContent = 'Running GUI tests...';
         setGuiCount("Total", event.total || 0);
         document.getElementById("guiCurrentTest").textContent =
             event.total ? `Running ${event.total} test${event.total === 1 ? "" : "s"}` : "No tests were discovered";
@@ -2401,8 +2454,26 @@ function handleGuiTestEvent(event) {
     if (event.type === "test_finished") {
         if (event.status === "failed") guiRunFailures.push(event);
         const errorList = event.errors || [];
+        if (event.expectedResult) appendGuiLog(`Expected: ${event.expectedResult}`);
+        (event.assumptions || []).forEach(assumption => appendGuiLog(`Unconfirmed assumption: ${assumption}`));
+        if (event.status === "failed") appendGuiLog(`Observed: ${errorList.map(error => error.message).join("\n") || "No observation supplied by Playwright"}`);
         const errorMessage = errorList.map(error => error.message).filter(Boolean).join("\n");
         updateGuiResult(event.testId, event.title, event.status, errorMessage);
+        if (typeof event.screenshot === "string" && event.screenshot.length <= 350000
+            && /^data:image\/png;base64,[A-Za-z0-9+/=]+$/.test(event.screenshot)) {
+            const item = guiTestResults.get(event.testId);
+            if (item) {
+                let screenshot = item.querySelector("img.gui-failure-screenshot");
+                if (!screenshot) {
+                    screenshot = document.createElement("img");
+                    screenshot.className = "gui-failure-screenshot";
+                    screenshot.alt = "Playwright failure screenshot";
+                    screenshot.style.maxWidth = "100%";
+                    item.appendChild(screenshot);
+                }
+                screenshot.src = event.screenshot;
+            }
+        }
         setGuiCount("Running", 0);
         const count = Array.from(guiTestResults.values()).reduce((totals, item) => {
             const status = item.querySelector(".gui-status").textContent.toLowerCase();
@@ -2428,6 +2499,10 @@ function handleGuiTestEvent(event) {
         return;
     }
     if (event.type === "test_error" || event.type === "runner_error") {
+        if (event.type === 'runner_error' || /APP_PREFLIGHT/.test(event.message || '')) {
+            guiInfrastructureError = true;
+            document.getElementById('guiAppStatus').textContent = event.message;
+        }
         appendGuiLog(event.message || "The GUI test runner encountered an error.");
         return;
     }
@@ -2452,6 +2527,21 @@ function handleGuiTestEvent(event) {
             appendGuiLog("A locator timed out, but its generated spec could not be matched to a source file. Repair was not attempted.");
         }
         guiRunCompleted = true;
+        if (guiPreviewTimer !== null) clearTimeout(guiPreviewTimer);
+        guiPreviewTimer = null;
+        document.getElementById("guiPreviewStatus").textContent = guiPreviewConnected
+            ? "Test execution finished; preview session ended."
+            : "Tests finished before the browser preview initialized. Try Demo Mode to observe short tests.";
+        document.getElementById("guiPreview").contentWindow?.postMessage({
+            type: "checkpoint-preview-ended", message: "Preview session ended normally; test execution finished."
+        }, "*");
+        guiEventConnection?.finish();
+        guiEventConnection = null;
+        guiEventSocket = null;
+        if (guiCspViolationListener) {
+            document.removeEventListener("securitypolicyviolation", guiCspViolationListener);
+            guiCspViolationListener = null;
+        }
         setGuiCount("Total", event.total || 0);
         setGuiCount("Passed", event.passed || 0);
         setGuiCount("Failed", event.failed || 0);
@@ -2462,20 +2552,10 @@ function handleGuiTestEvent(event) {
             `Run ${event.status}: ${event.passed || 0} passed, ${event.failed || 0} failed, ${event.skipped || 0} skipped`;
         appendGuiLog(`Run finished — ${event.status}.`);
         void stopLocalGuiApp();
-        if (!event.total) {
+        if (!event.total && !guiInfrastructureError) {
             showGuiMessage("No Playwright tests were found. Use test() or it() declarations in your selected files.");
         }
         return;
-    }
-    if (event.type === "runner_container_exit" && event.exitCode !== 0) {
-        appendGuiLog(event.message);
-        if (!guiRunCompleted) {
-            guiRunActive = false;
-            updateGuiRunControls();
-            document.getElementById("guiCurrentTest").textContent = "Run stopped unexpectedly";
-            showGuiMessage(event.message);
-            void stopLocalGuiApp();
-        }
     }
 }
 
@@ -2583,6 +2663,30 @@ async function stopLocalGuiApp() {
     }
 }
 
+document.getElementById('startGuiLocalAppBtn').addEventListener('click', async () => {
+    const directory = await window.electronAPI.selectCodebase();
+    if (!directory) return;
+    guiGenerationInProgress = true;
+    document.getElementById('stopGuiLocalAppBtn').classList.remove('hidden');
+    document.getElementById('guiAppStatus').textContent = 'Detecting and starting the selected application...';
+    updateGuiRunControls();
+    try {
+        const result = await window.electronAPI.startLocalGuiApp({ appDirectory: directory });
+        if (result?.cancelled) { document.getElementById('guiAppStatus').textContent = 'Application startup cancelled.'; return; }
+        if (!result?.success) throw new Error(result?.error || 'Application startup failed.');
+        guiGenerationAppPort = result.port;
+        document.getElementById('guiAppStatus').textContent = `${result.label || result.framework}: application ready on port ${result.port}. Upload tests to continue.`;
+        appendGuiLog(`Application: ${result.dockerUrl}. Command: ${result.command}`);
+    } catch (error) { document.getElementById('guiAppStatus').textContent = error.message; appendGuiLog(error.message); }
+    finally { guiGenerationInProgress = false; updateGuiRunControls(); }
+});
+document.getElementById('stopGuiLocalAppBtn').addEventListener('click', async () => {
+    await stopLocalGuiApp();
+    guiGenerationAppPort = null;
+    document.getElementById('stopGuiLocalAppBtn').classList.add('hidden');
+    document.getElementById('guiAppStatus').textContent = 'Local application stopped.';
+});
+
 async function requestGuiSelectorRepair(testFile, event) {
     activeCommand = "repair_gui_test_case";
     const failure = {
@@ -2669,11 +2773,13 @@ document.getElementById("generateGuiTestsBtn").addEventListener("click", async (
         }
 
         guiGenerationAppPort = appResult.port;
+        sourceDirectory = appResult.appDirectory;
+        guiGenerationSourceDirectory = sourceDirectory;
         status.textContent = `Detected ${appResult.framework}. App started on port ${appResult.port}; generating GUI test cases...`;
         details.textContent = [
             `Framework: ${appResult.framework}`,
-            `Local app: http://host.docker.internal:${appResult.port}`,
-            `Command: npm run ${appResult.script}`,
+            `Local app: ${appResult.dockerUrl}`,
+            `Command: ${appResult.command}`,
             `Source folder: ${sourceDirectory}`
         ].join("\n");
         activeCommand = "generate_gui_test_cases";
@@ -2734,30 +2840,141 @@ document.getElementById("uploadGuiTestsBtn").addEventListener("click", async () 
     appendGuiLog(`Loaded ${guiUploadedTests.length} test/support file(s).`);
 });
 
+document.getElementById("clearGuiTestsBtn").addEventListener("click", async () => {
+    if (guiRunActive || guiGenerationInProgress) return;
+    const response = await window.electronAPI.clearGuiTests();
+    if (!response?.success) {
+        showGuiMessage(response?.error || "Could not clear the last GUI test.");
+        return;
+    }
+
+    guiUploadedTests = [];
+    guiGeneratedTestFiles = [];
+    guiRunFailures = [];
+    guiRepairAttempted = false;
+    guiGenerationSourceDirectory = null;
+    guiGenerationAppPort = null;
+    guiInfrastructureError = false;
+    guiPreviewConnected = false;
+    if (guiPreviewTimer !== null) clearTimeout(guiPreviewTimer);
+    guiPreviewTimer = null;
+
+    resetGuiDashboard();
+    document.getElementById("guiResultsList").replaceChildren(
+        guiReportElement("p", "gui-empty-state", "Results will appear here after execution begins.")
+    );
+    document.getElementById("guiExecutionLogs").textContent = "Ready.";
+    document.getElementById("guiCurrentTest").textContent = "Waiting for a test run";
+    document.getElementById("guiPreviewStatus").textContent = "Preview idle";
+    setGuiPreviewExpanded(false);
+    const preview = document.getElementById("guiPreview");
+    preview.removeAttribute("src");
+    preview.classList.add("hidden");
+    document.getElementById("guiPreviewEmpty").classList.remove("hidden");
+    document.getElementById("expandGuiPreviewBtn").disabled = true;
+    document.getElementById("guiGenerationResult").classList.add("hidden");
+    document.getElementById("guiGenerationDetails").textContent = "";
+    document.getElementById("guiGeneratedFiles").replaceChildren();
+    showGuiMessage("");
+    renderGuiTestFiles();
+});
+
 function connectGuiRun(response) {
+    guiInfrastructureError = false;
     guiRunActive = true;
     guiRunCompleted = false;
     updateGuiRunControls();
     const preview = document.getElementById("guiPreview");
+    guiPreviewConnected = false;
+    if (guiPreviewTimer !== null) clearTimeout(guiPreviewTimer);
+    guiPreviewTimer = setTimeout(() => {
+        guiPreviewTimer = null;
+        if (!guiRunCompleted && !guiPreviewConnected) {
+            document.getElementById("guiPreviewStatus").textContent = "Preview server or iframe has not initialized. Test execution continues; check preview connection diagnostics.";
+        }
+    }, 12000);
+    document.getElementById("guiPreviewStatus").textContent = "Loading browser preview...";
+    preview.onload = () => {
+        if (!guiRunCompleted) appendGuiLog("Preview iframe loaded; waiting for the VNC connection.");
+    };
+    preview.onerror = () => {
+        document.getElementById("guiPreviewStatus").textContent = "Preview iframe failed to load. Check that the local preview server is ready; tests continue.";
+    };
     preview.src = response.previewUrl;
     preview.classList.remove("hidden");
     document.getElementById("guiPreviewEmpty").classList.add("hidden");
     document.getElementById("expandGuiPreviewBtn").disabled = false;
 
+    guiEventConnection?.cancel();
+    guiEventConnection = null;
     if (guiEventSocket) guiEventSocket.close();
-    guiEventSocket = new WebSocket(response.eventsUrl);
-    guiEventSocket.addEventListener("open", () => {
-        guiEventSocket.send("viewer_ready");
-    });
-    guiEventSocket.addEventListener("message", message => {
-        try {
-            handleGuiTestEvent(JSON.parse(message.data));
-        } catch (error) {
-            appendGuiLog(`Could not read a runner event: ${error.message}`);
+    guiEventSocket = null;
+    if (guiCspViolationListener) {
+        document.removeEventListener("securitypolicyviolation", guiCspViolationListener);
+    }
+
+    guiCspViolationListener = event => {
+        if ((event.effectiveDirective === "frame-src" || event.effectiveDirective === "frame-src-elem")
+            && String(event.blockedURI || "").startsWith("http://127.0.0.1")) {
+            const message = "Preview iframe was blocked by Content Security Policy. Test results remain connected.";
+            document.getElementById("guiPreviewStatus").textContent = message;
+            appendGuiLog(message);
+            return;
         }
-    });
-    guiEventSocket.addEventListener("error", () => {
-        appendGuiLog("Could not connect to the GUI test event stream.");
+        if (
+            event.effectiveDirective === "connect-src" &&
+            String(event.blockedURI || "").startsWith("ws:")
+        ) {
+            const blockedEndpoint =
+                String(event.blockedURI || "").match(/^(wss?:\/\/[^/]+)/)?.[1]
+                || "the local WebSocket endpoint";
+            const message = `GUI event stream blocked by Content Security Policy: ${blockedEndpoint} (${event.effectiveDirective}).`;
+            appendGuiLog(message);
+            guiEventConnection?.stopWithError(message);
+        }
+    };
+    document.addEventListener("securitypolicyviolation", guiCspViolationListener);
+
+    guiEventConnection = window.GuiEventConnection({
+        url: response.eventsUrl,
+        WebSocketImpl: WebSocket,
+        onOpen: socket => {
+            guiEventSocket = socket;
+            socket.send("viewer_ready");
+        },
+        onMessage: message => {
+            try {
+                handleGuiTestEvent(JSON.parse(message.data));
+            } catch (error) {
+                appendGuiLog(`Could not read a runner event: ${error.message}`);
+            }
+        },
+        onStatus: message => appendGuiLog(message),
+        onFailure: async message => {
+            guiEventSocket = null;
+            guiRunCompleted = true;
+            guiRunActive = false;
+            updateGuiRunControls();
+            document.getElementById("guiCurrentTest").textContent = "Could not connect to the test runner";
+            appendGuiLog(message);
+            window.electronAPI.reportGuiTestEvent({ type: "runner_error", message });
+            showGuiMessage(message);
+            try {
+                const diagnostic = await window.electronAPI.diagnoseGuiEventStream(response.eventsUrl);
+                appendGuiLog(`Event stream diagnosis (${diagnostic.category}): ${diagnostic.message}`);
+            } catch (error) {
+                appendGuiLog(`Could not retrieve event stream diagnostics: ${error.message}`);
+            }
+            if (guiCspViolationListener) {
+                document.removeEventListener("securitypolicyviolation", guiCspViolationListener);
+                guiCspViolationListener = null;
+            }
+            const stopResponse = await window.electronAPI.stopGuiTests();
+            if (!stopResponse?.success) {
+                appendGuiLog(stopResponse?.error || "Could not stop the isolated Playwright runner after event-stream failure.");
+            }
+            await stopLocalGuiApp();
+        }
     });
 }
 
@@ -2776,7 +2993,7 @@ document.getElementById("runGuiTestsBtn").addEventListener("click", async () => 
         .split(/[,\s]+/)
         .map(host => host.trim())
         .filter(Boolean);
-    if (!allowedHosts.length) {
+    if (!allowedHosts.length && !guiGenerationAppPort) {
         showGuiMessage("Enter at least one allowed website host before running tests.");
         return;
     }
@@ -2785,7 +3002,9 @@ document.getElementById("runGuiTestsBtn").addEventListener("click", async () => 
     updateGuiRunControls();
     let response;
     try {
-        response = await window.electronAPI.startGuiTests(selectedIds, allowedHosts);
+        response = await window.electronAPI.startGuiTests(selectedIds, allowedHosts, {
+            demoMode: document.getElementById("guiDemoMode").checked
+        });
     } catch (error) {
         guiRunActive = false;
         updateGuiRunControls();
@@ -2807,6 +3026,13 @@ document.getElementById("runGuiTestsBtn").addEventListener("click", async () => 
 });
 
 document.getElementById("stopGuiTestsBtn").addEventListener("click", async () => {
+    guiEventConnection?.cancel();
+    guiEventConnection = null;
+    guiEventSocket = null;
+    if (guiCspViolationListener) {
+        document.removeEventListener("securitypolicyviolation", guiCspViolationListener);
+        guiCspViolationListener = null;
+    }
     const response = await window.electronAPI.stopGuiTests();
     if (!response?.success) {
         showGuiMessage(response?.error || "Could not stop the GUI test run.");
@@ -4931,7 +5157,8 @@ async function handleBackendResponse(response) {
                 testFiles: guiGeneratedTestFiles,
                 appPort: guiGenerationAppPort,
                 allowedHosts,
-                afterRunComplete: true
+                afterRunComplete: true,
+                demoMode: document.getElementById("guiDemoMode").checked
             });
             if (!run?.success) throw new Error(run?.error || "The repaired test run could not start.");
             status.textContent = "Rerunning the repaired test in the isolated Playwright browser...";
@@ -5026,7 +5253,8 @@ async function handleBackendResponse(response) {
             const run = await window.electronAPI.startGeneratedGuiTests({
                 testFiles: generatedFiles,
                 appPort: guiGenerationAppPort,
-                allowedHosts
+                allowedHosts,
+                demoMode: document.getElementById("guiDemoMode").checked
             });
             if (!run?.success) {
                 await stopLocalGuiApp();

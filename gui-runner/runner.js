@@ -12,6 +12,21 @@ let proxyReady = false;
 let appReady = false;
 let viewerReady = false;
 let testsStarted = false;
+let displayMonitor = null;
+let displayInspection = false;
+let lastDisplayCode = null;
+let appRelay = null;
+async function diagnoseDisplay() {
+    if (displayInspection || shuttingDown) return;
+    displayInspection = true;
+    try {
+        const diagnostic = await require("./displayDiagnostics.cjs").inspectDisplay();
+        if (!shuttingDown && diagnostic.code !== lastDisplayCode) {
+            lastDisplayCode = diagnostic.code;
+            broadcast({ type: "preview_diagnostic", ...diagnostic });
+        }
+    } finally { displayInspection = false; }
+}
 
 function broadcast(event) {
     const payload = JSON.stringify(event);
@@ -44,6 +59,8 @@ server.on("connection", (socket, request) => {
 function stop(exitCode = 1) {
     if (shuttingDown) return;
     shuttingDown = true;
+    appRelay?.close();
+    clearInterval(displayMonitor);
     if (testProcess && !testProcess.killed) testProcess.kill("SIGTERM");
     for (const client of clients) client.close();
     server.close(() => process.exit(exitCode));
@@ -59,6 +76,7 @@ function waitForEgressProxy() {
     return new Promise((resolve, reject) => {
         const attempt = () => {
             const socket = net.createConnection({ host: proxyHost, port: proxyPort });
+            socket.setTimeout(2000, () => socket.destroy(new Error('Proxy connection timed out')));
             socket.once("connect", () => {
                 socket.destroy();
                 resolve();
@@ -87,6 +105,7 @@ function waitForApp() {
     return new Promise((resolve, reject) => {
         const attempt = () => {
             const socket = net.createConnection({ host, port });
+            socket.setTimeout(2000, () => socket.destroy(new Error('Application connection timed out')));
             socket.once("connect", () => {
                 socket.destroy();
                 resolve();
@@ -108,8 +127,9 @@ process.on("SIGTERM", () => stop(143));
 process.on("SIGINT", () => stop(130));
 
 function startPlaywrightTests() {
-    if (!proxyReady || !appReady || !viewerReady || testsStarted) return;
+    if (!proxyReady || !appReady || testsStarted) return;
     testsStarted = true;
+    displayMonitor = setInterval(diagnoseDisplay, 1500);
     broadcast({ type: "runner_ready", message: "Playwright browser is starting." });
 
     try {
@@ -159,6 +179,7 @@ function startPlaywrightTests() {
             broadcast({ type: "runner_error", message: `Could not start Playwright: ${error.message}` });
         });
         testProcess.on("close", code => {
+            clearInterval(displayMonitor);
             if (!history.some(event => event.type === "run_complete")) {
                 broadcast({
                     type: "run_complete",
@@ -186,9 +207,15 @@ server.on("listening", () => {
             broadcast({ type: "runner_ready", message: "Checking that the app container is ready." });
             return waitForApp();
         })
-        .then(() => {
+        .then(async () => {
+            if (process.env.GUI_APP_LOOPBACK_RELAY === '1') {
+                appRelay = await require('./appRelay.cjs').startAppRelay({ target: process.env.BASE_URL, proxyUrl: process.env.HTTPS_PROXY });
+                process.env.BASE_URL = appRelay.url;
+                delete process.env.GUI_SECURE_ORIGIN;
+                broadcast({ type: 'runner_log', message: 'Using an isolated localhost application endpoint through the existing destination allowlist; HTTP host/origin headers remain unchanged.' });
+            }
             appReady = true;
-            broadcast({ type: "runner_ready", message: "Waiting for the application preview to connect." });
+            broadcast({ type: "runner_ready", message: "Application ready; starting tests independently of preview connectivity." });
             startPlaywrightTests();
         })
         .catch(error => {
@@ -198,8 +225,6 @@ server.on("listening", () => {
         });
     setTimeout(() => {
         if (viewerReady || testsStarted) return;
-        broadcast({ type: "runner_error", message: "The GUI preview did not connect in time." });
-        broadcast({ type: "run_complete", status: "failed", total: 0, passed: 0, failed: 1, skipped: 0 });
-        setTimeout(() => stop(1), 10000);
+        broadcast({ type: "runner_log", message: "The preview client has not connected; test execution is independent of preview connectivity." });
     }, 30000);
 });

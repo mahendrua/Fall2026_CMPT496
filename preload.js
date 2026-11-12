@@ -178,8 +178,8 @@ contextBridge.exposeInMainWorld(
         ipcRenderer.invoke("select-codebase"),
 
         selectGuiTestFiles: () => ipcRenderer.invoke("select-gui-test-files"),
-        startGuiTests: (testIds, allowedHosts) =>
-            ipcRenderer.invoke("start-gui-tests", { testIds, allowedHosts }),
+        startGuiTests: (testIds, allowedHosts, options = {}) =>
+            ipcRenderer.invoke("start-gui-tests", { testIds, allowedHosts, demoMode: options.demoMode === true }),
         startLocalGuiApp: request =>
             ipcRenderer.invoke("start-local-gui-app", request),
         stopLocalGuiApp: () => ipcRenderer.invoke("stop-local-gui-app"),
@@ -188,6 +188,9 @@ contextBridge.exposeInMainWorld(
         repairGeneratedGuiTest: request =>
             ipcRenderer.invoke("repair-generated-gui-test", request),
         stopGuiTests: () => ipcRenderer.invoke("stop-gui-tests"),
+        clearGuiTests: () => ipcRenderer.invoke("clear-gui-tests"),
+        diagnoseGuiEventStream: eventsUrl =>
+            ipcRenderer.invoke("diagnose-gui-event-stream", eventsUrl),
         listGuiTestingReports: () => ipcRenderer.invoke("list-gui-testing-reports"),
         getGuiTestingReport: reportId => ipcRenderer.invoke("get-gui-testing-report", reportId),
         exportGuiTestingReportPdf: reportId => ipcRenderer.invoke("export-gui-testing-report-pdf", reportId),

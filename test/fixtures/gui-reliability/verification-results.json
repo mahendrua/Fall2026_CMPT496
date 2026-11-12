@@ -1,0 +1,114 @@
+[
+    {
+        "container":  "checkpoint-verify-buggy-final",
+        "preview":  [
+                        "PREVIEW_VERIFIED: framebuffer visible and real WebSocket reconnected"
+                    ],
+        "completion":  [
+                           {
+                               "type":  "run_complete",
+                               "status":  "failed",
+                               "total":  5,
+                               "passed":  1,
+                               "failed":  4,
+                               "skipped":  0
+                           }
+                       ],
+        "tests":  [
+                      {
+                          "title":  "counter adds one",
+                          "status":  "failed",
+                          "diagnostics":  {
+                                              "category":  "assertion_mismatch",
+                                              "locator":  "locator(\u0027#count\u0027)",
+                                              "summary":  "The locator resolved, but the observed state did not satisfy the expectation. Verify the requirement before attributing an application defect."
+                                          },
+                          "screenshotAvailable":  true
+                      },
+                      {
+                          "title":  "theme toggles",
+                          "status":  "failed",
+                          "diagnostics":  {
+                                              "category":  "assertion_mismatch",
+                                              "locator":  "locator(\u0027body\u0027)",
+                                              "summary":  "The locator resolved, but the observed state did not satisfy the expectation. Verify the requirement before attributing an application defect."
+                                          },
+                          "screenshotAvailable":  true
+                      },
+                      {
+                          "title":  "details toggle",
+                          "status":  "failed",
+                          "diagnostics":  {
+                                              "category":  "assertion_mismatch",
+                                              "locator":  "locator(\u0027#details\u0027)",
+                                              "summary":  "The locator resolved, but the observed state did not satisfy the expectation. Verify the requirement before attributing an application defect."
+                                          },
+                          "screenshotAvailable":  true
+                      },
+                      {
+                          "title":  "notes persist across reload",
+                          "status":  "failed",
+                          "diagnostics":  {
+                                              "category":  "assertion_mismatch",
+                                              "locator":  "getByLabel(\u0027Notes\u0027)",
+                                              "summary":  "The locator resolved, but the observed state did not satisfy the expectation. Verify the requirement before attributing an application defect."
+                                          },
+                          "screenshotAvailable":  true
+                      },
+                      {
+                          "title":  "next test starts with isolated storage",
+                          "status":  "passed",
+                          "diagnostics":  null,
+                          "screenshotAvailable":  false
+                      }
+                  ]
+    },
+    {
+        "container":  "checkpoint-verify-fixed-final",
+        "preview":  [
+                        "PREVIEW_VERIFIED: framebuffer visible and real WebSocket reconnected"
+                    ],
+        "completion":  [
+                           {
+                               "type":  "run_complete",
+                               "status":  "passed",
+                               "total":  5,
+                               "passed":  5,
+                               "failed":  0,
+                               "skipped":  0
+                           }
+                       ],
+        "tests":  [
+                      {
+                          "title":  "counter adds one",
+                          "status":  "passed",
+                          "diagnostics":  null,
+                          "screenshotAvailable":  false
+                      },
+                      {
+                          "title":  "theme toggles",
+                          "status":  "passed",
+                          "diagnostics":  null,
+                          "screenshotAvailable":  false
+                      },
+                      {
+                          "title":  "details toggle",
+                          "status":  "passed",
+                          "diagnostics":  null,
+                          "screenshotAvailable":  false
+                      },
+                      {
+                          "title":  "notes persist across reload",
+                          "status":  "passed",
+                          "diagnostics":  null,
+                          "screenshotAvailable":  false
+                      },
+                      {
+                          "title":  "next test starts with isolated storage",
+                          "status":  "passed",
+                          "diagnostics":  null,
+                          "screenshotAvailable":  false
+                      }
+                  ]
+    }
+]
