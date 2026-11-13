@@ -56,6 +56,14 @@ let reviewTarget = null;
 // True between a pipeline click and the command being sent (a short delay).
 let pipelineStarting = false;
 
+// Page states for remembering next page after the choosePipelinePage
+let pipelineNextAction = null;
+
+function openPipelinePage(nextAction) {
+    pipelineNextAction = nextAction;
+    showPage('choosePipelinePage');
+}
+
 // A new check replaces the saved result that unsaved review notes belong to,
 // so a run that would do so does not start; the user saves or discards first.
 function blockedByUnsavedReviews(codebasePath) {
@@ -130,6 +138,7 @@ let currentStepProgress = 0;
 
 
 let selectedValidatedRule = null;
+let selectedPipeline = "simple";
 
 let activeFileListView = {
     includePdfs: false,
@@ -3807,10 +3816,18 @@ document.getElementById('chooseBusinessRuleBackBtn')
 
 document.getElementById('runUnitTestGenerationOnlyBtn')
     .addEventListener('click', () => {
-        
-        
+        openPipelinePage(() => showPage('unitTestPage'));
+    });
 
-        showPage('unitTestPage');
+document.getElementById('choosePipelinePageEnterBtn')
+    .addEventListener('click', () => {
+        selectedPipeline = document.querySelector('input[name="pipeline"]:checked').value;
+        if (pipelineNextAction) pipelineNextAction();
+    });
+
+document.getElementById('choosePipelinePageBackBtn')
+    .addEventListener('click', () => {
+        showPage('analysisPage')
     });
 
 document.getElementById('allValidatedRulesBtn')
@@ -3821,12 +3838,13 @@ document.getElementById('allValidatedRulesBtn')
             "Unit Test Generation",
             "Preparing..."
         );
-
+        showPage
         runBackendCommand(
             "generate_unit_tests",
             {
                 codebase:selectedCodebasePath,
-                selected_rules: []
+                selected_rules: [],
+                rag_pipeline: selectedPipeline
             }
         );
     })
@@ -3857,12 +3875,12 @@ document.getElementById('chooseUnitTestPageSelectBtn')
             "Unit Test Generation",
             "Preparing..."
         );
-
         runBackendCommand(
             "generate_unit_tests",
             {
                 codebase:selectedCodebasePath,
-                selected_rules: selectedRules
+                selected_rules: selectedRules,
+                rag_pipeline: selectedPipeline
             }
         );
     });
@@ -3934,18 +3952,21 @@ document.getElementById('runIntegrationTestGenerationOnlyBtn')
     .addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        showLoading(
-            "Integration Test Generation",
-            "Preparing..."
-        );
+        openPipelinePage(() => {
+            showLoading(
+                "Integration Test Generation",
+                "Preparing..."
+            );
+            runBackendCommand(
+                "generate_integration_tests",
+                {
+                    codebase:selectedCodebasePath,
+                    selected_rules: [],
+                    rag_pipeline: selectedPipeline
+                }
+            );
+        });
 
-        runBackendCommand(
-            "generate_integration_tests",
-            {
-                codebase:selectedCodebasePath,
-                selected_rules: []
-            }
-        );
     });
 
 // Mutation testing: how many small code changes the passing unit tests

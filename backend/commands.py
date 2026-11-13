@@ -86,6 +86,14 @@ def test_run_result(test_run, **extra):
     Complete screen when tests were dropped, failed, or never ran -- the step
     itself still succeeds so the rest of the pipeline carries on.
     """
+    if test_run is None:
+        return dict(
+            extra,
+            message="Test execution was skipped.",
+            tests=None,
+            test_execution_skipped=True,
+        )
+
     result = dict(extra, message=test_run.message(), tests=test_run.summary())
 
     if test_run.needs_attention():
@@ -615,6 +623,7 @@ class Commands:
         self,
         codebase: str,
         selected_rules: list,
+        rag_pipeline: str,
         validated_rules_path: str = None,
         individualStep = True
     ):
@@ -678,10 +687,11 @@ class Commands:
             final_state = UTAgent().run(
                 input_rules,
                 codebase_name,
-                str(codebase_path)
+                str(codebase_path),
+                rag_pipeline
             )
 
-            return test_run_result(final_state["test_run"])
+            return test_run_result(final_state.get("test_run"))
 
 
         return self._run_command(
@@ -799,6 +809,7 @@ class Commands:
         self,
         codebase: str,
         selected_rules: list,
+        rag_pipeline: str,
         validated_rules_path: str = None,
         individualStep=True
     ):
@@ -871,12 +882,13 @@ class Commands:
             result = ITAgent().run(
                 input_rules,
                 codebase_name,
-                str(codebase_path)
+                str(codebase_path),
+                rag_pipeline
             )
 
 
             return test_run_result(
-                result["test_run"],
+                result.get("test_run"),
                 rules_processed=len(input_rules),
                 workflows_generated=len(
                     result.get("integration_tests", [])

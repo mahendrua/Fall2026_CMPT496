@@ -6,7 +6,7 @@ structured state passed between nodes in the LangGraph execution graph.
 """
 
 from typing import TypedDict, Annotated, Any
-from agent.structured_output.UT_output import ValidatedRule, UnitTest
+from agent.structured_output.UT_output import ValidatedRule, UnitTest, CorrectorOutput, AdaptorOutput
 from operator import add
 
 
@@ -69,7 +69,10 @@ class UTGraphState(TypedDict):
     unit_tests: list[UnitTest]
     rule_contexts: dict[int, dict]
     test_imports: set
+    rag_pipeline: str
+    adaptive_decision: AdaptorOutput
     test_path: str
+    corrective_decisions: dict[str, CorrectorOutput]
     codebase_k: int
     file_summary_k: int
     code_collection: Any
