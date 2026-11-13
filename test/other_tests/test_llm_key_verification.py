@@ -32,7 +32,8 @@ class CapturingGoogleModel:
     kwargs = None
 
     def __init__(self, **kwargs):
-        type(self).kwargs = kwargs
+        # Not type(self): build_chat_model() instantiates a redacting() subclass.
+        CapturingGoogleModel.kwargs = kwargs
 
     def invoke(self, prompt):
         return FakeReply()

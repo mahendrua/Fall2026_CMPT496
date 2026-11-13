@@ -18,6 +18,7 @@ from backend.progress_logging import progress
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from langgraph.graph import END, START, StateGraph
 from utils.chroma_utils import collection_name
+from utils.output_redaction import save_json, save_text
 
 from agent.llm import make_llm
 from agent.states.UT_agent_state import UTGraphState
@@ -402,18 +403,19 @@ class UTAgent:
         if persistable:
             unit_tests_path_json = os.path.join(codebase_subdir, "unit_tests.json")
             unit_tests_path_txt = os.path.join(codebase_subdir, "unit_tests.txt")
+            # Cleaned of secrets (T-078): the model's tests can repeat one.
             if state.get("target_language") != "python":
-                with open(unit_tests_path_json, "w", encoding="utf-8") as f:
-                    json.dump([u.model_dump() for u in persistable], f, indent=2)
-            with open(unit_tests_path_txt, "w", encoding="utf-8") as file:
-                for test in persistable:
-                    # Write imports first (if any), then the unit test method
-                    if getattr(test, "imports", None):
-                        try:
-                            file.write("\n".join(test.imports) + "\n\n")
-                        except Exception:
-                            pass
-                    file.write(test.unit_test + "\n\n")
+                save_json(unit_tests_path_json, [u.model_dump(mode="json") for u in persistable])
+            text = []
+            for test in persistable:
+                # Write imports first (if any), then the unit test method
+                if getattr(test, "imports", None):
+                    try:
+                        text.append("\n".join(test.imports) + "\n\n")
+                    except Exception:
+                        pass
+                text.append(test.unit_test + "\n\n")
+            save_text(unit_tests_path_txt, "".join(text))
             progress(f"Wrote {len(persistable)} unit tests to {unit_tests_path_json} and {unit_tests_path_txt}", 98)
         if state.get("target_language") == "python":
             return {"unit_tests": persistable}

@@ -13,6 +13,7 @@ import os
 from datetime import datetime
 
 from backend.commands import Commands
+from utils.output_redaction import safe_text
 
 
 # Saved so the Insights "Errors" view still has them after the app restarts.
@@ -137,9 +138,13 @@ class CommandDispatcher:
     def _record_error(self, command, message, code=None):
         self.error_log.append({
             "time": datetime.now().isoformat(timespec="seconds"),
-            "command": command,
+            # The name a request sent, which for an unknown command can be
+            # anything, so it is cleaned too (T-079).
+            "command": None if command is None else safe_text(str(command)),
             "code": code,
-            "message": message,
+            # An error can quote the analysed code or a provider's answer;
+            # only the cleaned text is kept (T-078).
+            "message": None if message is None else safe_text(str(message)),
         })
         self._save_errors()
 

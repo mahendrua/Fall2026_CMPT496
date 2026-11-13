@@ -18,10 +18,14 @@ in case the finding comes back.
 
 Files are written to a temporary file and then swapped in, as error_log.json
 is, so an interrupted write never leaves half a file.
+
+What is saved is cleaned of secrets first (T-078, US-034): evidence quotes
+source lines as they are, and claims, explanations and review notes can
+repeat a secret too. IDs, paths, symbols, line numbers and content hashes
+are kept, so finding IDs, and the reviews filed under them, do not change.
 """
 
 import json
-import os
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -30,6 +34,11 @@ from agent.BR_input_loader import APP_DIR
 from agent.structured_output.consistency_output import (
     SCHEMA_VERSION, ConsistencyCheckResult, Review, now_stamp,
 )
+from utils.output_redaction import OutputRedactionError, sanitize_data, save_json
+
+# Finding.title's limit. A placeholder can be longer than the secret it
+# replaces, so a cleaned title is cut back to it to keep the file loadable.
+MAX_TITLE_CHARS = 200
 
 
 OUTPUT_DIR = Path("agent") / "consistency_output"
@@ -65,6 +74,15 @@ def save_check_result(result: ConsistencyCheckResult, app_dir=APP_DIR) -> Path:
     """
     path = output_dir(result.codebase, app_dir) / RESULT_NAMES[result.scope]
     data = result.model_dump(mode="json", exclude={"findings": {"__all__": {"review"}}})
+
+    try:
+        data, _ = sanitize_data(data)
+    except OutputRedactionError as e:
+        raise ConsistencyStoreError(f"{path.name} was not saved: {e}") from None
+
+    for finding in data["findings"]:
+        finding["title"] = finding["title"][:MAX_TITLE_CHARS]
+
     _write_json(path, data)
     return path
 
@@ -184,8 +202,7 @@ def _read_json(path):
 
 
 def _write_json(path, data):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
-    os.replace(tmp, path)
+    try:
+        save_json(path, data, ensure_ascii=False)
+    except OutputRedactionError as e:
+        raise ConsistencyStoreError(str(e)) from None
