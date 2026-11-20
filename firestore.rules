@@ -1,0 +1,24 @@
+rules_version = '2';
+
+// Account records are keyed by Firebase UID. A signed-in user may read their
+// own record and write their own profile fields, but never the subscription
+// map: only the Cloud Functions in functions/ (Admin SDK) can write that.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{uid} {
+      function isOwner() {
+        return request.auth != null && request.auth.uid == uid;
+      }
+
+      allow read: if isOwner();
+      allow create: if isOwner() && !('subscription' in request.resource.data);
+      allow update: if isOwner()
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['subscription']);
+      allow delete: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

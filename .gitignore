@@ -21,6 +21,13 @@ test/consistency_eval/runs/
 test/secret_verification/runs/
 
 .env
+# Emulator-only Cloud Functions params (e.g. CHECKPOINT_TEST_PAYMENTS=true)
+functions/.env.local
+# Firebase CLI and emulator logs
+firebase-debug.log
+firebase-debug.*.log
+firestore-debug.log
+ui-debug.log
 .vscode/
 __pycache__/
 *.pyc
