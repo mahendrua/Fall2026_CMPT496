@@ -61,6 +61,9 @@ from backend import consistency_review
 from src.build_database import build_database
 from src.build_database_JSON import build_database as build_summary_database
 
+from backend.run_protection import protected_run
+from utils.output_redaction import safe_text
+
 from utils.uml_json_to_pdf import (
     build_report as uml_build_report,
     parse_args as uml_parse_args,
@@ -78,6 +81,24 @@ def skipped_diagrams_message(skipped):
         f"diagram text: {', '.join(skipped)}. Everything else was created, "
         "and the PDF marks where each skipped diagram would be."
     )
+
+
+RAG_PIPELINES = ("simple", "adaptive", "corrective")
+
+
+def rag_pipeline_name(rag_pipeline):
+    """
+    The retrieval pipeline the test agents should use: simple, adaptive or
+    corrective. Missing means simple (the full pipeline and older callers do
+    not choose one); anything else is a mistake in the request.
+    """
+    name = str(rag_pipeline or "simple").strip().lower()
+    if name not in RAG_PIPELINES:
+        raise ValueError(
+            f"Unknown RAG pipeline '{rag_pipeline}'. "
+            f"Choose one of: {', '.join(RAG_PIPELINES)}."
+        )
+    return name
 
 
 def test_run_result(test_run, **extra):
@@ -140,6 +161,8 @@ from backend.token_usage import (
     emit_stage_total,
     track_command,
     status_code,
+    current_run_redactions,
+    current_run_log_path,
     RUN_LOG_NAME,
 )
 
@@ -194,8 +217,11 @@ class Commands:
         start = time.perf_counter()
 
         # Times this command into last_run_log.json: the outermost command is
-        # the run, the commands it calls are its stages.
-        with track_command(
+        # the run, the commands it calls are its stages. The protected run
+        # remembers the secrets the run finds, so its outputs and errors are
+        # cleaned of them even where they appear without context, and keeps
+        # it out of LangSmith tracing (T-078); stages share the run's.
+        with protected_run(), track_command(
             self.app_dir,
             self.current_codebase_name,
             command_name,
@@ -241,7 +267,9 @@ class Commands:
                     "command": command_name,
                     "elapsed": round(elapsed, 2),
                     "individualStep": individualStep,
-                    "error": str(exc),
+                    # Cleaned here, inside the run's scope: the pipeline
+                    # passes it on as a step failure and a warning.
+                    "error": safe_text(str(exc)),
                     "error_code": status_code(exc),
                 }
         
@@ -623,9 +651,9 @@ class Commands:
         self,
         codebase: str,
         selected_rules: list,
-        rag_pipeline: str,
         validated_rules_path: str = None,
-        individualStep = True
+        individualStep = True,
+        rag_pipeline: str = "simple"
     ):
         """
         Generate unit tests from validated rules.
@@ -688,7 +716,7 @@ class Commands:
                 input_rules,
                 codebase_name,
                 str(codebase_path),
-                rag_pipeline
+                rag_pipeline_name(rag_pipeline)
             )
 
             return test_run_result(final_state.get("test_run"))
@@ -809,9 +837,9 @@ class Commands:
         self,
         codebase: str,
         selected_rules: list,
-        rag_pipeline: str,
         validated_rules_path: str = None,
-        individualStep=True
+        individualStep=True,
+        rag_pipeline: str = "simple"
     ):
         """
         Generate integration tests from validated business rules.
@@ -883,7 +911,7 @@ class Commands:
                 input_rules,
                 codebase_name,
                 str(codebase_path),
-                rag_pipeline
+                rag_pipeline_name(rag_pipeline)
             )
 
 
@@ -1231,7 +1259,7 @@ class Commands:
     # Pipeline Command
     # -----------------------------------------------------
 
-    def full_pipeline(self, codebase: str):
+    def full_pipeline(self, codebase: str, rag_pipeline: str = "simple"):
 
         
         """
@@ -1294,6 +1322,9 @@ class Commands:
             / codebase_name
         )
 
+        # This run's own record, filled in by task(): the report must show
+        # this run, not whichever full run was logged last.
+        run_log = []
 
         def task():
 
@@ -1319,10 +1350,10 @@ class Commands:
             steps.append( self._require_success(self.validate_business_rules(str(codebase_path), individualStep=False)))
 
             pipeline_progress("Generating unit tests...", 85)
-            steps.append( self._require_success(self.generate_unit_tests(str(codebase_path), [], individualStep=False)))
+            steps.append( self._require_success(self.generate_unit_tests(str(codebase_path), [], individualStep=False, rag_pipeline=rag_pipeline)))
 
             pipeline_progress("Generating integration tests...", 90)
-            steps.append(self._require_success(self.generate_integration_tests(str(codebase_path),[],individualStep=False)))
+            steps.append(self._require_success(self.generate_integration_tests(str(codebase_path), [], individualStep=False, rag_pipeline=rag_pipeline)))
 
             pipeline_progress("Generating UML report...", 95)
             steps.append( self._require_success(self.generate_all_uml(str(summary_directory), individualStep=False)))
@@ -1371,6 +1402,12 @@ class Commands:
             if warnings:
                 summary["warning"] = "\n\n".join(warnings)
 
+            # For the Complete screen (US-034): how many secret occurrences
+            # this run's AI requests had replaced, from this run's own record,
+            # now that its last call has finished. Counts only.
+            summary["redactions"] = current_run_redactions()
+            run_log.append(current_run_log_path())
+
             pipeline_progress("Pipeline Complete", 100)
             return summary
 
@@ -1385,9 +1422,10 @@ class Commands:
         # "Open Report" button opens it from the path in run_report.
         # Built after _run_command so the run log is finished and the report
         # shows the final numbers. It makes no AI calls, and a report problem
-        # only adds a warning: the run itself has already succeeded.
+        # only adds a warning: the run itself has already succeeded. Built
+        # from this run's own log, not the newest one on disk.
         if result["success"]:
-            report = write_run_report(codebase_path, self.app_dir)
+            report = write_run_report(codebase_path, self.app_dir, run_log_path=run_log[0] if run_log else None)
             summary = result["result"]
 
             if report["path"]:

@@ -556,8 +556,9 @@ def test_unit_and_integration_test_commands_read_validation_output(env, monkeypa
 
     def fake_agent(name):
         class Agent:
-            def run(self, rules, codebase_name, codebase_path):
+            def run(self, rules, codebase_name, codebase_path, rag_pipeline):
                 received[name] = rules
+                received[name + "_pipeline"] = rag_pipeline
                 return {"test_run": FakeTestRun()}
         return Agent
 
@@ -576,6 +577,8 @@ def test_unit_and_integration_test_commands_read_validation_output(env, monkeypa
     assert [(p.origin, p.source_file_paths) for p in unit["Folder rule."].provenance] == [("directory_observed", [])]
     assert [(p.origin, p.source_file_paths) for p in unit["File rule."].provenance] == [("file", ["src/A.cs"])]
     assert [r.rule for r in received["integration"]] == ["Folder rule."]
+    # No pipeline chosen: both commands fall back to the Simple RAG pipeline.
+    assert received["unit_pipeline"] == received["integration_pipeline"] == "simple"
 
 
 def test_older_outputs_without_provenance_still_parse():

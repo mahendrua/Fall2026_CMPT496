@@ -7,8 +7,6 @@ generates unit tests, writes the results to JSON, then builds, repairs and runs 
 import logging
 logger = logging.getLogger(__name__)
 from langgraph.graph import StateGraph, START, END
-from langchain_community.tools import DuckDuckGoSearchResults
-from langchain_community.utilities import DuckDuckGoSearchAPIWrapper
 import asyncio
 import json
 import os
@@ -27,6 +25,7 @@ from backend.progress_logging import progress
 from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
 from langgraph.graph import END, START, StateGraph
 from utils.chroma_utils import collection_name
+from utils.output_redaction import sanitize_text, save_json, save_text
 
 from agent.llm import make_llm
 from agent.states.UT_agent_state import UTGraphState
@@ -68,6 +67,30 @@ MAX_WEB_CHARS = 1000
 WEB_QUERY_DELAY = 1.0
 
 
+def safe_web_queries(queries) -> list[str]:
+    """
+    @brief Keeps only the web search queries that are safe to send to a search engine.
+    @details The queries are written by the model from the rule and the retrieved
+    code, so one could repeat a secret from that code. A query the secret
+    detector changes, or cannot check, is dropped instead of being sent.
+    """
+    safe = []
+    for query in queries or []:
+        query = " ".join(str(query).split())
+        if not query:
+            continue
+        try:
+            cleaned, _ = sanitize_text(query)
+        except Exception:
+            logger.warning("Skipped a web search query that could not be checked for secrets.")
+            continue
+        if cleaned != query:
+            logger.warning("Skipped a web search query that contained a secret.")
+            continue
+        safe.append(query)
+    return safe[:MAX_WEB_QUERIES]
+
+
 def route_after_correction(state: UTGraphState) -> str:
     decisions = state.get("corrective_decisions", {})
     if any(d.decision != "correct" for d in decisions.values()):
@@ -104,15 +127,32 @@ class UTAgent:
         self.graph = None
         progress("Initializing unit test agent...", 5)
         self.llm_call_time = 0.0
-        self.web_search = DuckDuckGoSearchResults(
-            api_wrapper=DuckDuckGoSearchAPIWrapper(region="us-en", max_results=MAX_WEB_RESULTS),
-            max_results=MAX_WEB_RESULTS,
-            output_format="list",
-        )
+        # Built on first use: only the Corrective pipeline searches the web,
+        # so Simple and Adaptive runs do not need the web search packages.
+        self._web_search = None
         if model is None:
             self.llm = make_llm(max_output_tokens=MAX_TEST_OUTPUT_TOKENS)
         else:
             self.llm = model
+        # Ready to use straight away with the Simple pipeline; run() rebuilds
+        # it for the pipeline the user chose.
+        self.graph = self.build_graph("simple")
+
+    @property
+    def web_search(self):
+        """
+        @brief The DuckDuckGo search tool, created the first time it is needed.
+        """
+        if self._web_search is None:
+            from langchain_community.tools import DuckDuckGoSearchResults
+            from langchain_community.utilities import DuckDuckGoSearchAPIWrapper
+
+            self._web_search = DuckDuckGoSearchResults(
+                api_wrapper=DuckDuckGoSearchAPIWrapper(region="us-en", max_results=MAX_WEB_RESULTS),
+                max_results=MAX_WEB_RESULTS,
+                output_format="list",
+            )
+        return self._web_search
 
     def build_graph(self, pipeline: str) -> StateGraph:
         """
@@ -162,7 +202,7 @@ class UTAgent:
 
         return builder.compile()
 
-    def run(self, validated_rules: list[ValidatedRule], codebase_name: str, codebase_path: str, rag_pipeline: str):
+    def run(self, validated_rules: list[ValidatedRule], codebase_name: str, codebase_path: str, rag_pipeline: str = "simple"):
         """
         @brief Executes the UTAgent workflow.
         @param input_rules Dictionary of validated business rules from BR_agent output. Keys are file or directory paths,
@@ -444,16 +484,16 @@ Prompt: {temp_prompt}
                 prompt = (
                     f"Business rule: {rule.rule}\nDirectory: {rule.source_directory}\n\n"
                     f"Code context already retrieved:\n{chr(10).join(context['code_context'])[:4000]}\n\n"
-                    f"Reasoning for decision: {reasoning}"
+                    f"Reasoning for decision: {reasoning}\n\n"
                     "Write search queries for anything still needed to write a correct unit test "
-                    "(library/framework docs, API behaviour). Do not search for things already in the context."
-                    "Only write queries about EXTERNAL libraries, frameworks or language features (documentation, API behaviour,"
-                    "usage examples). Do NOT search for this projects own files, classes or methods, and do not include"
-                    "file names, method names from the code under test, or the word 'implementation' in queries."
+                    "(library/framework docs, API behaviour). Do not search for things already in the context. "
+                    "Only write queries about EXTERNAL libraries, frameworks or language features (documentation, API behaviour, "
+                    "usage examples). Do NOT search for this projects own files, classes or methods, and do not include "
+                    "file names, method names from the code under test, secrets, or the word 'implementation' in queries. "
                     "Write each query as 3-6 keywords, like a search engine query, not a full sentence."
                 )
                 start_time = time.perf_counter()
-                queries = query_llm.invoke([("user", prompt)]).queries[:MAX_WEB_QUERIES]
+                queries = safe_web_queries(query_llm.invoke([("user", prompt)]).queries)
                 self.llm_call_time += time.perf_counter() - start_time
                 logger.info(queries)
 
@@ -525,10 +565,10 @@ Prompt: {temp_prompt}
                         rule,
                         ctx["code_context"],
                         ctx["summary_context"],
-                        ctx.get("web_context"),
                         target_language,
                         test_mode,
                         state.get("codebase_path"),
+                        web_context=ctx.get("web_context"),
                     )
             return await asyncio.gather(*(guarded(r) for r in validated_rules))
         start_time = time.perf_counter()
@@ -610,18 +650,19 @@ Prompt: {temp_prompt}
         if persistable:
             unit_tests_path_json = os.path.join(codebase_subdir, "unit_tests.json")
             unit_tests_path_txt = os.path.join(codebase_subdir, "unit_tests.txt")
+            # Cleaned of secrets (T-078): the model's tests can repeat one.
             if state.get("target_language") != "python":
-                with open(unit_tests_path_json, "w", encoding="utf-8") as f:
-                    json.dump([u.model_dump() for u in persistable], f, indent=2)
-            with open(unit_tests_path_txt, "w", encoding="utf-8") as file:
-                for test in persistable:
-                    # Write imports first (if any), then the unit test method
-                    if getattr(test, "imports", None):
-                        try:
-                            file.write("\n".join(test.imports) + "\n\n")
-                        except Exception:
-                            pass
-                    file.write(test.unit_test + "\n\n")
+                save_json(unit_tests_path_json, [u.model_dump(mode="json") for u in persistable])
+            text = []
+            for test in persistable:
+                # Write imports first (if any), then the unit test method
+                if getattr(test, "imports", None):
+                    try:
+                        text.append("\n".join(test.imports) + "\n\n")
+                    except Exception:
+                        pass
+                text.append(test.unit_test + "\n\n")
+            save_text(unit_tests_path_txt, "".join(text))
             progress(f"Wrote {len(persistable)} unit tests to {unit_tests_path_json} and {unit_tests_path_txt}", 98)
         if state.get("target_language") == "python":
             return {"unit_tests": persistable}
@@ -919,10 +960,10 @@ async def _generate_single_test(
     rule: ValidatedRule,
     code_context: list[str],
     summary_context: list[str],
-    web_context: list[str],
     target_language: str,
     test_mode: str = "function",
     codebase_path: str | None = None,
+    web_context: list[str] | None = None,
 ) -> tuple:
     try:
         code_text, summary_text = generation_context_texts(

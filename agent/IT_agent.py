@@ -11,8 +11,6 @@ from agent.structured_output.IT_output import (
     ValidatedRule, IntegrationTest, WorkflowGroup, WorkflowGroups, CorrectorOutput, WebQueries, AdaptorOutput, MultiRetrievalOutput
 )
 from langgraph.graph import StateGraph, START, END
-from langchain_community.tools import DuckDuckGoSearchResults
-from langchain_community.utilities import DuckDuckGoSearchAPIWrapper
 from agent.llm import make_llm
 import os
 import sys
@@ -25,6 +23,8 @@ from pathlib import Path
 from collections import defaultdict
 from backend.progress_logging import progress
 from utils.chroma_utils import collection_name
+from utils.output_redaction import save_json, save_text
+from agent.UT_agent import safe_web_queries
 from agent.test_harness import (
     MAX_TEST_OUTPUT_TOKENS, check_tests, make_cases, make_fixer, write_results
 )
@@ -79,15 +79,32 @@ class ITAgent:
         progress("Intializing integration test agent...", 5)
         self.graph = None
         self.llm_call_time = 0.0
-        self.web_search = DuckDuckGoSearchResults(
-            api_wrapper=DuckDuckGoSearchAPIWrapper(region="us-en", max_results=MAX_WEB_RESULTS),
-            max_results=MAX_WEB_RESULTS,
-            output_format="list",
-        )
+        # Built on first use: only the Corrective pipeline searches the web,
+        # so Simple and Adaptive runs do not need the web search packages.
+        self._web_search = None
         if model is None:
             self.llm = make_llm(max_output_tokens=MAX_TEST_OUTPUT_TOKENS)
         else:
             self.llm = model
+        # Ready to use straight away with the Simple pipeline; run() rebuilds
+        # it for the pipeline the user chose.
+        self.graph = self.build_graph("simple")
+
+    @property
+    def web_search(self):
+        """
+        @brief The DuckDuckGo search tool, created the first time it is needed.
+        """
+        if self._web_search is None:
+            from langchain_community.tools import DuckDuckGoSearchResults
+            from langchain_community.utilities import DuckDuckGoSearchAPIWrapper
+
+            self._web_search = DuckDuckGoSearchResults(
+                api_wrapper=DuckDuckGoSearchAPIWrapper(region="us-en", max_results=MAX_WEB_RESULTS),
+                max_results=MAX_WEB_RESULTS,
+                output_format="list",
+            )
+        return self._web_search
 
     def build_graph(self, pipeline: str) -> StateGraph:
         """
@@ -138,7 +155,7 @@ class ITAgent:
 
         return builder.compile()
 
-    def run(self, validated_rules: list[ValidatedRule], codebase_name: str, codebase_path: str, rag_pipeline: str):
+    def run(self, validated_rules: list[ValidatedRule], codebase_name: str, codebase_path: str, rag_pipeline: str = "simple"):
         """
         @brief Executes the ITAgent workflow.
         @param input_rules Dictionary of validated business rules from BR_agent output. Keys are file or directory paths,
@@ -679,16 +696,16 @@ Prompt: {temp_prompt}
                 reasoning = decisions[key].reasoning
                 prompt = (
                     f"Workflow: {workflow.workflow_name}\nDescription: {workflow.workflow_description}\n"
-                    f"Business rules:\n{rules_text}\n{known}\nReasoning for decision: {reasoning}"
+                    f"Business rules:\n{rules_text}\n{known}\nReasoning for decision: {reasoning}\n\n"
                     "Write search queries for anything still needed to write a correct integration test "
-                    "(library/framework docs, API behaviour). Do not search for things already in the context."
-                    "Only write queries about EXTERNAL libraries, frameworks or language features (documentation, API behaviour,"
-                    "usage examples). Do NOT search for this projects own files, classes or methods, and do not include"
-                    "file names, method names from the code under test, or the word 'implementation' in queries."
+                    "(library/framework docs, API behaviour). Do not search for things already in the context. "
+                    "Only write queries about EXTERNAL libraries, frameworks or language features (documentation, API behaviour, "
+                    "usage examples). Do NOT search for this projects own files, classes or methods, and do not include "
+                    "file names, method names from the code under test, secrets, or the word 'implementation' in queries. "
                     "Write each query as 3-6 keywords, like a search engine query, not a full sentence."
                 )
                 start_time = time.perf_counter()
-                queries = query_llm.invoke([("user", prompt)]).queries[:MAX_WEB_QUERIES]
+                queries = safe_web_queries(query_llm.invoke([("user", prompt)]).queries)
                 self.llm_call_time += time.perf_counter() - start_time
                 logger.info(queries)
 
@@ -796,7 +813,7 @@ Prompt: {temp_prompt}
             async def guarded(workflow):
                 async with sem:
                     ctx = workflow_contexts.get(workflow.workflow_name, {"code_context": [], "summary_context": []})
-                    return await _generate_single_test(structured_llm, workflow, workflow.rules, ctx["code_context"], ctx["summary_context"], ctx.get("web_context"))
+                    return await _generate_single_test(structured_llm, workflow, workflow.rules, ctx["code_context"], ctx["summary_context"], web_context=ctx.get("web_context"))
             return await asyncio.gather(*(guarded(workflow) for workflow in workflow_groups))
 
         start_time = time.perf_counter()
@@ -850,41 +867,43 @@ Prompt: {temp_prompt}
             integration_tests_path_json = os.path.join(codebase_subdir, "integration_tests.json")
             integration_tests_path_txt = os.path.join(codebase_subdir, "integration_tests.txt")
 
-            with open(integration_tests_path_json, "w", encoding="utf-8") as f:
-                json.dump([u.model_dump() for u in integration_tests], f, indent=2)
+            # Cleaned of secrets (T-078): the model's tests can repeat one.
+            save_json(integration_tests_path_json, [u.model_dump(mode="json") for u in integration_tests])
 
-            with open(integration_tests_path_txt, "w", encoding="utf-8") as file:
-                for test in integration_tests:
+            text = []
+            for test in integration_tests:
 
-                    file.write(f"// Workflow: {test.workflow_name}\n")
-                    file.write(f"// Description: {test.workflow_description}\n")
-                    file.write(f"// Covered Business Rules: {test.rule_ids}\n\n")
+                text.append(f"// Workflow: {test.workflow_name}\n")
+                text.append(f"// Description: {test.workflow_description}\n")
+                text.append(f"// Covered Business Rules: {test.rule_ids}\n\n")
 
-                    # Write imports first
-                    if getattr(test, "imports", None):
-                        for imp in test.imports:
-                            imp = imp.strip()
+                # Write imports first
+                if getattr(test, "imports", None):
+                    for imp in test.imports:
+                        imp = imp.strip()
 
-                            # Skip invalid imports
-                            if not imp:
-                                continue
+                        # Skip invalid imports
+                        if not imp:
+                            continue
 
-                            # Add using automatically
-                            if not imp.startswith("using "):
-                                imp = f"using {imp}"
+                        # Add using automatically
+                        if not imp.startswith("using "):
+                            imp = f"using {imp}"
 
-                            # Add semicolon automatically
-                            if not imp.endswith(";"):
-                                imp += ";"
+                        # Add semicolon automatically
+                        if not imp.endswith(";"):
+                            imp += ";"
 
-                            file.write(imp + "\n")
+                        text.append(imp + "\n")
 
-                        file.write("\n")
+                    text.append("\n")
 
-                    # Write test method
-                    file.write(
-                        test.integration_test + "\n\n"
-                    )
+                # Write test method
+                text.append(
+                    test.integration_test + "\n\n"
+                )
+
+            save_text(integration_tests_path_txt, "".join(text))
             progress(
                 f"Wrote {len(integration_tests)} workflow integration tests to "
                 f"{integration_tests_path_json} and {integration_tests_path_txt}",
@@ -1153,7 +1172,7 @@ async def _generate_single_test(
     workflow_rules,
     code_context: list[str],
     summary_context: list[str],
-    web_context: list[str],
+    web_context: list[str] | None = None,
 ) -> tuple:
     try:
         code_text = "\n\n".join(code_context) if code_context else "NO CONTEXT PROVIDED"
