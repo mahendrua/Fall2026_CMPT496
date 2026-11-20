@@ -41,13 +41,18 @@ function getFirebaseConfig(userDataDirectory, bundledConfigPath = path.join(__di
     };
 }
 
-async function verifyFirebaseIdToken(idToken, apiKey) {
+// authEmulatorUrl is set only in development with CHECKPOINT_FIREBASE_EMULATORS
+// (see entitlement_service.getEmulatorSettings), never in a packaged app.
+async function verifyFirebaseIdToken(idToken, apiKey, { authEmulatorUrl = null } = {}) {
     if (typeof idToken !== "string" || idToken.length < 20 || idToken.length > 16384) {
         throw new Error("Authentication required. Please sign in again.");
     }
 
+    const identityToolkit = authEmulatorUrl
+        ? `${authEmulatorUrl}/identitytoolkit.googleapis.com`
+        : "https://identitytoolkit.googleapis.com";
     const response = await fetch(
-        `https://identitytoolkit.googleapis.com/v1/accounts:lookup?key=${encodeURIComponent(apiKey)}`,
+        `${identityToolkit}/v1/accounts:lookup?key=${encodeURIComponent(apiKey)}`,
         {
             method: "POST",
             headers: { "Content-Type": "application/json" },

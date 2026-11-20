@@ -13,6 +13,10 @@ contextBridge.exposeInMainWorld(
         signOutAuthSession: () => ipcRenderer.invoke("auth:sign-out"),
         getUserProfile: () => ipcRenderer.invoke("auth:get-profile"),
         saveUserProfile: role => ipcRenderer.invoke("auth:save-profile", role),
+        // Checkpoint Pro. Checkout sends nothing: card input never leaves the page.
+        getSubscription: () => ipcRenderer.invoke("subscription:get"),
+        refreshSubscription: () => ipcRenderer.invoke("subscription:refresh"),
+        activateTestSubscription: () => ipcRenderer.invoke("subscription:activate-test"),
         getGithubBranches: repositoryUrl => ipcRenderer.invoke("github:get-branches", repositoryUrl),
         listGithubPullRequests: request => ipcRenderer.invoke("github:list-pull-requests", request),
         getGithubPullRequest: request => ipcRenderer.invoke("github:get-pull-request", request),

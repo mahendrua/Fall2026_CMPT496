@@ -32,6 +32,14 @@ const {
     saveLocalProfile,
     verifyFirebaseIdToken
 } = require("./auth_service");
+const {
+    EntitlementCache,
+    SubscriptionServiceError,
+    callFunction,
+    getEmulatorSettings,
+    paidFeatureForChannel,
+    paidFeatureForCommand
+} = require("./entitlement_service");
 
 
 let pythonProcess = null;
@@ -53,6 +61,56 @@ function registerProtectedHandler(channel, handler) {
         assertAuthenticatedRenderer(event, mainWindow, authSession);
         return handler(event, ...args);
     });
+}
+
+// A paid operation: the caller must be signed in AND the main process must
+// hold a fresh, server-verified Pro entitlement for that same UID.
+function registerPaidHandler(channel, handler) {
+    const feature = paidFeatureForChannel(channel);
+    ipcMain.handle(channel, async (event, ...args) => {
+        assertAuthenticatedRenderer(event, mainWindow, authSession);
+        await requirePaidFeature(feature);
+        return handler(event, ...args);
+    });
+}
+
+const entitlements = new EntitlementCache();
+let entitlementRefresh = null;
+let subscriptionActivation = null;
+
+function subscriptionFunctionOptions() {
+    const { config } = getConfiguredFirebase();
+    return { projectId: config.projectId, emulators: getEmulatorSettings(process.env, app.isPackaged) };
+}
+
+// Asks the trusted backend for this account's entitlement. Concurrent callers
+// share one request. A result is kept only if the same account is still
+// signed in when it arrives, so a slow reply cannot leak to another account.
+function refreshEntitlement() {
+    const session = authSession;
+    if (!session) return Promise.resolve(null);
+    if (entitlementRefresh?.uid === session.uid) return entitlementRefresh.promise;
+
+    const promise = (async () => {
+        try {
+            const result = await callFunction("getEntitlement", session.idToken, subscriptionFunctionOptions());
+            if (authSession?.uid === session.uid) entitlements.record(session.uid, result);
+        } catch (error) {
+            if (authSession?.uid === session.uid) entitlements.recordFailure(session.uid);
+            console.warn(`Could not verify the Checkpoint subscription (${error.code || error.name}).`);
+        }
+        return authSession?.uid === session.uid ? entitlements.view(session.uid) : null;
+    })().finally(() => {
+        if (entitlementRefresh?.promise === promise) entitlementRefresh = null;
+    });
+    entitlementRefresh = { uid: session.uid, promise };
+    return promise;
+}
+
+async function requirePaidFeature(feature) {
+    const uid = authSession?.uid;
+    if (uid && !entitlements.isFresh(uid)) await refreshEntitlement();
+    entitlements.assertFeature(authSession?.uid === uid ? uid : null, feature);
 }
 
 function registerProtectedListener(channel, listener) {
@@ -114,8 +172,9 @@ function readEncryptedAuthSession() {
 ipcMain.handle("auth:get-config", event => {
     assertMainRenderer(event, mainWindow);
     const result = getFirebaseConfig(app.getPath("userData"));
+    const emulators = getEmulatorSettings(process.env, app.isPackaged);
     return result.configured
-        ? { configured: true, config: result.config }
+        ? { configured: true, config: result.config, ...(emulators ? { authEmulatorUrl: emulators.auth } : {}) }
         : { configured: false, configPath: result.configPath };
 });
 
@@ -141,8 +200,17 @@ ipcMain.handle("auth:clear-session", event => {
 ipcMain.handle("auth:establish", async (event, idToken) => {
     assertMainRenderer(event, mainWindow);
     const { config } = getConfiguredFirebase();
-    const identity = await verifyFirebaseIdToken(idToken, config.apiKey);
-    authSession = { ...identity, webContentsId: event.sender.id };
+    const emulators = getEmulatorSettings(process.env, app.isPackaged);
+    const identity = await verifyFirebaseIdToken(idToken, config.apiKey, { authEmulatorUrl: emulators?.auth });
+    // A different account never inherits the previous account's entitlement.
+    if (authSession?.uid !== identity.uid) {
+        entitlements.clear();
+        entitlementRefresh = null;
+        subscriptionActivation = null;
+    }
+    // The ID token is kept in memory only, to call the subscription functions.
+    authSession = { ...identity, idToken, webContentsId: event.sender.id };
+    if (!entitlements.isFresh(identity.uid)) refreshEntitlement();
     ensureEnvFile();
     if (!pythonProcess) startPythonBackend();
     return { uid: identity.uid, email: identity.email, displayName: identity.displayName };
@@ -151,6 +219,9 @@ ipcMain.handle("auth:establish", async (event, idToken) => {
 ipcMain.handle("auth:sign-out", async event => {
     assertMainRenderer(event, mainWindow);
     authSession = null;
+    entitlements.clear();
+    entitlementRefresh = null;
+    subscriptionActivation = null;
     for (const { controller } of githubImportControllers.values()) controller.abort();
     restartBackendAfterCancel = false;
     if (pythonProcess) {
@@ -191,26 +262,66 @@ ipcMain.handle("auth:save-profile", (event, professionalRole) => {
     });
 });
 
-registerProtectedHandler("github:get-branches", async (_event, repositoryUrl) => {
+registerProtectedHandler("subscription:get", async () => {
+    const uid = authSession.uid;
+    if (!entitlements.isFresh(uid)) await refreshEntitlement();
+    return entitlements.view(uid);
+});
+
+registerProtectedHandler("subscription:refresh", async () => {
+    const uid = authSession.uid;
+    if (entitlementRefresh?.uid !== uid) entitlements.clear();
+    await refreshEntitlement();
+    return entitlements.view(uid);
+});
+
+// Test-only checkout. It deliberately ignores every renderer argument: card
+// details stay in the renderer, and the plan and term are set by the server.
+registerProtectedHandler("subscription:activate-test", async () => {
+    const session = authSession;
+    if (subscriptionActivation?.uid === session.uid) return subscriptionActivation.promise;
+
+    const promise = (async () => {
+        try {
+            await callFunction("activateTestSubscription", session.idToken, subscriptionFunctionOptions());
+        } catch (error) {
+            if (error instanceof SubscriptionServiceError && error.code === "FAILED_PRECONDITION") {
+                throw new Error("Test checkout is disabled on the Checkpoint subscription server.");
+            }
+            throw new Error(error.message || "The test checkout could not be completed.");
+        }
+        if (authSession?.uid !== session.uid) throw new Error("The signed-in account changed during checkout.");
+        entitlements.clear();
+        entitlementRefresh = null;
+        await refreshEntitlement();
+        return entitlements.view(session.uid);
+    })().finally(() => {
+        if (subscriptionActivation?.promise === promise) subscriptionActivation = null;
+    });
+    subscriptionActivation = { uid: session.uid, promise };
+    return promise;
+});
+
+registerPaidHandler("github:get-branches", async (_event, repositoryUrl) => {
     return getRepositoryBranches(repositoryUrl);
 });
 
-registerProtectedHandler("github:list-pull-requests", async (_event, request = {}) => {
+registerPaidHandler("github:list-pull-requests", async (_event, request = {}) => {
     return listPullRequests(request.url, request.baseBranch, {
         state: request.state || "all",
         page: request.page ?? 1
     });
 });
 
-registerProtectedHandler("github:get-pull-request", async (_event, request = {}) => {
+registerPaidHandler("github:get-pull-request", async (_event, request = {}) => {
     return getPullRequestDetails(request.url, request.number);
 });
 
-registerProtectedHandler("github:get-pull-request-file", async (_event, request = {}) => {
+registerPaidHandler("github:get-pull-request-file", async (_event, request = {}) => {
     return getPullRequestFileComparison(request.url, request.number, request.filePath);
 });
 
-registerProtectedHandler("github:import", async (event, request = {}) => {
+registerPaidHandler("github:import", async (event, request = {}) => {
     if (
         typeof request.requestId !== "string" ||
         !/^[0-9a-f-]{36}$/i.test(request.requestId) ||
@@ -937,6 +1048,16 @@ registerProtectedHandler(
             ? request.request_id
             : randomUUID();
 
+        // GUI test generation and pull-request analysis are Checkpoint Pro features.
+        const paidFeature = paidFeatureForCommand(request?.command);
+        if (paidFeature) {
+            try {
+                await requirePaidFeature(paidFeature);
+            } catch (error) {
+                return { request_id: requestId, accepted: false, success: false, error: error.message, code: error.code };
+            }
+        }
+
         if (!pythonProcess || !pythonProcess.stdin?.writable) {
 
             return {
@@ -1540,7 +1661,7 @@ async function stopLocalGuiApp() {
     if (localGuiApp) await localGuiApp.stop();
 }
 
-registerProtectedHandler("start-local-gui-app", async (event, request = {}) => {
+registerPaidHandler("start-local-gui-app", async (event, request = {}) => {
     let projects;
     try { projects = discoverApplications(request.appDirectory); }
     catch (error) { return { success: false, error: error.message }; }
@@ -1594,7 +1715,7 @@ registerProtectedHandler("stop-local-gui-app", async () => {
     }
 });
 
-registerProtectedHandler("select-gui-test-files", async () => {
+registerPaidHandler("select-gui-test-files", async () => {
     let selection;
     try {
         selection = await dialog.showOpenDialog(mainWindow, {
@@ -1620,7 +1741,7 @@ registerProtectedHandler("select-gui-test-files", async () => {
     }
 });
 
-registerProtectedHandler("start-gui-tests", async (event, request = {}) => {
+registerPaidHandler("start-gui-tests", async (event, request = {}) => {
     const runner = getGuiTestRunner();
     const local = localGuiApp?.active;
     const testFiles = (request.testIds || [])
@@ -1644,7 +1765,7 @@ registerProtectedHandler("start-gui-tests", async (event, request = {}) => {
     }
 });
 
-registerProtectedHandler("start-generated-gui-tests", async (event, request = {}) => {
+registerPaidHandler("start-generated-gui-tests", async (event, request = {}) => {
     try {
         const generatedFiles = request.testFiles;
         if (!Array.isArray(generatedFiles) || generatedFiles.length === 0 || generatedFiles.length > 8) {
@@ -1715,7 +1836,7 @@ registerProtectedHandler("start-generated-gui-tests", async (event, request = {}
     }
 });
 
-registerProtectedHandler("repair-generated-gui-test", async (event, request = {}) => {
+registerPaidHandler("repair-generated-gui-test", async (event, request = {}) => {
     try {
         if (!localGuiApp?.active) {
             throw new Error("The local app is no longer running; selector repair cannot be verified.");
@@ -1780,7 +1901,7 @@ registerProtectedHandler("stop-gui-tests", async () => {
     }
 });
 
-registerProtectedHandler("diagnose-gui-event-stream", async (_event, eventsUrl) => {
+registerPaidHandler("diagnose-gui-event-stream", async (_event, eventsUrl) => {
     try {
         return await getGuiTestRunner().diagnoseEventStream(eventsUrl);
     } catch (error) {
@@ -1791,7 +1912,7 @@ registerProtectedHandler("diagnose-gui-event-stream", async (_event, eventsUrl) 
     }
 });
 
-registerProtectedHandler("list-gui-testing-reports", async () => {
+registerPaidHandler("list-gui-testing-reports", async () => {
     try {
         return {
             success: true,
@@ -1805,7 +1926,7 @@ registerProtectedHandler("list-gui-testing-reports", async () => {
     }
 });
 
-registerProtectedHandler("get-gui-testing-report", async (event, reportId) => {
+registerPaidHandler("get-gui-testing-report", async (event, reportId) => {
     try {
         return {
             success: true,
@@ -1820,7 +1941,7 @@ registerProtectedHandler("get-gui-testing-report", async (event, reportId) => {
     }
 });
 
-registerProtectedHandler("export-gui-testing-report-pdf", async (event, reportId) => {
+registerPaidHandler("export-gui-testing-report-pdf", async (event, reportId) => {
     let printWindow = null;
     try {
         const report = getGuiTestReport(

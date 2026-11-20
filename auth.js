@@ -2,6 +2,7 @@ import { initializeApp } from "@firebase/app";
 import {
     createUserWithEmailAndPassword,
     browserLocalPersistence,
+    connectAuthEmulator,
     initializeAuth,
     inMemoryPersistence,
     onIdTokenChanged,
@@ -284,6 +285,8 @@ async function initializeAuthentication() {
     await api.readAuthSession();
     const app = initializeApp(setup.config);
     auth = initializeAuth(app, { persistence: [ElectronSecurePersistence] });
+    // Only offered by the main process in development with CHECKPOINT_FIREBASE_EMULATORS.
+    if (setup.authEmulatorUrl) connectAuthEmulator(auth, setup.authEmulatorUrl, { disableWarnings: true });
     await setPersistence(
         auth,
         document.getElementById("rememberMe").checked
