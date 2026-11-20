@@ -116,14 +116,30 @@ test("the Upgrade screen shows the price and labels checkout as test mode", () =
     assert.match(indexHtml, /Test mode — no charge/);
     assert.match(indexHtml, /id="upgradeDummyCardBtn"[^>]*>Use dummy card</);
     assert.match(indexHtml, /id="upgradeCardNumber"[^>]*autocomplete="off"/);
-    const checkout = indexHtml.slice(indexHtml.indexOf('id="upgradeCheckout"'), indexHtml.indexOf('id="upgradeSuccessMessage"'));
-    assert.doesNotMatch(checkout, /<form|name="/, "the card field must not be part of a submittable form");
+    const dialog = indexHtml.slice(indexHtml.indexOf('<dialog id="upgradeCheckoutDialog"'), indexHtml.indexOf("</dialog>"));
+    assert.ok(dialog.length > 0, "the checkout is a dialog");
+    assert.match(dialog, /id="upgradeCardNumber"/, "the card input lives only in the dialog");
+    assert.doesNotMatch(dialog, /<form|name="/, "the card field must not be part of a submittable form");
+    assert.match(dialog, /id="upgradeConfirmBtn"[^>]*disabled>Confirm test payment</, "Confirm starts disabled until a card is entered");
+    assert.match(dialog, /CHECKPOINT_TEST_PAYMENTS=true/, "the dialog explains how to enable test mode locally");
+    assert.equal((indexHtml.match(/id="upgradeCardNumber"/g) || []).length, 1);
+});
+
+test("the Pay button is never disabled by card input or test mode", () => {
+    const payButton = indexHtml.match(/<button[^>]*id="upgradePayBtn"[^>]*>([^<]*)</);
+    assert.ok(payButton, "Pay button exists");
+    assert.equal(payButton[1], "Pay $19.99/month");
+    assert.doesNotMatch(payButton[0], /disabled/);
+    assert.doesNotMatch(upgradeJs, /upgradePayBtn"\)\.disabled/);
+    assert.match(upgradeJs, /element\("upgradePayBtn"\)\.addEventListener\("click", openCheckoutDialog\)/);
+    assert.match(upgradeJs, /confirmButton\.disabled = subscription\.isActivating\(\) \|\| !hasCardInput\(\)/);
 });
 
 test("upgrade.js never sends, logs or stores the card number", () => {
     const cardReads = [...upgradeJs.matchAll(/cardInput\.value(?!\s*=)/g)];
-    assert.equal(cardReads.length, 1, "the card value is read once, only to check it is not empty");
-    assert.match(upgradeJs, /const hasCard = cardInput\.value\.trim\(\)\.length > 0;\s*clearCard\(\);/);
+    assert.equal(cardReads.length, 1, "the card value is read in one place, only to check it is not empty");
+    assert.match(upgradeJs, /function hasCardInput\(\) \{\s*return cardInput\.value\.trim\(\)\.length > 0;\s*\}/);
+    assert.match(upgradeJs, /dialog\.addEventListener\("close", \(\) => \{\s*clearCard\(\);/, "closing the dialog clears the card");
     assert.doesNotMatch(upgradeJs, /console\.\w+\([^)]*card/i);
     assert.doesNotMatch(upgradeJs, /localStorage|sessionStorage|indexedDB|document\.cookie/);
     assert.doesNotMatch(upgradeJs, /activateTestSubscription\([^)]/);

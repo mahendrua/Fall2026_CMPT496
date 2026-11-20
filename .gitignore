@@ -23,7 +23,9 @@ test/subscription_e2e/runs/
 test/secret_verification/runs/
 
 .env
-# Emulator-only Cloud Functions params (e.g. CHECKPOINT_TEST_PAYMENTS=true)
+# Cloud Functions params: functions/.env holds the committed default
+# (CHECKPOINT_TEST_PAYMENTS=false); .env.local is the emulator-only override.
+!functions/.env
 functions/.env.local
 # Firebase CLI and emulator logs
 firebase-debug.log

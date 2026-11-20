@@ -34,12 +34,15 @@ app.setPath("userData", config.userData);
 // --- Recording -------------------------------------------------------------
 const captures = { mainRequests: [], rendererRequests: [], consoleLines: [] };
 const appFetch = globalThis.fetch;
+// Set by a scenario to make the next checkout request fail as if offline.
+let failNextCheckout = false;
 globalThis.fetch = (input, init = {}) => {
-    captures.mainRequests.push({
-        url: String(input?.url || input),
-        method: init.method || "GET",
-        body: typeof init.body === "string" ? init.body : ""
-    });
+    const url = String(input?.url || input);
+    captures.mainRequests.push({ url, method: init.method || "GET", body: typeof init.body === "string" ? init.body : "" });
+    if (failNextCheckout && url.endsWith("/activateTestSubscription")) {
+        failNextCheckout = false;
+        return Promise.reject(new TypeError("fetch failed (simulated by the test)"));
+    }
     return appFetch(input, init);
 };
 for (const level of ["log", "info", "warn", "error", "debug"]) {
@@ -228,22 +231,50 @@ async function purchasePhase() {
     const profile = await ipc("window.electronAPI.getUserProfile()");
     expect(profile.ok && profile.value?.professionalRole === "Student", "account profile is still saved and readable", profile);
 
-    // Checkout
+    // Checkout: Pay opens the dialog before any card input exists
     await js(`document.getElementById('upgradeBtn').click()`);
-    await until(`!document.getElementById('upgradeCheckout').classList.contains('hidden')`, "checkout shown");
-    const pageText = await js(`document.getElementById('upgradePage').textContent`);
-    expect(/\$19\.99\s*\/month/.test(pageText), "Upgrade shows $19.99/month");
-    expect(/Test mode — no charge/.test(pageText), "checkout is labelled Test mode — no charge");
+    await until(`window.checkpointSubscription.getState().phase === 'ready'`, "Upgrade loaded");
+    expect(/\$19\.99\s*\/month/.test(await js(`document.getElementById('upgradePage').textContent`)), "Upgrade shows $19.99/month");
+    const pay = await js(`(() => { const b = document.getElementById('upgradePayBtn');
+        return { text: b.textContent, visible: !b.classList.contains('hidden'), disabled: b.disabled }; })()`);
+    expect(pay.text === "Pay $19.99/month" && pay.visible && !pay.disabled, "Pay $19.99/month is visible and clickable with no card entered", pay);
+    await js(`document.getElementById('upgradePayBtn').click()`);
+    await until(`document.getElementById('upgradeCheckoutDialog').open
+        && !document.getElementById('upgradeCheckout').classList.contains('hidden')`, "checkout dialog with card form");
+    expect(/Test mode — no charge/.test(await js(`document.getElementById('upgradeCheckoutDialog').textContent`)), "the dialog is labelled Test mode — no charge");
+
+    const typeCard = value => js(`(() => { const input = document.getElementById('upgradeCardNumber');
+        input.value = ${J(value)}; input.dispatchEvent(new Event('input')); return true; })()`);
+    const confirmDisabled = () => js(`document.getElementById('upgradeConfirmBtn').disabled`);
+    expect(await confirmDisabled() === true, "Confirm test payment is disabled until a card number is entered");
+    await typeCard("1234");
+    expect(await confirmDisabled() === false, "any dummy number such as 1234 enables Confirm test payment");
+    await typeCard("");
+    expect(await confirmDisabled() === true, "clearing the number disables Confirm again");
     await js(`document.getElementById('upgradeDummyCardBtn').click()`);
-    expect(await js(`document.getElementById('upgradeCardNumber').value`) === "4242 4242 4242 4242", "Use dummy card fills a dummy number");
-    await js(`(() => { document.getElementById('upgradeCardNumber').value = ${J(CARD)}; return true; })()`);
+    expect(await js(`document.getElementById('upgradeCardNumber').value`) === "4242 4242 4242 4242" && await confirmDisabled() === false,
+        "Use dummy card fills a dummy number and enables Confirm");
+
+    // A failed activation shows an error and can be retried.
+    await typeCard(CARD);
+    failNextCheckout = true;
+    await js(`document.getElementById('upgradeConfirmBtn').click()`);
+    await until(`/try again/.test(document.getElementById('upgradeCheckoutError').textContent)
+        && !document.getElementById('upgradeConfirmBtn').disabled`, "activation error shown");
+    expect(await js(`document.getElementById('upgradeCheckoutDialog').open`) && !(await js(`window.checkpointSubscription.hasFeature('gui')`)),
+        "a failed activation keeps the dialog open and the account free");
+    expect(/Could not reach the Checkpoint subscription service/.test(await js(`document.getElementById('upgradeCheckoutError').textContent`)),
+        "the activation error is visible in the dialog");
+
     const callsBefore = captures.mainRequests.filter(r => r.url.endsWith("/activateTestSubscription")).length;
     await js(`(() => { const b = document.getElementById('upgradeConfirmBtn'); b.click(); b.click(); return true; })()`);
     await until(`window.checkpointSubscription.hasFeature('gui') && window.checkpointSubscription.hasFeature('github')`, "Pro unlocked");
     const activationCalls = captures.mainRequests.filter(r => r.url.endsWith("/activateTestSubscription")).length - callsBefore;
-    expect(activationCalls === 1, "a double-click sends one checkout request", activationCalls);
+    expect(activationCalls === 1, "retrying works, and a double-click sends one checkout request", activationCalls);
+    expect(!(await js(`document.getElementById('upgradeCheckoutDialog').open`)), "the dialog closes after a successful payment");
     expect(await js(`document.getElementById('upgradeCardNumber').value`) === "", "the card field is cleared after checkout");
     expect(/You were not charged/.test(await js(`document.getElementById('upgradeSuccessMessage').textContent`)), "success message says no charge");
+    expect(!(await visible("upgradePayBtn")), "the Pay button is gone once Pro is active");
 
     f = await features();
     expect(f.gui && f.github && f.badges === 0, "checkout unlocks both feature groups without signing out", f);
@@ -293,9 +324,16 @@ async function disabledPhase() {
     await signIn(config.accounts.existing);
     await js(`document.getElementById('upgradeBtn').click()`);
     await until(`window.checkpointSubscription.getState().phase === 'ready'`, "subscription loaded");
-    await sleep(300);
-    expect(!(await visible("upgradeCheckout")), "the mock checkout is hidden while server test mode is off");
-    expect(/test mode is turned off/.test(await js(`document.getElementById('upgradePlanDetail').textContent`)), "Upgrade explains checkout is unavailable");
+    const payDisabled = await js(`document.getElementById('upgradePayBtn').disabled`);
+    expect(await visible("upgradePayBtn") && payDisabled === false, "Pay $19.99/month is still clickable while test mode is off");
+    await js(`document.getElementById('upgradePayBtn').click()`);
+    await until(`document.getElementById('upgradeCheckoutDialog').open
+        && !document.getElementById('upgradeCheckoutUnavailable').classList.contains('hidden')`, "dialog explains test mode is off");
+    expect(!(await visible("upgradeCheckout")) && !(await visible("upgradeConfirmBtn")), "no card form or Confirm button while test mode is off");
+    const explanation = await js(`document.getElementById('upgradeCheckoutUnavailable').textContent`);
+    expect(/turned off on the subscription server/.test(explanation) && /CHECKPOINT_TEST_PAYMENTS=true/.test(explanation),
+        "the dialog says test mode is off and how to enable it locally", explanation);
+    await js(`document.getElementById('upgradeCancelBtn').click()`);
     const direct = await ipc("window.electronAPI.activateTestSubscription()");
     expect(!direct.ok && /disabled/i.test(direct.message), "a direct checkout call fails while test mode is off", direct);
     const f = await features();

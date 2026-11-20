@@ -7,9 +7,15 @@ real Firebase project, and they **reset the emulators' data** before running.
 ## One-time setup
 
 ```powershell
-npm install -g firebase-tools        # needs Java 21 for the Firestore emulator
+npm install -g firebase-tools        # current versions need Java 21 for the Firestore emulator
 cd functions; npm install; cd ..
 ```
+
+With Java 11, use firebase-tools 13 through npx instead of a global install:
+`npx -y firebase-tools@13 emulators:start --only auth,firestore,functions`.
+
+`functions/.env` sets `CHECKPOINT_TEST_PAYMENTS=false`. Without it, the CLI
+stops at an interactive prompt and the Functions emulator never loads.
 
 ## Run with test mode on
 
