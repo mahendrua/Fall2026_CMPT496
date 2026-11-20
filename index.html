@@ -1250,6 +1250,15 @@
                 <div id="tokenMeterStages"></div>
             </div>
 
+            <div id="redactionSummary" class="hidden">
+                <div id="redactionSummaryTotal">
+                    <span id="redactionSummaryValue"></span>
+                    <span id="redactionSummaryLabel"></span>
+                </div>
+                <p id="redactionSummaryDetail"></p>
+                <p id="redactionSummaryNote"></p>
+            </div>
+
             <p id="loadingWarning" class="hidden"></p>
 
             <pre id="estimateOutput" class="hidden"></pre>
@@ -1272,6 +1281,7 @@
 
     <script src="command_requests.js"></script>
     <script src="consistency_review_model.js"></script>
+    <script src="redaction_summary.js"></script>
     <script src="consistency_review.js"></script>
     <script src="api_key_verify.js"></script>
     <script src="guiEventConnection.js"></script>
