@@ -17,6 +17,8 @@ agent/MT_output/
 agent/consistency_output/
 # Consistency Review evaluation runs
 test/consistency_eval/runs/
+# Checkpoint Pro end-to-end runs (emulator accounts, captures, app user data)
+test/subscription_e2e/runs/
 # T-079 secret verification evidence (value-free reports)
 test/secret_verification/runs/
 

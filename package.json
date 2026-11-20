@@ -6,6 +6,7 @@
   "type": "commonjs",
   "scripts": {
     "test": "node --test \"test/**/*.test.js\" \"test/*_test.js\"",
+    "test:subscription-e2e": "npm run build:auth && node test/subscription_e2e/run.js",
     "build:auth": "esbuild auth.js --bundle --format=iife --platform=browser --target=chrome120 --outfile=auth.bundle.js",
     "prestart": "npm run build:auth",
     "start": "electron .",
