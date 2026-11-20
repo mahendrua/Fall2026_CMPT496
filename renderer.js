@@ -1874,7 +1874,76 @@ function renderUnitTestsPreview(data) {
     output.appendChild(list);
 }
 
+// ============================================
+// Checkpoint Pro feature gates
+// ============================================
+// The shared entitlement logic lives in subscription_state.js (state) and
+// upgrade.js (Upgrade screen). These gates only decide what the UI offers;
+// the main process re-checks every paid operation on its own.
+
+let currentPageId = "homePage";
+
+function paidFeatureUnlocked(feature) {
+    return window.checkpointSubscription?.hasFeature(feature) === true;
+}
+
+// True when the feature may be used. Otherwise shows the Upgrade screen with
+// a message naming the locked feature, and returns false.
+function ensurePaidFeature(feature, from = currentPageId) {
+    if (paidFeatureUnlocked(feature)) return true;
+    const returnPage = window.CheckpointSubscription.featureForPage(from) ? "homePage" : from;
+    window.openUpgradePage?.({
+        featureLabel: window.CheckpointSubscription.FEATURES[feature],
+        from: returnPage
+    });
+    return false;
+}
+
+function updatePaidFeatureControls() {
+    document.querySelectorAll("[data-paid-feature]").forEach(control => {
+        const locked = !paidFeatureUnlocked(control.dataset.paidFeature);
+        control.classList.toggle("is-pro-locked", locked);
+        let badge = control.querySelector(".pro-lock-badge");
+        if (locked && !badge) {
+            badge = document.createElement("span");
+            badge.className = "pro-lock-badge";
+            badge.textContent = "Pro";
+            control.appendChild(badge);
+        } else if (!locked && badge) {
+            badge.remove();
+        }
+    });
+}
+
+// Access can be lost while a paid screen is open (sign-out, expiry, a failed
+// check). Leave that screen instead of leaving paid controls on display.
+window.addEventListener("checkpoint-subscription-changed", () => {
+    updatePaidFeatureControls();
+    const signedOut = window.checkpointSubscription?.getState().phase === "signed-out";
+
+    const pageFeature = window.CheckpointSubscription.featureForPage(currentPageId);
+    if (pageFeature && !paidFeatureUnlocked(pageFeature)) {
+        if (signedOut) showPage("homePage");
+        else ensurePaidFeature(pageFeature, "homePage");
+        return;
+    }
+    if (!paidFeatureUnlocked("github") &&
+        !document.getElementById("githubConnectPanel").classList.contains("hidden")) {
+        document.getElementById("githubRepositoryUrl").value = "";
+        showProjectSourcePicker();
+    }
+    if (!paidFeatureUnlocked("gui") &&
+        !document.getElementById("viewGuiReportsBtns").classList.contains("hidden")) {
+        showButtons("mainViewBtns");
+        document.getElementById("guiTestingReportView").classList.add("hidden");
+    }
+});
+
+// Returns false when navigation was refused because the page is a paid feature.
 function showPage(pageId) {
+
+    const paidFeature = window.CheckpointSubscription.featureForPage(pageId);
+    if (paidFeature && !ensurePaidFeature(paidFeature)) return false;
 
     if (pageId === "codebasePipelinePage") {
         document.getElementById("projectSourceChoices").classList.remove("hidden");
@@ -1887,6 +1956,8 @@ function showPage(pageId) {
     });
 
     document.getElementById(pageId).classList.remove('hidden');
+    currentPageId = pageId;
+    return true;
 }
 
 function showButtons(buttonId) {
@@ -1940,6 +2011,7 @@ function renderGuiReportList(reports) {
 }
 
 async function refreshGuiTestingReports() {
+    if (!ensurePaidFeature("gui")) return;
     const container = document.getElementById("guiTestingReportsList");
     container.replaceChildren();
     const loading = document.createElement("p");
@@ -3086,6 +3158,7 @@ document.getElementById('mainViewBtn')
     });
 
 document.getElementById("viewGuiTestingReportsBtn").addEventListener("click", async () => {
+    if (!ensurePaidFeature("gui")) return;
     showButtons("viewGuiReportsBtns");
     renderGuiTestingReportMessage("Select a saved GUI testing report to view its summary and test details.");
     await refreshGuiTestingReports();
@@ -4130,6 +4203,7 @@ document.getElementById("backToProjectSourcesBtn")
 
 document.getElementById("connectGithubBtn")
     .addEventListener("click", () => {
+        if (!ensurePaidFeature("github")) return;
         document.getElementById("githubRepositoryError").textContent = "";
         document.getElementById("projectSourceChoices").classList.add("hidden");
         document.getElementById("githubConnectPanel").classList.remove("hidden");
@@ -4157,6 +4231,7 @@ document.getElementById("githubRepositoryForm")
     .addEventListener("submit", async event => {
         event.preventDefault();
         if (githubImportInProgress) return;
+        if (!ensurePaidFeature("github")) return;
 
         const repositoryUrl = document.getElementById("githubRepositoryUrl").value.trim();
         const requestNumber = ++githubBranchRequest;
@@ -4421,8 +4496,7 @@ async function openPullRequestExplorer(reset) {
     document.getElementById("githubExplorerHeading").textContent = `Pull Requests · ${githubTargetBranch}`;
     document.getElementById("githubExplorerRepository").textContent =
         `${githubRepositoryBranches.owner}/${githubRepositoryBranches.repo}`;
-    document.getElementById("githubPullRequestExplorerPage").classList.remove("hidden");
-    showPage("githubPullRequestExplorerPage");
+    if (!showPage("githubPullRequestExplorerPage")) return;
     if (reset) await loadPullRequestPage(true);
 }
 

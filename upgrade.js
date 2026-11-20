@@ -158,8 +158,22 @@
         }
     });
 
+    // Re-check with the server when the subscription reaches its expiry time,
+    // so open screens lock then rather than at the next action.
+    const MAX_TIMER_MS = 2 ** 31 - 1;
+    let expiryTimer = null;
+    function scheduleExpiryCheck(state) {
+        clearTimeout(expiryTimer);
+        expiryTimer = null;
+        const expiresAt = Date.parse(state.view?.expiresAt);
+        if (!state.view?.active || !Number.isFinite(expiresAt)) return;
+        const delay = Math.min(Math.max(expiresAt - Date.now() + 1000, 1000), MAX_TIMER_MS);
+        expiryTimer = setTimeout(() => subscription.load({ force: true }).catch(() => {}), delay);
+    }
+
     subscription.subscribe(state => {
         render(state);
+        if (state.phase !== "loading") scheduleExpiryCheck(state);
         window.dispatchEvent(new CustomEvent("checkpoint-subscription-changed"));
     });
 
@@ -175,4 +189,5 @@
     });
 
     render(subscription.getState());
+    window.dispatchEvent(new CustomEvent("checkpoint-subscription-changed"));
 })();

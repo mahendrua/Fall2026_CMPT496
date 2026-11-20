@@ -26,6 +26,24 @@
     });
     const PAYMENT_REQUIRED_PREFIX = "Checkpoint Pro required:";
 
+    // Every page that belongs to a paid feature. showPage() refuses these for
+    // free accounts, so a direct navigation cannot reach them either.
+    const PAID_PAGES = Object.freeze({
+        guiTestPage: "gui",
+        githubAnalysisModePage: "github",
+        githubBranchSelectionPage: "github",
+        githubPullRequestExplorerPage: "github",
+        githubPullRequestOverviewPage: "github",
+        githubPullRequestAnalysisPage: "github",
+        githubCodeComparisonPage: "github"
+    });
+
+    function featureForPage(pageId) {
+        return typeof pageId === "string" && Object.prototype.hasOwnProperty.call(PAID_PAGES, pageId)
+            ? PAID_PAGES[pageId]
+            : null;
+    }
+
     function isPaymentRequiredError(error) {
         const message = typeof error === "string" ? error : error?.message;
         return typeof message === "string" && message.includes(PAYMENT_REQUIRED_PREFIX);
@@ -128,10 +146,12 @@
 
     return {
         FEATURES,
+        PAID_PAGES,
         PAYMENT_REQUIRED_PREFIX,
         PRICE_LABEL,
         cleanErrorMessage,
         createSubscriptionState,
+        featureForPage,
         isPaymentRequiredError
     };
 });
