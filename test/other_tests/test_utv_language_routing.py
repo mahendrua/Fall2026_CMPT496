@@ -123,7 +123,7 @@ def test_csharp_validation_uses_xunit_harness(tmp_path, monkeypatch):
 
     monkeypatch.setattr("agent.UTV_agent.check_csharp_tests", fake_csharp)
     monkeypatch.setattr("agent.UTV_agent.check_python_tests", fake_python)
-    monkeypatch.setattr("agent.UTV_agent.make_fixer", lambda *args, **kwargs: None)
+    monkeypatch.setattr("agent.UTV_agent.make_csharp_fixer", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         "agent.UTV_agent.make_llm",
         lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("use injected model")),

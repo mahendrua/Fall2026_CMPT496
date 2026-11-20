@@ -7,6 +7,7 @@ structured state passed between nodes in the LangGraph execution graph.
 
 from typing import TypedDict, Any
 from agent.structured_output.UTV_output import UnitTest
+from lsp.context import CodebaseContext
 
 
 class UTVGraphState(TypedDict):
@@ -38,6 +39,10 @@ class UTVGraphState(TypedDict):
         Base directory for writing output JSON files. Defaults to
         ./agent/UT_agent_output if not specified, so the results show under
         "View unit tests".
+
+    @var lsp_context
+        Optional complete codebase LSP context. Used to retrieve relevant
+        source-file and related-file information during C# test repair.
     """
     target_language: str
     current_tests: list[UnitTest]
@@ -46,3 +51,4 @@ class UTVGraphState(TypedDict):
     codebase_name: str
     codebase_path: str
     output_directory: str
+    lsp_context: CodebaseContext | None

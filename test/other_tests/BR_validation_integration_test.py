@@ -556,7 +556,7 @@ def test_unit_and_integration_test_commands_read_validation_output(env, monkeypa
 
     def fake_agent(name):
         class Agent:
-            def run(self, rules, codebase_name, codebase_path, rag_pipeline):
+            def run(self, rules, codebase_name, codebase_path, rag_pipeline, lsp_context=None):
                 received[name] = rules
                 received[name + "_pipeline"] = rag_pipeline
                 return {"test_run": FakeTestRun()}

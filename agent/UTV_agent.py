@@ -14,17 +14,55 @@ from agent.states.UTV_agent_state import UTVGraphState
 from agent.structured_output.UTV_output import UnitTest
 from langgraph.graph import StateGraph, START, END
 from agent.llm import make_llm
+
 from agent.test_harness import (
     check_tests as check_csharp_tests,
     make_cases as make_csharp_cases,
-    make_fixer,
+    make_fixer as make_csharp_fixer,
     write_results as write_csharp_results,
 )
+
+from agent.javascript_test_harness import (
+    check_tests as check_javascript_tests,
+    make_cases as make_javascript_cases,
+    make_fixer as make_javascript_fixer,
+    write_results as write_javascript_results,
+)
+
 from agent.python_test_harness import (
     check_tests as check_python_tests,
     make_cases as make_python_cases,
     write_results as write_python_results,
 )
+
+from agent.java_test_harness import (
+    check_tests as check_java_tests,
+    make_cases as make_java_cases,
+    make_fixer as make_java_fixer,
+    write_results as write_java_results,
+)
+
+from agent.cpp_test_harness import (
+    check_tests as check_cpp_tests,
+    make_cases as make_cpp_cases,
+    make_fixer as make_cpp_fixer,
+    write_results as write_cpp_results,
+)
+
+from agent.c_test_harness import (
+    check_tests as check_c_tests,
+    make_cases as make_c_cases,
+    make_fixer as make_c_fixer,
+    write_results as write_c_results,
+)
+
+from agent.kotlin_test_harness import (
+    check_tests as check_kotlin_tests,
+    make_cases as make_kotlin_cases,
+    make_fixer as make_kotlin_fixer,
+    write_results as write_kotlin_results,
+)
+
 from agent.testing_language import detect_unit_test_language
 import os
 import sys
@@ -33,16 +71,22 @@ from pathlib import Path
 from backend.progress_logging import progress
 from utils.chroma_utils import collection_name
 
+from lsp.context import CodebaseContext
+from lsp.retriever import retrieve_lsp_context
+
+
 # Code chunks retrieved per broken test for the repair prompt.
 REPAIR_CODEBASE_K = 15
 
 
 def _open_code_collection(codebase_name: str, db_dir: Path):
     """
-    Open the C# repair code collection. Imports ChromaDB only when C# validation runs.
+    Open the code collection used to provide source context for AI test repair.
+    Imports ChromaDB only when repair-enabled validation runs.
 
-    ImportError still propagates, matching the previous module-level import. Missing
-    or unreadable vector stores return None so validation continues without RAG.
+    ImportError still propagates, matching the previous module-level import.
+    Missing or unreadable vector stores return None so validation continues
+    without retrieved code context.
     """
     import chromadb
     from chromadb.utils.embedding_functions import SentenceTransformerEmbeddingFunction
@@ -108,7 +152,7 @@ class UTVAgent:
         builder.add_edge("writer", END)
         return builder.compile()
 
-    def run(self, input_tests: list[UnitTest], codebase_name: str, codebase_path: str, output_dir=None):
+    def run(self, input_tests: list[UnitTest], codebase_name: str, codebase_path: str, output_dir=None, lsp_context: CodebaseContext | None = None):
         """
         @brief Executes the UTVAgent workflow.
         @param input_tests List of UnitTest candidates, as saved in unit_tests.json.
@@ -127,7 +171,7 @@ class UTVAgent:
         progress(f"Selected {target_language} unit-test validation.", 8)
 
         code_collection = None
-        if target_language == "csharp":
+        if target_language in ("csharp", "javascript", "java", "cpp", "c", "kotlin"):
             if self._injected_model is None:
                 self.llm = make_llm()
             else:
@@ -152,9 +196,14 @@ class UTVAgent:
             "codebase_name": codebase_name,
             "codebase_path": codebase_path,
             "output_directory": output_dir or "./agent/UT_agent_output",
+            "lsp_context": lsp_context
         }
 
-        self._loop = asyncio.new_event_loop() if target_language == "csharp" else None
+        self._loop = (
+            asyncio.new_event_loop()
+            if target_language in ("csharp", "javascript", "java", "cpp", "c", "kotlin")
+            else None
+        )
         try:
             return self.graph.invoke(initial_state)
         finally:
@@ -192,6 +241,7 @@ class UTVAgent:
                 test_items,
                 body_of=lambda test: test.unit_test,
                 imports_of=lambda test: test.imports,
+                codebase_path=codebase_path,
             )
             test_run = check_python_tests(
                 "Unit",
@@ -202,7 +252,157 @@ class UTVAgent:
                 codebase_name,
                 codebase_subdir,
             )
-        else:
+
+        elif state["target_language"] == "javascript":
+
+            cases, rejected = make_javascript_cases(
+                "UT",
+                test_items,
+                body_of=lambda test: test.unit_test,
+                imports_of=lambda test: test.imports,
+            )
+
+            code_collection = state.get("code_collection")
+
+            def context_for(case):
+                test = case.source
+                code_context = []
+
+                if code_collection is not None and code_collection.count():
+                    query_text = f"{test.rule} {' '.join(case.errors[:3])}"
+
+                    results = code_collection.query(
+                        query_texts=[query_text],
+                        n_results=min(
+                            REPAIR_CODEBASE_K,
+                            code_collection.count(),
+                        ),
+                    )
+
+                    docs = results.get("documents", [[]])[0]
+                    metas = results.get("metadatas", [[]])[0]
+
+                    code_context = [
+                        self._format_code_result(
+                            doc,
+                            meta,
+                            test.source_directory,
+                        )
+                        for doc, meta in zip(docs, metas)
+                    ]
+
+                retrieved_lsp_context = retrieve_lsp_context(
+                    state.get("lsp_context"),
+                    test.source_file_paths,
+                )
+
+                context_parts = []
+
+                if code_context:
+                    context_parts.append(
+                        "[RETRIEVED CODE CONTEXT]\n"
+                        + "\n\n".join(code_context)
+                    )
+
+                if retrieved_lsp_context:
+                    context_parts.append(
+                        "[RETRIEVED LSP CONTEXT]\n"
+                        + "\n\n".join(retrieved_lsp_context)
+                    )
+
+                return "\n\n".join(context_parts)
+
+            test_run = check_javascript_tests(
+                "Unit",
+                "UT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_subdir,
+                fix=make_javascript_fixer(
+                    self.llm,
+                    context_for=context_for,
+                ),
+                loop=self._loop,
+            )
+
+        elif state["target_language"] == "java":
+
+            cases, rejected = make_java_cases(
+                "UT",
+                test_items,
+                body_of=lambda test: test.unit_test,
+                imports_of=lambda test: test.imports,
+                codebase_path=codebase_path,
+            )
+
+            code_collection = state.get("code_collection")
+
+            def context_for(case):
+                test = case.source
+                code_context = []
+
+                if code_collection is not None and code_collection.count():
+                    query_text = f"{test.rule} {' '.join(case.errors[:3])}"
+
+                    results = code_collection.query(
+                        query_texts=[query_text],
+                        n_results=min(
+                            REPAIR_CODEBASE_K,
+                            code_collection.count(),
+                        ),
+                    )
+
+                    docs = results.get("documents", [[]])[0]
+                    metas = results.get("metadatas", [[]])[0]
+
+                    code_context = [
+                        self._format_code_result(
+                            doc,
+                            meta,
+                            test.source_directory,
+                        )
+                        for doc, meta in zip(docs, metas)
+                    ]
+
+                retrieved_lsp_context = retrieve_lsp_context(
+                    state.get("lsp_context"),
+                    test.source_file_paths,
+                )
+
+                context_parts = []
+
+                if code_context:
+                    context_parts.append(
+                        "[RETRIEVED CODE CONTEXT]\n"
+                        + "\n\n".join(code_context)
+                    )
+
+                if retrieved_lsp_context:
+                    context_parts.append(
+                        "[RETRIEVED LSP CONTEXT]\n"
+                        + "\n\n".join(retrieved_lsp_context)
+                    )
+
+                return "\n\n".join(context_parts)
+
+            test_run = check_java_tests(
+                "Unit",
+                "UT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_subdir,
+                fix=make_java_fixer(
+                    self.llm,
+                    context_for,
+                ),
+                loop=self._loop,
+            )
+
+        elif state["target_language"] == "csharp":
             code_collection = state.get("code_collection")
             cases, rejected = make_csharp_cases(
                 "UT",
@@ -212,20 +412,33 @@ class UTVAgent:
             )
 
             def context_for(case):
-                if code_collection is None or not code_collection.count():
-                    return ""
+
                 test = case.source
-                query_text = f"{test.rule} {' '.join(case.errors[:3])}"
-                results = code_collection.query(
-                    query_texts=[query_text],
-                    n_results=min(REPAIR_CODEBASE_K, code_collection.count())
-                )
-                docs = results.get("documents", [[]])[0]
-                metas = results.get("metadatas", [[]])[0]
-                return "\n\n".join(
-                    self._format_code_result(doc, meta, test.source_directory)
-                    for doc, meta in zip(docs, metas)
-                )
+
+                code_context = []
+
+                if code_collection is not None and code_collection.count():
+                    query_text = f"{test.rule} {' '.join(case.errors[:3])}"
+                    results = code_collection.query(
+                        query_texts=[query_text],
+                        n_results=min(REPAIR_CODEBASE_K, code_collection.count())
+                    )
+                    docs = results.get("documents", [[]])[0]
+                    metas = results.get("metadatas", [[]])[0]
+
+                    code_context = [self._format_code_result(doc, meta, test.source_directory) for doc, meta in zip(docs, metas)]
+
+                lsp_context = retrieve_lsp_context(state.get("lsp_context"), test.source_file_paths)
+                context_parts = []
+
+                if code_context:
+                    context_parts.append("[RETRIEVED CODE CONTEXT]\n" + "\n\n".join(code_context))
+
+                if lsp_context:
+                    context_parts.append("[RETRIEVED LSP CONTEXT]\n" + "\n\n".join(lsp_context))
+
+
+                return "\n\n".join(context_parts)
 
             test_run = check_csharp_tests(
                 "Unit",
@@ -235,8 +448,238 @@ class UTVAgent:
                 codebase_path,
                 codebase_name,
                 codebase_subdir,
-                fix=make_fixer(self.llm, context_for),
+                fix=make_csharp_fixer(self.llm, context_for),
                 loop=self._loop,
+            )
+
+        elif state["target_language"] == "c":
+
+            cases, rejected = make_c_cases(
+                "UT",
+                test_items,
+                body_of=lambda test: test.unit_test,
+                imports_of=lambda test: test.imports,
+                codebase_path=codebase_path,
+            )
+
+            code_collection = state.get("code_collection")
+
+            def context_for(case):
+                test = case.source
+                code_context = []
+
+                if code_collection is not None and code_collection.count():
+                    query_text = f"{test.rule} {' '.join(case.errors[:3])}"
+
+                    results = code_collection.query(
+                        query_texts=[query_text],
+                        n_results=min(
+                            REPAIR_CODEBASE_K,
+                            code_collection.count(),
+                        ),
+                    )
+
+                    docs = results.get("documents", [[]])[0]
+                    metas = results.get("metadatas", [[]])[0]
+
+                    code_context = [
+                        self._format_code_result(
+                            doc,
+                            meta,
+                            test.source_directory,
+                        )
+                        for doc, meta in zip(docs, metas)
+                    ]
+
+                retrieved_lsp_context = retrieve_lsp_context(
+                    state.get("lsp_context"),
+                    test.source_file_paths,
+                )
+
+                context_parts = []
+
+                if code_context:
+                    context_parts.append(
+                        "[RETRIEVED CODE CONTEXT]\n"
+                        + "\n\n".join(code_context)
+                    )
+
+                if retrieved_lsp_context:
+                    context_parts.append(
+                        "[RETRIEVED LSP CONTEXT]\n"
+                        + "\n\n".join(retrieved_lsp_context)
+                    )
+
+                return "\n\n".join(context_parts)
+
+            test_run = check_c_tests(
+                "Unit",
+                "UT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_subdir,
+                fix=make_c_fixer(
+                    self.llm,
+                    context_for,
+                ),
+                loop=self._loop,
+            )
+        elif state["target_language"] == "cpp":
+
+            cases, rejected = make_cpp_cases(
+                "UT",
+                test_items,
+                body_of=lambda test: test.unit_test,
+                imports_of=lambda test: test.imports,
+                codebase_path=codebase_path,
+            )
+
+            code_collection = state.get("code_collection")
+
+            def context_for(case):
+                test = case.source
+                code_context = []
+
+                if code_collection is not None and code_collection.count():
+                    query_text = f"{test.rule} {' '.join(case.errors[:3])}"
+
+                    results = code_collection.query(
+                        query_texts=[query_text],
+                        n_results=min(
+                            REPAIR_CODEBASE_K,
+                            code_collection.count(),
+                        ),
+                    )
+
+                    docs = results.get("documents", [[]])[0]
+                    metas = results.get("metadatas", [[]])[0]
+
+                    code_context = [
+                        self._format_code_result(
+                            doc,
+                            meta,
+                            test.source_directory,
+                        )
+                        for doc, meta in zip(docs, metas)
+                    ]
+
+                retrieved_lsp_context = retrieve_lsp_context(
+                    state.get("lsp_context"),
+                    test.source_file_paths,
+                )
+
+                context_parts = []
+
+                if code_context:
+                    context_parts.append(
+                        "[RETRIEVED CODE CONTEXT]\n"
+                        + "\n\n".join(code_context)
+                    )
+
+                if retrieved_lsp_context:
+                    context_parts.append(
+                        "[RETRIEVED LSP CONTEXT]\n"
+                        + "\n\n".join(retrieved_lsp_context)
+                    )
+
+                return "\n\n".join(context_parts)
+
+            test_run = check_cpp_tests(
+                "Unit",
+                "UT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_subdir,
+                fix=make_cpp_fixer(
+                    self.llm,
+                    context_for,
+                ),
+                loop=self._loop,
+            )
+
+        elif state["target_language"] == "kotlin":
+
+            cases, rejected = make_kotlin_cases(
+                "UT",
+                test_items,
+                body_of=lambda test: test.unit_test,
+                imports_of=lambda test: test.imports,
+                codebase_path=codebase_path,
+            )
+
+            code_collection = state.get("code_collection")
+
+            def context_for(case):
+                test = case.source
+                code_context = []
+
+                if code_collection is not None and code_collection.count():
+                    query_text = f"{test.rule} {' '.join(case.errors[:3])}"
+
+                    results = code_collection.query(
+                        query_texts=[query_text],
+                        n_results=min(
+                            REPAIR_CODEBASE_K,
+                            code_collection.count(),
+                        ),
+                    )
+
+                    docs = results.get("documents", [[]])[0]
+                    metas = results.get("metadatas", [[]])[0]
+
+                    code_context = [
+                        self._format_code_result(
+                            doc,
+                            meta,
+                            test.source_directory,
+                        )
+                        for doc, meta in zip(docs, metas)
+                    ]
+
+                retrieved_lsp_context = retrieve_lsp_context(
+                    state.get("lsp_context"),
+                    test.source_file_paths,
+                )
+
+                context_parts = []
+
+                if code_context:
+                    context_parts.append(
+                        "[RETRIEVED CODE CONTEXT]\n"
+                        + "\n\n".join(code_context)
+                    )
+
+                if retrieved_lsp_context:
+                    context_parts.append(
+                        "[RETRIEVED LSP CONTEXT]\n"
+                        + "\n\n".join(retrieved_lsp_context)
+                    )
+
+                return "\n\n".join(context_parts)
+
+            test_run = check_kotlin_tests(
+                "Unit",
+                "UT",
+                cases,
+                rejected,
+                codebase_path,
+                codebase_name,
+                codebase_subdir,
+                fix=make_kotlin_fixer(
+                    self.llm,
+                    context_for,
+                ),
+                loop=self._loop,
+            )
+
+        else:
+            raise ValueError(
+                f"Unsupported unit-test validation language: "
+                f"{state['target_language']}"
             )
 
         return {"test_run": test_run}
@@ -270,8 +713,30 @@ class UTVAgent:
 
         if state["target_language"] == "python":
             write_python_results(test_run, codebase_subdir, to_json)
-        else:
+
+        elif state["target_language"] == "javascript":
+            write_javascript_results(test_run, codebase_subdir, to_json)
+
+        elif state["target_language"] == "java":
+            write_java_results(test_run, codebase_subdir, to_json)
+
+        elif state["target_language"] == "csharp":
             write_csharp_results(test_run, codebase_subdir, to_json)
+
+        elif state["target_language"] == "c":
+            write_c_results(test_run, codebase_subdir, to_json)
+
+        elif state["target_language"] == "cpp":
+            write_cpp_results(test_run, codebase_subdir, to_json)
+
+        elif state["target_language"] == "kotlin":
+            write_kotlin_results(test_run,codebase_subdir,to_json,)
+            
+        else:
+            raise ValueError(
+                f"Unsupported unit-test validation language: "
+                f"{state['target_language']}"
+            )
 
         progress(test_run.message(), 100, True)
         return {}

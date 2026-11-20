@@ -48,3 +48,4 @@ run_reports/
 # Backend errors, kept for the Insights "Errors" view across restarts
 error_log.json
 error_log.json.tmp
+agent/lsp_context_output/

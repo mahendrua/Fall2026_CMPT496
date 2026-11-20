@@ -11,7 +11,7 @@ def test_empty_index_message_when_no_supported_files():
     assert str(source_dir) in message
     for extension in LANGUAGE_DICT:
         assert extension in message
-    assert message.endswith("Supported code files are .cs, .js, .py.")
+    assert message.endswith("Supported code files are " + ", ".join(sorted(LANGUAGE_DICT)) + ".")
 
 
 def test_empty_index_message_when_files_have_no_chunks():

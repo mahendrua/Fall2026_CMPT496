@@ -34,7 +34,8 @@ from eval_fakes import OracleLLM
 from eval_fixtures import build_case
 
 GENERATION_STAGES = [
-    "build_database", "generate_file_summaries", "build_summary_database", "generate_directory_summaries",
+    "build_database", "generate_lsp_context", "generate_file_summaries", "build_summary_database",
+    "generate_directory_summaries",
     "validate_business_rules", "generate_unit_tests", "generate_integration_tests", "generate_all_uml",
 ]
 OUTPUT_OF_STAGE = {

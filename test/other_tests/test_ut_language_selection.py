@@ -102,13 +102,13 @@ def test_g2_only_csharp_project_selects_csharp(tmp_path):
 def test_g2_only_mixed_project_is_ambiguous(tmp_path):
     write_source(tmp_path / "math_lab.py", "def double(value):\n    return value * 2\n")
     write_source(tmp_path / "Program.cs", "class Program {}\n")
-    with pytest.raises(ValueError, match="contains both Python and C#"):
+    with pytest.raises(ValueError, match="contains multiple source languages: csharp, python"):
         detect_test_language([[]], codebase_path=str(tmp_path))
 
 
 def test_g2_only_unknown_project_fails(tmp_path):
     write_source(tmp_path / "notes.md", "no source\n")
-    with pytest.raises(ValueError, match="contains no Python or C#"):
+    with pytest.raises(ValueError, match="contains no supported source files"):
         detect_test_language([[]], codebase_path=str(tmp_path))
 
 
@@ -317,7 +317,7 @@ def test_unit_test_language_rejects_mixed_python_and_csharp_bodies():
         ),
     ]
 
-    with pytest.raises(ValueError, match="mix Python and C#"):
+    with pytest.raises(ValueError, match="mix multiple languages: csharp, python"):
         detect_unit_test_language(tests)
 
 
@@ -332,5 +332,5 @@ def test_unit_test_language_rejects_undecidable_tests():
         make_test(source_file_paths=[""], unit_test="// no markers here"),
     ]
 
-    with pytest.raises(ValueError, match="do not identify Python or C#"):
+    with pytest.raises(ValueError, match="do not identify a supported language"):
         detect_unit_test_language(tests)

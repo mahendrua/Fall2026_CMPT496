@@ -1,3 +1,4 @@
+
 {
   "name": "checkpoint",
   "version": "1.0.0",
@@ -6,6 +7,8 @@
   "type": "commonjs",
   "scripts": {
     "test": "node --test \"test/**/*.test.js\" \"test/*_test.js\"",
+    "test:vitest": "vitest run",
+    "test:vitest:watch": "vitest",
     "build:auth": "esbuild auth.js --bundle --format=iife --platform=browser --target=chrome120 --outfile=auth.bundle.js",
     "prestart": "npm run build:auth",
     "start": "electron .",
@@ -22,6 +25,7 @@
     "electron-builder": "^26.15.3",
     "electron-reloader": "^1.2.3",
     "esbuild": "^0.28.2",
+    "vitest": "^5.1.0",
     "yazl": "^3.3.1"
   },
   "dependencies": {

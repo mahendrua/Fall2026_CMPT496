@@ -36,5 +36,5 @@ class TestRepair(BaseModel):
     """
     __test__ = False  # not a pytest test class
     model_config = ConfigDict(extra="forbid")
-    imports: list[str] = Field(default_factory=list, description="Every using directive the test needs, one per entry, e.g. 'using Xunit;'.")
-    test_method: str = Field("", description="The corrected test method(s) with their [Fact] or [Theory] attribute, and nothing else. Empty if the test cannot be fixed.")
+    imports: list[str] = Field(default_factory=list, description="All import statements required by the repaired test, one per entry, using the target language's syntax.")
+    test_method: str = Field("", description="The complete corrected test body, including its test declaration and any required decorators or annotations, but excluding imports. Empty if the test cannot be fixed.")

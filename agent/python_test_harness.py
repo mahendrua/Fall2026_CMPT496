@@ -4,6 +4,7 @@ Python test-harness support for Checkpoint.
 Creates isolated pytest files outside the selected student codebase.
 """
 
+from utils.output_redaction import save_json
 import ast
 import hashlib
 import json
@@ -602,17 +603,12 @@ def persist_python_generated_tests(output_dir: str | Path, tests) -> tuple[list,
 
     def dump(value):
         if hasattr(value, "model_dump"):
-            return value.model_dump()
+            return value.model_dump(mode="json")
         return dict(value)
 
-    (folder / "unit_tests.json").write_text(
-        json.dumps([dump(test) for test in persistable], indent=2),
-        encoding="utf-8",
-    )
-    (folder / "dropped_generated_tests.json").write_text(
-        json.dumps(oversized, indent=2),
-        encoding="utf-8",
-    )
+    # Cleaned of secrets (T-078): the model's tests can repeat one.
+    save_json(folder / "unit_tests.json", [dump(test) for test in persistable])
+    save_json(folder / "dropped_generated_tests.json", oversized)
     return persistable, oversized
 
 
@@ -962,32 +958,19 @@ def check_tests(
 
 def write_results(run: PythonTestRun, output_dir: str, to_json) -> None:
     """Write Python test outcomes in the same JSON-style structure as C#."""
+    # Cleaned of secrets (T-078): tests quote code, and reasons quote
+    # compiler errors and test output.
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    (output_path / "validated_tests.json").write_text(
-        json.dumps([to_json(case) for case in run.kept], indent=2),
-        encoding="utf-8",
-    )
+    save_json(output_path / "validated_tests.json", [to_json(case) for case in run.kept])
 
-    (output_path / "discarded_tests.json").write_text(
-        json.dumps(
-            [
+    save_json(output_path / "discarded_tests.json", [
                 {**to_json(case), "reason": case.reason}
                 for case in run.dropped
-            ],
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+            ])
 
-    (output_path / "test_report.json").write_text(
-        json.dumps(
-            {
+    save_json(output_path / "test_report.json", {
                 **run.summary(),
                 "message": run.message(),
-            },
-            indent=2,
-        ),
-        encoding="utf-8",
-    )
+            })

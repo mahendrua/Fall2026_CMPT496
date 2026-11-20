@@ -17,8 +17,22 @@ import os
 
 # File types the pipeline will summarize.
 ACCEPTABLE_EXTENSIONS = {
-    ".cs", ".py", ".md", ".js", ".ts",
-    ".sh", ".bash", ".c", ".cpp", ".html", ".css",
+    ".cs",
+    ".c",
+    ".h",
+    ".cpp",
+    ".py",
+    ".js",
+    ".ts",
+    ".tsx",
+    ".go",
+    ".rs",
+    ".java",
+    ".md",
+    ".sh",
+    ".bash",
+    ".html",
+    ".css",
 }
 
 # Folders that hold generated, vendored or tooling files rather than code a

@@ -8,9 +8,20 @@ function and class summaries
 from typing import Optional, Literal, Any
 from pydantic import BaseModel, Field, ConfigDict
 
-Visibility = Literal["public", "private", "protected"]
+Visibility = str
 ParamDirection = Literal["in", "out", "inout"]
-TypeKind = Literal["class", "enum", "interface", "struct"]
+TypeKind = Literal[
+    "class",
+    "enum",
+    "interface",
+    "struct",
+    "trait",
+    "union",
+    "type_alias",
+    "named_type",
+    "record",
+    "other",
+]
 RelationshipType = Literal["inheritance", "composition", "aggregation", "association", "dependency"]
 
 
@@ -35,7 +46,11 @@ class MethodSummary(BaseModel):
 
     name: str = Field(..., description="The method name.")
     description: str = Field(..., description="A short description of what the method does.")
-    visibility: Optional[Visibility] = Field(None,description="Method visibility if the language defines it.",)
+    visibility: Optional[Visibility] = Field(None,description=(
+        "Visibility or access modifier as expressed by the source language. "
+        "Preserve language-specific distinctions where applicable. "
+        "Use None when no meaningful visibility classification exists."
+    ),)
     return_type: Optional[str] = Field(None,description="The return type if known.")
     parameters: list[ParameterSummary] = Field(default_factory=list,description="Parameters accepted by the method.")
     is_static: bool = Field(False,description="True if the method is static.")
@@ -55,7 +70,11 @@ class FunctionSummary(BaseModel):
     # Optional fields
     visibility: Optional[Visibility] = Field(
     None,
-    description="Function/method visibility if the language defines it.",)
+    description=(
+        "Visibility or access modifier as expressed by the source language. "
+        "Preserve language-specific distinctions where applicable. "
+        "Use None when no meaningful visibility classification exists."
+    ),)
     return_type: Optional[str] = Field(None, description="The return type, if known.")
 
 class PropertySummary(BaseModel):
@@ -66,7 +85,11 @@ class PropertySummary(BaseModel):
     name: str = Field(..., description="The property or field name.")
     type: Optional[str] = Field(None,description="The property or field type if known.")
     description: str = Field(...,description="A short description of the property or field.")
-    visibility: Optional[Visibility] = Field(None,description="Property visibility if the language defines it.")
+    visibility: Optional[Visibility] = Field(None,description=(
+        "Visibility or access modifier as expressed by the source language. "
+        "Preserve language-specific distinctions where applicable. "
+        "Use None when no meaningful visibility classification exists."
+    ),)
     is_static: bool = Field(False,description="True if the property or field is static.")
 
 class RelationshipSummary(BaseModel):
@@ -84,7 +107,14 @@ class TypeSummary(BaseModel):
     """
     model_config = ConfigDict(extra="forbid")
     name: str = Field(..., description="The type name.")
-    kind: TypeKind = Field(...,description="The kind of type: class, enum, interface, or struct.")
+    kind: TypeKind = Field(
+        ...,
+        description=(
+            "The language-appropriate kind of type declaration: "
+            "class, enum, interface, struct, trait, union, "
+            "type_alias, named_type, record, or other."
+        ),
+    )
     description: str = Field(...,description="A short description of the type.")
     properties: list[PropertySummary] = Field(default_factory=list,description="Properties or fields defined in the type.")
     methods: list[MethodSummary] = Field(default_factory=list,description="Methods or constructors defined in the type.")

@@ -6,6 +6,7 @@
 from typing import TypedDict, Deque, Annotated, Any
 from agent.structured_output.directory_output import DirectoryOutput, JudgementOutput, BusinessRulesOutput
 from operator import add
+from lsp.context import CodebaseContext
 
 def merge_summaries(existing: dict, new: dict) -> dict:
     """
@@ -98,3 +99,4 @@ class DirectoryGraphState(TypedDict):
     summary_feedback: str
     refinement_attempts: int
     accumulated_business_rules: Annotated[dict[str, BusinessRulesOutput], merge_business_rules]
+    lsp_context: CodebaseContext | None
