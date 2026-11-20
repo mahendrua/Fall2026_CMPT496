@@ -122,6 +122,8 @@ async function establishUserSession(user, render = true) {
 
 async function clearMainSession() {
     sessionEstablished = false;
+    // Screens drop the previous account's subscription state immediately.
+    window.dispatchEvent(new Event("checkpoint-signed-out"));
     await api.signOutAuthSession();
 }
 

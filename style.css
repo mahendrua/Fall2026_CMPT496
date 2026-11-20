@@ -7028,3 +7028,87 @@ body[data-theme="dark"] #faqAndSupportBtnContainer button.btn-inverted {
 @media (max-width: 760px) {
   #viewDisplayOutputBox:has(.run-report-frame) { padding: .65rem; }
 }
+
+/* ==========================================================
+   Upgrade page (Checkpoint Pro, test-mode checkout)
+   ========================================================== */
+#upgradePage {
+  width: min(100%, 36rem);
+  gap: 1.1rem;
+  text-align: left;
+  align-items: stretch;
+}
+
+#upgradePage button { max-width: none; }
+
+.upgrade-header { text-align: center; }
+.upgrade-eyebrow {
+  margin: 0 0 .25rem;
+  color: var(--accent-crimson);
+  font-size: .75rem;
+  font-weight: 700;
+  letter-spacing: .14em;
+}
+.upgrade-header h1 { margin: 0; }
+
+.upgrade-plan,
+.upgrade-status,
+.upgrade-checkout {
+  padding: 1.15rem 1.25rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  background: var(--bg-panel);
+}
+
+.upgrade-plan-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: .5rem 1rem;
+}
+.upgrade-plan h2 { margin: 0; font-size: 1.2rem; color: var(--text-primary); }
+.upgrade-price { margin: 0; color: var(--text-secondary); }
+.upgrade-price strong { color: var(--text-primary); font-size: 1.6rem; font-variant-numeric: tabular-nums; }
+
+.upgrade-features { margin: .9rem 0 0; padding-left: 1.1rem; color: var(--text-secondary); line-height: 1.55; }
+.upgrade-features li + li { margin-top: .35rem; }
+.upgrade-features strong { display: block; color: var(--text-primary); }
+
+.upgrade-status-line { margin: 0; color: var(--text-secondary); }
+.upgrade-status-line strong { color: var(--text-primary); }
+.upgrade-detail { margin: .4rem 0 0; color: var(--text-secondary); font-size: .92rem; line-height: 1.5; }
+.upgrade-status .btn-secondary { margin-top: .8rem; }
+
+.upgrade-checkout { display: flex; flex-direction: column; gap: .7rem; border-color: var(--border-active); }
+.upgrade-checkout.hidden { display: none; }
+.upgrade-checkout .input-glass { width: 100%; box-sizing: border-box; font-variant-numeric: tabular-nums; letter-spacing: .06em; }
+.upgrade-card-label { color: var(--text-primary); font-size: .9rem; font-weight: 600; }
+
+.upgrade-test-badge {
+  align-self: flex-start;
+  margin: 0;
+  padding: .3rem .7rem;
+  border: 1px solid rgba(251, 191, 36, .45);
+  border-radius: 999px;
+  background: rgba(251, 191, 36, .12);
+  color: #fbbf24;
+  font-size: .82rem;
+  font-weight: 700;
+}
+
+.upgrade-locked,
+.upgrade-success {
+  margin: 0;
+  padding: .8rem 1rem;
+  border-radius: 10px;
+  line-height: 1.5;
+}
+.upgrade-locked { border: 1px solid var(--border-active); background: var(--accent-crimson-subtle); color: var(--text-primary); }
+.upgrade-success { border: 1px solid rgba(74, 222, 128, .4); background: rgba(74, 222, 128, .1); color: #86efac; }
+.upgrade-error { min-height: 0; margin: 0; color: #ff9299; font-size: .9rem; line-height: 1.5; }
+.upgrade-error:empty { display: none; }
+
+body[data-theme="light"] .upgrade-test-badge { border-color: rgba(180, 83, 9, .35); background: rgba(251, 191, 36, .16); color: #92400e; }
+body[data-theme="light"] .upgrade-success { border-color: rgba(21, 128, 61, .3); background: rgba(34, 197, 94, .1); color: #166534; }
+body[data-theme="light"] .upgrade-error { color: #b91c1c; }

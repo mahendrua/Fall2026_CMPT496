@@ -3,7 +3,7 @@
 <head>
     <title>Checkpoint</title>
 
-    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://127.0.0.1:* https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com; frame-src 'self' data: http://127.0.0.1:*;">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' ws://127.0.0.1:* http://127.0.0.1:9099 https://identitytoolkit.googleapis.com https://securetoken.googleapis.com https://www.googleapis.com; frame-src 'self' data: http://127.0.0.1:*;">
     <link rel="stylesheet" href="style.css">
 </head>
 
@@ -194,6 +194,7 @@
             <div class="home-footer-actions">
                 <button class="home-footer-button" id="apiBtn" type="button"><span aria-hidden="true">↑</span> Upload API Key</button>
                 <button class="home-footer-button" id="faqAndSupportBtn" type="button"><span class="home-question-icon" aria-hidden="true">?</span> FAQ &amp; Support</button>
+                <button class="home-footer-button" id="upgradeBtn" type="button"><span aria-hidden="true">★</span> <span id="upgradeBtnLabel">Upgrade</span></button>
                 <button class="home-footer-button" id="logoutBtn" type="button">Sign Out</button>
             </div>
             <button class="home-footer-button home-exit-button back-btn" id="exitBtn" type="button"><span aria-hidden="true">↳</span> Exit</button>
@@ -324,6 +325,51 @@
         <button class="btn-primary" id="submitApiKeyBtn">Verify &amp; Save</button>
         <button class="btn-primary back-btn" id="apiBackBtn">Back</button>
 
+    </div>
+
+    <!-- UPGRADE PAGE (Checkpoint Pro, test-mode checkout) -->
+    <div id="upgradePage" class="page hidden">
+        <header class="upgrade-header">
+            <p class="upgrade-eyebrow">CHECKPOINT PRO</p>
+            <h1>Upgrade</h1>
+        </header>
+
+        <p id="upgradeLockedMessage" class="upgrade-locked hidden" role="status"></p>
+
+        <section class="upgrade-plan" aria-labelledby="upgradePlanHeading">
+            <div class="upgrade-plan-heading">
+                <h2 id="upgradePlanHeading">Checkpoint Pro</h2>
+                <p class="upgrade-price"><strong>$19.99</strong><span>/month</span></p>
+            </div>
+            <ul class="upgrade-features">
+                <li><strong>GUI testing</strong> Generate, run and repair Playwright tests, and review saved GUI testing reports.</li>
+                <li><strong>GitHub integration</strong> Import repositories, and browse, compare and analyze pull requests.</li>
+            </ul>
+        </section>
+
+        <section class="upgrade-status" aria-live="polite">
+            <p class="upgrade-status-line">Your plan: <strong id="upgradePlanStatus">Checking…</strong></p>
+            <p id="upgradePlanDetail" class="upgrade-detail"></p>
+            <button class="btn-secondary hidden" id="upgradeRefreshBtn" type="button">Check again</button>
+        </section>
+
+        <!-- Simulated checkout. Deliberately not a <form>: nothing here is submitted,
+             saved or sent. The card number stays in this input until checkout clears it. -->
+        <section id="upgradeCheckout" class="upgrade-checkout hidden" aria-labelledby="upgradeTestModeLabel">
+            <p class="upgrade-test-badge" id="upgradeTestModeLabel">Test mode — no charge</p>
+            <p class="upgrade-detail">This checkout is simulated. Enter any dummy card number. Do not enter real card details.</p>
+            <label class="upgrade-card-label" for="upgradeCardNumber">Card number (dummy)</label>
+            <input class="input-glass" id="upgradeCardNumber" type="text" inputmode="numeric"
+                autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+                maxlength="32" placeholder="Any dummy number" />
+            <button class="btn-secondary" id="upgradeDummyCardBtn" type="button">Use dummy card</button>
+            <p id="upgradeCheckoutError" class="upgrade-error" role="alert"></p>
+            <button class="btn-primary" id="upgradeConfirmBtn" type="button">Confirm test purchase · $19.99</button>
+        </section>
+
+        <p id="upgradeSuccessMessage" class="upgrade-success hidden" role="status"></p>
+
+        <button class="btn-primary back-btn" id="upgradeBackBtn" type="button">Back</button>
     </div>
 
     <!-- ANALYSIS PAGE -->
@@ -1285,7 +1331,9 @@
     <script src="consistency_review.js"></script>
     <script src="api_key_verify.js"></script>
     <script src="guiEventConnection.js"></script>
+    <script src="subscription_state.js"></script>
     <script src="renderer.js"></script>
+    <script src="upgrade.js"></script>
     <script src="auth.bundle.js"></script>
 
 </body>
